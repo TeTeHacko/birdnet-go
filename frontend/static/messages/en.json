@@ -1565,6 +1565,7 @@
         "dateTime": "Date & Time",
         "species": "Species",
         "confidence": "Confidence",
+        "source": "Source",
         "timeOfDay": "Time of Day"
       },
       "noRecentDetections": "No recent detections found",

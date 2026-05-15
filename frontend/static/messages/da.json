@@ -1565,6 +1565,7 @@
         "dateTime": "Dato & tid",
         "species": "Art",
         "confidence": "Sikkerhed",
+        "source": "Kilde",
         "timeOfDay": "Tid på dagen"
       },
       "noRecentDetections": "Ingen seneste registreringer fundet",

@@ -1541,6 +1541,7 @@
         "dateTime": "Datum & Zeit",
         "species": "Art",
         "confidence": "Konfidenz",
+        "source": "Quelle",
         "timeOfDay": "Tageszeit"
       },
       "noRecentDetections": "Keine aktuellen Erkennungen gefunden",

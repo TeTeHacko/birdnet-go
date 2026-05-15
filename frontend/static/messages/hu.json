@@ -1565,6 +1565,7 @@
         "dateTime": "Dátum és idő",
         "species": "Faj",
         "confidence": "Megbízhatóság",
+        "source": "Forrás",
         "timeOfDay": "Napszak"
       },
       "noRecentDetections": "Nem található legutóbbi detektálás",

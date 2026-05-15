@@ -1565,6 +1565,7 @@
         "dateTime": "Dátum a čas",
         "species": "Druh",
         "confidence": "Istota",
+        "source": "Zdroj",
         "timeOfDay": "Denná doba"
       },
       "noRecentDetections": "Nenašli sa žiadne nedávne detekcie",
