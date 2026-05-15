@@ -1789,7 +1789,17 @@
           },
           "hardwareNote": "Tiukka- ja maksimitasot vaativat korkeampia päällekkäisyysasetuksia ja enemmän prosessoritehoa. RPi 4 tai parempi laitteisto vaaditaan näille tasoille.",
           "overlapAdjusted": "Päällekkäisyysasetus säädetty automaattisesti arvoon {overlap}s suodatinvaatimusten täyttämiseksi",
-          "overlapReduced": "Päällekkäisyysasetus pienennetty arvoon {overlap}s vastaamaan suodatustasoa"
+          "overlapReduced": "Päällekkäisyysasetus pienennetty arvoon {overlap}s vastaamaan suodatustasoa",
+          "levelNames": {
+            "off": "Pois",
+            "lenient": "Matala",
+            "moderate": "Kohtalainen",
+            "balanced": "Tasapainoinen",
+            "strict": "Tiukka",
+            "maximum": "Maksimi",
+            "unknown": "Tuntematon"
+          },
+          "warningOff": "Ilman suodatusta jokainen luottamuskynnyksen ylittävä havainto hyväksytään välittömästi. Tämä tuottaa tyypillisesti useita vääriä positiivisia päivässä. Jo matala suodatus parantaa tulosten laatua merkittävästi."
         },
         "rangeFilter": {
           "title": "Aluesuodatin",
@@ -4543,7 +4553,14 @@
       },
       "batFalsePositiveFilter": {
         "label": "Lepakon väärien positiivisten suodatin",
-        "helpText": "Vaatii useita vahvistuksia lepakkotunnistuksesta liukuvan ikkunan sisällä ennen kuin se hyväksytään. Korkeammat tasot vaativat enemmän vahvistuksia, mikä vähentää vääriä positiivisia. Lepakkomalli käyttää kiinteää 50 % päällekkäisyyttä, joten päällekkäisyyden säätöä ei tarvita."
+        "helpText": "Vaatii useita vahvistuksia lepakkotunnistuksesta liukuvan ikkunan sisällä ennen kuin se hyväksytään. Korkeammat tasot vaativat enemmän vahvistuksia, mikä vähentää vääriä positiivisia. Lepakkomalli käyttää kiinteää 50 % päällekkäisyyttä, joten päällekkäisyyden säätöä ei tarvita.",
+        "levels": {
+          "off": "Ei suodatusta; hyväksyy minkä tahansa lepakkohavainnon välittömästi.",
+          "moderate": "Hyvä tasapaino useimpiin asetuksiin. Vähentää merkittävästi vääriä positiivisia.",
+          "strict": "Maksimaalinen suodatus korkeimman tarkkuuden saavuttamiseksi."
+        },
+        "detectionCount": "{count} vahvistusta vaaditaan. {description}",
+        "warningOff": "Ilman suodatusta väärien positiivisten todennäköisyys on suuri. Suodatuksen käyttöönotto parantaa tarkkuutta merkittävästi."
       },
       "locale": {
         "label": "Lajien kieli",
@@ -4637,6 +4654,17 @@
       "reinstalling": "Asennetaan uudelleen...",
       "reinstallComplete": "Tiedostot tarkistettu onnistuneesti",
       "geomodelBadge": "Sisältää BirdNET v3.0 -geomallin"
+    },
+    "bird": {
+      "title": "Lintuhavainnot",
+      "description": "Määritä luottamuskynnys, lajikieli ja väärien positiivisten suodatus lintuluokittimille."
+    },
+    "bat": {
+      "title": "Lepakkohavainnot",
+      "description": "Määritä kynnys, ajastus ja väärien positiivisten suodatus lepakkoluokittimille."
+    },
+    "dynamicThreshold": {
+      "birdOnlyNote": "Dynaaminen kynnys koskee vain lintuluokittimia."
     }
   },
   "restart": {

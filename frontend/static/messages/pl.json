@@ -1789,7 +1789,17 @@
           },
           "hardwareNote": "Poziomy Ścisły i Maksymalny wymagają wyższych ustawień nakładania i większych zasobów CPU. Dla tych poziomów wymagany jest RPi 4 lub lepszy sprzęt.",
           "overlapAdjusted": "Ustawienie nakładania automatycznie dostosowane do {overlap}s, aby spełnić wymagania filtra",
-          "overlapReduced": "Ustawienie nakładania zmniejszono do {overlap}s, aby dopasować do poziomu filtra"
+          "overlapReduced": "Ustawienie nakładania zmniejszono do {overlap}s, aby dopasować do poziomu filtra",
+          "levelNames": {
+            "off": "Wyłączony",
+            "lenient": "Niski",
+            "moderate": "Umiarkowany",
+            "balanced": "Zrównoważony",
+            "strict": "Ścisły",
+            "maximum": "Maksymalny",
+            "unknown": "Nieznany"
+          },
+          "warningOff": "Bez filtrowania każde wykrycie powyżej progu pewności jest natychmiast akceptowane. Zwykle powoduje to kilka fałszywych trafień dziennie. Nawet niskie filtrowanie znacznie poprawia jakość wyników."
         },
         "rangeFilter": {
           "title": "Filtr Zasięgu",
@@ -4543,7 +4553,14 @@
       },
       "batFalsePositiveFilter": {
         "label": "Filtr fałszywie pozytywnych nietoperzy",
-        "helpText": "Wymaga wielu potwierdzeń wykrycia nietoperza w przesuwnym oknie czasowym przed jego zaakceptowaniem. Wyższe poziomy wymagają więcej potwierdzeń, zmniejszając liczbę fałszywych wykryć. Model nietoperzy używa stałego 50% nakładania, więc nie jest wymagana regulacja nakładania."
+        "helpText": "Wymaga wielu potwierdzeń wykrycia nietoperza w przesuwnym oknie czasowym przed jego zaakceptowaniem. Wyższe poziomy wymagają więcej potwierdzeń, zmniejszając liczbę fałszywych wykryć. Model nietoperzy używa stałego 50% nakładania, więc nie jest wymagana regulacja nakładania.",
+        "levels": {
+          "off": "Brak filtrowania; natychmiastowa akceptacja każdego wykrycia nietoperza.",
+          "moderate": "Dobra równowaga dla większości konfiguracji. Znacznie redukuje fałszywe trafienia.",
+          "strict": "Maksymalne filtrowanie dla najwyższej dokładności."
+        },
+        "detectionCount": "Wymagane {count} potwierdzeń. {description}",
+        "warningOff": "Bez filtrowania istnieje duże prawdopodobieństwo fałszywych trafień. Włączenie filtrowania znacznie poprawia dokładność."
       },
       "locale": {
         "label": "Język gatunków",
@@ -4637,6 +4654,17 @@
       "reinstalling": "Ponowna instalacja...",
       "reinstallComplete": "Pliki zweryfikowane pomyślnie",
       "geomodelBadge": "Zawiera BirdNET v3.0 geomodel"
+    },
+    "bird": {
+      "title": "Wykrywanie ptaków",
+      "description": "Skonfiguruj próg pewności, język gatunków i filtrowanie fałszywych trafień dla klasyfikatorów ptaków."
+    },
+    "bat": {
+      "title": "Wykrywanie nietoperzy",
+      "description": "Skonfiguruj próg, harmonogram i filtrowanie fałszywych trafień dla klasyfikatorów nietoperzy."
+    },
+    "dynamicThreshold": {
+      "birdOnlyNote": "Dynamiczny próg dotyczy tylko klasyfikatorów ptaków."
     }
   },
   "restart": {

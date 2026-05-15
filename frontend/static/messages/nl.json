@@ -1789,7 +1789,17 @@
           },
           "hardwareNote": "De niveaus \"Strikt\" en \"Maximum\" vereisen hogere overlap-instellingen en meer CPU-bronnen. RPi 4 of betere hardware is vereist voor deze niveaus.",
           "overlapAdjusted": "Overlap-instelling automatisch aangepast naar {overlap}s om aan de filtervereisten te voldoen",
-          "overlapReduced": "Overlap-instelling verlaagd naar {overlap}s om overeen te komen met het filterniveau"
+          "overlapReduced": "Overlap-instelling verlaagd naar {overlap}s om overeen te komen met het filterniveau",
+          "levelNames": {
+            "off": "Uit",
+            "lenient": "Laag",
+            "moderate": "Gemiddeld",
+            "balanced": "Gebalanceerd",
+            "strict": "Streng",
+            "maximum": "Maximum",
+            "unknown": "Onbekend"
+          },
+          "warningOff": "Zonder filtering wordt elke detectie boven de betrouwbaarheidsdrempel onmiddellijk geaccepteerd. Dit levert doorgaans meerdere vals-positieven per dag op. Zelfs lage filtering verbetert de resultaatkwaliteit aanzienlijk."
         },
         "rangeFilter": {
           "title": "Bereik Filter",
@@ -4193,8 +4203,8 @@
       "species": {
         "loadingSpecies": "Soorten laden...",
         "typePlaceholder": "Typ soorten naam...",
-        "suggestionsAvailable": "{count} soortsuggessies beschikbaar. Gebruik pijltoetsen om te navigeren.",
-        "noSuggestions": "Geen soortsuggessies beschikbaar."
+        "suggestionsAvailable": "{count} soortsuggesties beschikbaar. Gebruik pijltoetsen om te navigeren.",
+        "noSuggestions": "Geen soortsuggesties beschikbaar."
       },
       "select": {
         "searchPlaceholder": "Zoeken...",
@@ -4543,7 +4553,14 @@
       },
       "batFalsePositiveFilter": {
         "label": "Vleermuis vals-positief filter",
-        "helpText": "Vereist meerdere bevestigingen van een vleermuisdetectie binnen een schuifvenster voordat deze wordt geaccepteerd. Hogere niveaus vereisen meer bevestigingen, waardoor valse positieven worden verminderd. Het vleermuismodel gebruikt een vaste overlap van 50%, dus er is geen overlapaanpassing nodig."
+        "helpText": "Vereist meerdere bevestigingen van een vleermuisdetectie binnen een schuifvenster voordat deze wordt geaccepteerd. Hogere niveaus vereisen meer bevestigingen, waardoor valse positieven worden verminderd. Het vleermuismodel gebruikt een vaste overlap van 50%, dus er is geen overlapaanpassing nodig.",
+        "levels": {
+          "off": "Geen filtering; accepteert elke vleermuisdetectie onmiddellijk.",
+          "moderate": "Goede balans voor de meeste opstellingen. Vermindert vals-positieven aanzienlijk.",
+          "strict": "Maximale filtering voor de hoogste nauwkeurigheid."
+        },
+        "detectionCount": "{count} bevestigingen vereist. {description}",
+        "warningOff": "Zonder filtering is er een grote kans op vals-positieven. Het inschakelen van filtering verbetert de nauwkeurigheid aanzienlijk."
       },
       "locale": {
         "label": "Soortentaal",
@@ -4637,6 +4654,17 @@
       "reinstalling": "Opnieuw installeren...",
       "reinstallComplete": "Bestanden succesvol geverifieerd",
       "geomodelBadge": "Bevat BirdNET v3.0 geomodel"
+    },
+    "bird": {
+      "title": "Vogeldetectie",
+      "description": "Configureer betrouwbaarheidsdrempel, soortentaal en vals-positief filtering voor vogelclassificatoren."
+    },
+    "bat": {
+      "title": "Vleermuisdetectie",
+      "description": "Configureer drempel, planning en vals-positief filtering voor vleermuisclassificatoren."
+    },
+    "dynamicThreshold": {
+      "birdOnlyNote": "Dynamische drempel geldt alleen voor vogelclassificatoren."
     }
   },
   "restart": {
