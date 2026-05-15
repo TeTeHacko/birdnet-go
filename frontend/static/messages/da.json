@@ -474,7 +474,7 @@
       "verifiedStatus": "Bekræftelsesstatus",
       "lockedStatus": "Låsestatus",
       "timeOfDay": "Tidspunkt på dagen",
-      "source": "Audio Source"
+      "source": "Lydkilde"
     },
     "advancedFilters": "Avancerede filtre",
     "showAdvancedFilters": "Vis avancerede filtre",
@@ -497,7 +497,7 @@
       "sunset": "Solnedgang +/- 30 min"
     },
     "sourceOptions": {
-      "any": "All Sources"
+      "any": "Alle kilder"
     },
     "sortOptions": {
       "dateDesc": "Dato (nyeste først)",
@@ -510,7 +510,7 @@
       "timeOfDay": "Tidspunkt på dagen",
       "species": "Art",
       "confidence": "Sikkerhed",
-      "source": "Source",
+      "source": "Kilde",
       "status": "Status",
       "actions": "Handlinger"
     },

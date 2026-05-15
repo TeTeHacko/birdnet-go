@@ -474,7 +474,7 @@
       "verifiedStatus": "Verifikācijas statuss",
       "lockedStatus": "Bloķēšanas statuss",
       "timeOfDay": "Diennakts laiks",
-      "source": "Audio Source"
+      "source": "Audio avots"
     },
     "advancedFilters": "Papildu filtri",
     "showAdvancedFilters": "Rādīt papildu filtrus",
@@ -497,7 +497,7 @@
       "sunset": "Saulriets +/- 30 min"
     },
     "sourceOptions": {
-      "any": "All Sources"
+      "any": "Visi avoti"
     },
     "sortOptions": {
       "dateDesc": "Datums (jaunākie vispirms)",
@@ -510,7 +510,7 @@
       "timeOfDay": "Diennakts laiks",
       "species": "Suga",
       "confidence": "Ticamība",
-      "source": "Source",
+      "source": "Avots",
       "status": "Statuss",
       "actions": "Darbības"
     },

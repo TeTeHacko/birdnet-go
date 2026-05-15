@@ -474,7 +474,7 @@
       "verifiedStatus": "Status Weryfikacji",
       "lockedStatus": "Status Blokady",
       "timeOfDay": "Pora Dnia",
-      "source": "Audio Source"
+      "source": "Źródło dźwięku"
     },
     "advancedFilters": "Zaawansowane Filtry",
     "showAdvancedFilters": "Pokaż Zaawansowane Filtry",
@@ -497,7 +497,7 @@
       "sunset": "Zachód Słońca +/- 30min"
     },
     "sourceOptions": {
-      "any": "All Sources"
+      "any": "Wszystkie źródła"
     },
     "sortOptions": {
       "dateDesc": "Data (Najnowsze Najpierw)",
@@ -510,7 +510,7 @@
       "timeOfDay": "Pora Dnia",
       "species": "Gatunek",
       "confidence": "Pewność",
-      "source": "Source",
+      "source": "Źródło",
       "status": "Status",
       "actions": "Akcje"
     },

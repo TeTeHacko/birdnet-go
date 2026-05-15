@@ -474,7 +474,7 @@
       "verifiedStatus": "Verifizierungsstatus",
       "lockedStatus": "Sperrstatus",
       "timeOfDay": "Tageszeit",
-      "source": "Audio Source"
+      "source": "Audioquelle"
     },
     "advancedFilters": "Erweiterte Filter",
     "showAdvancedFilters": "Erweiterte Filter anzeigen",
@@ -497,7 +497,7 @@
       "sunset": "Sonnenuntergang +/- 30min"
     },
     "sourceOptions": {
-      "any": "All Sources"
+      "any": "Alle Quellen"
     },
     "sortOptions": {
       "dateDesc": "Datum (Neueste zuerst)",
@@ -510,7 +510,7 @@
       "timeOfDay": "Tageszeit",
       "species": "Art",
       "confidence": "Konfidenz",
-      "source": "Source",
+      "source": "Quelle",
       "status": "Status",
       "actions": "Aktionen"
     },

@@ -474,7 +474,7 @@
       "verifiedStatus": "Stav overenia",
       "lockedStatus": "Stav uzamknutia",
       "timeOfDay": "Denná doba",
-      "source": "Audio Source"
+      "source": "Zvukový zdroj"
     },
     "advancedFilters": "Rozšírené filtre",
     "showAdvancedFilters": "Zobraziť rozšírené filtre",
@@ -497,7 +497,7 @@
       "sunset": "Západ slnka +/- 30min"
     },
     "sourceOptions": {
-      "any": "All Sources"
+      "any": "Všetky zdroje"
     },
     "sortOptions": {
       "dateDesc": "Dátum (od najnovšieho)",
@@ -510,7 +510,7 @@
       "timeOfDay": "Denná doba",
       "species": "Druh",
       "confidence": "Istota",
-      "source": "Source",
+      "source": "Zdroj",
       "status": "Stav",
       "actions": "Akcie"
     },
