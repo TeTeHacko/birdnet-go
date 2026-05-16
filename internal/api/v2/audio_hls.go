@@ -241,6 +241,40 @@ func (c *Controller) publicLiveAudioAuth(next echo.HandlerFunc) echo.HandlerFunc
 	}
 }
 
+// privateModeAuth is a dynamic middleware applied at the v2 API group level
+// that requires authentication for every endpoint when Security.PrivateMode
+// is enabled. A small set of bootstrap and auth paths stay public so the
+// frontend can complete the login flow even when private mode is on. The
+// check runs per-request so the setting hot-reloads without a server restart.
+func (c *Controller) privateModeAuth(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(ctx echo.Context) error {
+		c.settingsMutex.RLock()
+		privateMode := c.Settings.Security.PrivateMode
+		c.settingsMutex.RUnlock()
+
+		if !privateMode || c.authMiddleware == nil {
+			return next(ctx)
+		}
+		if isPrivateModeExempt(ctx.Request().URL.Path) {
+			return next(ctx)
+		}
+		return c.authMiddleware(next)(ctx)
+	}
+}
+
+// isPrivateModeExempt returns true for v2 API paths that must remain
+// reachable without authentication even when PrivateMode is on, so the
+// frontend bootstrap and the login/OAuth flows continue to work.
+func isPrivateModeExempt(path string) bool {
+	switch path {
+	case "/api/v2/app/config",
+		"/api/v2/auth/login",
+		"/api/v2/auth/callback":
+		return true
+	}
+	return false
+}
+
 // generateStreamToken creates a crypto-random 32-character hex token for stream URL access.
 func generateStreamToken() (string, error) {
 	b := make([]byte, 16)
