@@ -759,12 +759,14 @@ func (s *Server) IsDevMode() bool {
 
 // registerSPARoutes registers all frontend SPA routes.
 // These routes serve the HTML shell that loads the Svelte application.
-// By default, the dashboard, detections, analytics, search, about, and
-// unmatched /ui/* paths are public so guests can use the read-only UI.
-// When Security.PrivateMode is true, those routes also require
-// authentication; the check is per-request so the setting hot-reloads
-// without a server restart. Settings and system routes are always
-// protected.
+// All SPA routes are public so the SPA can bootstrap and render the login
+// form when Security.PrivateMode is enabled. The data layer (v2 API
+// endpoints) is the actual security boundary: it is gated by
+// privateModeAuth in api/v2/api.go and returns 401 to unauthenticated
+// requests in private mode, prompting the SPA to render the login form.
+// Settings and system routes remain auth-gated at this layer too so deep
+// links to those pages still server-side redirect to /login for unauth
+// browser navigations.
 func (s *Server) registerSPARoutes() {
 	// Redirect root path to dashboard
 	s.echo.GET("/", func(c echo.Context) error {
@@ -773,11 +775,11 @@ func (s *Server) registerSPARoutes() {
 
 	authMiddleware := s.getAuthMiddleware()
 
-	// Login page is always public (required for authentication flow)
-	s.echo.GET("/login", s.spaHandler.ServeApp)
-
-	// Guest-readable routes (gated dynamically by PrivateMode)
-	guestRoutes := []string{
+	// Public SPA shell routes — the SPA itself decides what to render
+	// based on Security.PrivateMode and the authenticated/guest state
+	// returned by /api/v2/app/config.
+	publicRoutes := []string{
+		"/login",
 		"/ui",
 		"/ui/",
 		"/ui/dashboard",
@@ -790,11 +792,13 @@ func (s *Server) registerSPARoutes() {
 		"/ui/search",
 		"/ui/about",
 	}
-	for _, route := range guestRoutes {
-		s.echo.GET(route, s.spaHandler.ServeApp, s.privateModeAuth)
+	for _, route := range publicRoutes {
+		s.echo.GET(route, s.spaHandler.ServeApp)
 	}
 
-	// Settings and system routes are always protected
+	// Settings and system routes are always protected at the SPA layer
+	// so direct deep links from a browser hit the auth middleware (which
+	// redirects to /login) instead of loading the SPA shell.
 	protectedRoutes := []string{
 		"/ui/system",
 		"/ui/settings",
@@ -823,28 +827,13 @@ func (s *Server) registerSPARoutes() {
 		s.echo.GET("/ui/settings/*", s.spaHandler.ServeApp)
 	}
 
-	// Catch-all for any other unmatched /ui/* paths. Also subject to
-	// PrivateMode so any future SPA page is protected automatically when
-	// the operator opts in.
-	s.echo.GET("/ui/*", s.spaHandler.ServeApp, s.privateModeAuth)
+	// Public catch-all for any other unmatched /ui/* paths so the SPA can
+	// handle client-side routing for unknown routes consistently.
+	s.echo.GET("/ui/*", s.spaHandler.ServeApp)
 
 	s.slogger.Debug("SPA routes registered",
 		logger.Bool("auth_enabled", authMiddleware != nil),
 	)
-}
-
-// privateModeAuth is a dynamic middleware that checks Security.PrivateMode
-// on each request. When private mode is enabled and an auth middleware is
-// configured, the standard auth middleware is applied. Otherwise the
-// request proceeds without authentication. This allows the setting to take
-// effect immediately without a server restart.
-func (s *Server) privateModeAuth(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		if s.authMiddleware != nil && s.currentSettings().Security.PrivateMode {
-			return s.authMiddleware(next)(c)
-		}
-		return next(c)
-	}
 }
 
 // getAuthMiddleware returns the authentication middleware owned by the server.

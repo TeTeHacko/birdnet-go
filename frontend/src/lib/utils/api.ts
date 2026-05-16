@@ -110,9 +110,11 @@ function redirectToLogin(): Promise<never> {
     }
 
     logger.info('Session expired (401) — redirecting to login');
-    // Redirect directly to the login page so the navigation works even when
-    // /ui/* routes are themselves gated (PrivateMode).
-    window.location.href = buildAppUrl('/login');
+    // Reload the SPA from a public route. The SPA inspects the latest
+    // /api/v2/app/config on bootstrap and either renders the dashboard
+    // (when accessAllowed) or the full-screen login form (when PrivateMode
+    // is enabled and the user is unauthenticated).
+    window.location.href = buildAppUrl('/ui/');
   }
   // Return a never-resolving promise so callers don't continue
   return new Promise<never>(() => {});

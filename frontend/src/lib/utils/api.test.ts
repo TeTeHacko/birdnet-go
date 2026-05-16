@@ -238,7 +238,7 @@ describe('API utilities', () => {
       ]);
 
       expect(result).toBe('pending');
-      expect(window.location.href).toBe('/login');
+      expect(window.location.href).toBe('/ui/');
     });
 
     it('does not throw ApiError on 401', async () => {
@@ -283,7 +283,7 @@ describe('API utilities', () => {
 
       // window.location.href should have been set exactly once
       // (the guard prevents subsequent assignments)
-      expect(window.location.href).toBe('/login');
+      expect(window.location.href).toBe('/ui/');
     });
 
     it('throws ApiError instead of redirecting in guest mode', async () => {
@@ -301,7 +301,7 @@ describe('API utilities', () => {
         status: 401,
       });
       // Should NOT redirect
-      expect(window.location.href).not.toBe('/login');
+      expect(window.location.href).not.toBe('/ui/');
     });
 
     it('redirects to login in private mode even when in guest mode', async () => {
@@ -321,7 +321,7 @@ describe('API utilities', () => {
       ]);
 
       expect(result).toBe('pending');
-      expect(window.location.href).toBe('/login');
+      expect(window.location.href).toBe('/ui/');
     });
   });
 
