@@ -1,0 +1,47 @@
+# =============================================================================
+# BirdNET-Go — Docker Swarm Compose
+# Deployed via Portainer on docker.pxc.rfa.cz
+# Port: 10102 (HTTP → HAProxy TLS termination → birds.rfa.cz)
+#
+# This file is the SINGLE SOURCE OF TRUTH for production infrastructure.
+# CI/CD pushes this compose to Portainer on every deploy.
+#
+# Secrets are stored in Portainer stack environment variables:
+#   IMAGE_TAG, BIRDNET_WEBHOOK_PASS
+#
+# No audio devices — uses RTSP streams from remote microphones.
+# Host bind mounts under /mnt/docker/birdnet-go/ (CephFS) for persistence.
+# =============================================================================
+
+services:
+  birdnet-go:
+    image: git.rfa.cz/tth/birdnet-go:${IMAGE_TAG:-latest}
+    ports:
+      - "10102:8080"
+    volumes:
+      - /mnt/docker/birdnet-go/config:/config
+      - /mnt/docker/birdnet-go/data:/data
+    environment:
+      TZ: Europe/Prague
+      BIRDNET_UID: "1000"
+      BIRDNET_GID: "1000"
+      BIRDNET_STARTUP_FAIL_DELAY: "15"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+    networks:
+      - birdnet
+
+networks:
+  birdnet:
+    driver: overlay
