@@ -11,6 +11,7 @@
 
 import { loggers } from '$lib/utils/logger';
 import {
+  appState,
   getCsrfToken as getAppStateCsrfToken,
   isGuestMode,
   isSentryEnabled,
@@ -109,7 +110,9 @@ function redirectToLogin(): Promise<never> {
     }
 
     logger.info('Session expired (401) — redirecting to login');
-    window.location.href = buildAppUrl('/ui/');
+    // Redirect directly to the login page so the navigation works even when
+    // /ui/* routes are themselves gated (PrivateMode).
+    window.location.href = buildAppUrl('/login');
   }
   // Return a never-resolving promise so callers don't continue
   return new Promise<never>(() => {});
@@ -447,9 +450,11 @@ export async function fetchWithCSRF<T = unknown>(
     markOnline();
 
     // Guests get an ApiError so callers handle auth-gated endpoints
-    // gracefully; session-expired users redirect to login.
+    // gracefully; session-expired users redirect to login. PrivateMode
+    // disables the guest carve-out so guests are forced to log in instead
+    // of silently rendering empty widgets.
     if (response.status === 401) {
-      if (isGuestMode()) {
+      if (isGuestMode() && !appState.security.privateMode) {
         throw new ApiError(getSecureErrorMessage(401), 401, response);
       }
       return redirectToLogin();
