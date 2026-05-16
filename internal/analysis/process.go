@@ -6,6 +6,7 @@ package analysis
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,6 +42,8 @@ const (
 // When the window expires and enough overruns have accumulated, a single Sentry event is sent.
 type bufferOverrunTracker struct {
 	mu           sync.Mutex
+	source       string
+	modelID      string
 	overrunCount int64
 	windowStart  time.Time
 	maxElapsed   time.Duration
@@ -66,7 +69,7 @@ func getOverrunTracker(source, modelID string) *bufferOverrunTracker {
 	if t, ok := overrunTrackers[key]; ok {
 		return t
 	}
-	t := &bufferOverrunTracker{}
+	t := &bufferOverrunTracker{source: source, modelID: modelID}
 	overrunTrackers[key] = t
 	return t
 }
@@ -95,6 +98,19 @@ func ResetOverrunTrackers() {
 	overrunTrackersMu.Unlock()
 }
 
+// RemoveOverrunTrackers removes all tracker entries for the given source ID.
+// Called when a source is removed to prevent unbounded map growth.
+func RemoveOverrunTrackers(sourceID string) {
+	prefix := sourceID + ":"
+	overrunTrackersMu.Lock()
+	defer overrunTrackersMu.Unlock()
+	for key := range overrunTrackers {
+		if strings.HasPrefix(key, prefix) {
+			delete(overrunTrackers, key)
+		}
+	}
+}
+
 // lastQueueOverflowReport tracks the last time a queue overflow was reported to Sentry.
 var lastQueueOverflowReport atomic.Int64
 
@@ -113,9 +129,11 @@ func recordBufferOverrun(tracker *bufferOverrunTracker, elapsed, bufferLen time.
 
 	// Check if window has expired
 	if now.Sub(tracker.windowStart) >= bufferOverrunReportCooldown {
-		// Window expired — report if threshold met
+		// Window expired; report if threshold met
 		if tracker.overrunCount >= bufferOverrunMinCount {
 			reportBufferOverruns(
+				tracker.source,
+				tracker.modelID,
 				tracker.overrunCount,
 				tracker.maxElapsed,
 				tracker.bufferLength,
@@ -137,12 +155,14 @@ func recordBufferOverrun(tracker *bufferOverrunTracker, elapsed, bufferLen time.
 }
 
 // reportBufferOverruns sends a rate-limited Sentry event with overrun statistics.
-func reportBufferOverruns(count int64, maxElapsed, bufferLen, window time.Duration) {
+func reportBufferOverruns(source, modelID string, count int64, maxElapsed, bufferLen, window time.Duration) {
 	if !telemetry.IsTelemetryEnabled() {
 		return
 	}
 
 	extras := map[string]any{
+		"source":                   source,
+		"model_id":                 modelID,
 		"overrun_count":            count,
 		"max_elapsed_ms":           maxElapsed.Milliseconds(),
 		"buffer_length_ms":         bufferLen.Milliseconds(),
@@ -193,14 +213,9 @@ func ProcessData(ctx context.Context, bn *classifier.Orchestrator, bufMgr *buffe
 			Build()
 	}
 
-	// Run inference on the specified model via the Orchestrator.
-	inferenceStart := time.Now()
-	results, err := bn.PredictModel(ctx, modelID, sampleData)
-	inferenceDuration := time.Since(inferenceStart)
-
-	// Return float32 buffer to pool after prediction. The Manager's lazy
-	// per-size pool map routes the slice back to the pool sized for its
-	// actual length, so non-standard sizes are handled too.
+	// Defer pool return so the buffer is reclaimed even if PredictModel panics.
+	// The Manager's lazy per-size pool map routes the slice back to the pool
+	// sized for its actual length, so non-standard sizes are handled too.
 	//
 	// INVARIANT: bn.PredictModel must copy the samples into the model's
 	// input tensor before returning; it must not retain a reference to
@@ -211,9 +226,14 @@ func ProcessData(ctx context.Context, bn *classifier.Orchestrator, bufMgr *buffe
 	// internal/classifier for the implementing side.
 	if conf.BitDepth == 16 && len(sampleData) > 0 {
 		if pool := bufMgr.Float32PoolFor(len(sampleData[0])); pool != nil {
-			pool.Put(sampleData[0])
+			defer pool.Put(sampleData[0])
 		}
 	}
+
+	// Run inference on the specified model via the Orchestrator.
+	inferenceStart := time.Now()
+	results, err := bn.PredictModel(ctx, modelID, sampleData)
+	inferenceDuration := time.Since(inferenceStart)
 
 	// Record inference duration metric (always, even on error)
 	pm := processMetrics.Load()
