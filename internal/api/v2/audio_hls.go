@@ -272,17 +272,19 @@ func (c *Controller) privateModeAuth(next echo.HandlerFunc) echo.HandlerFunc {
 		}
 		// Use ctx.Path() (the registered route pattern) rather than the raw
 		// request URL so the match is robust to trailing slashes, ingress
-		// prefixes, and other URL normalisation differences.
-		if isPrivateModeExempt(ctx.Path()) {
+		// prefixes, and other URL normalisation differences. The method is
+		// matched explicitly so that a future handler bound to the same
+		// path with a different verb does not inherit the public exemption.
+		if isPrivateModeExempt(ctx.Request().Method, ctx.Path()) {
 			return next(ctx)
 		}
 		return c.authMiddleware(next)(ctx)
 	}
 }
 
-// isPrivateModeExempt returns true for v2 API route patterns that must
-// remain reachable without authentication even when PrivateMode is on.
-// Two categories are exempt:
+// isPrivateModeExempt returns true for v2 API (method, route pattern)
+// pairs that must remain reachable without authentication even when
+// PrivateMode is on. Two categories are exempt:
 //
 //  1. Bootstrap and auth flow paths so the frontend can fetch /app/config
 //     and complete a login (including OAuth callback) from an unauthenticated
@@ -292,16 +294,26 @@ func (c *Controller) privateModeAuth(next echo.HandlerFunc) echo.HandlerFunc {
 //     PublicAccess.LiveAudio carve-out: when LiveAudio is enabled the route
 //     stays public, when it is disabled the per-route middleware applies
 //     authMiddleware as before.
-func isPrivateModeExempt(path string) bool {
-	switch path {
-	case "/api/v2/app/config",
-		"/api/v2/auth/login",
-		"/api/v2/auth/callback",
-		"/api/v2/streams/hls/:sourceID/start",
-		"/api/v2/streams/hls/heartbeat",
-		"/api/v2/streams/hls/status",
-		"/api/v2/streams/hls/t/:streamToken/playlist.m3u8",
-		"/api/v2/streams/hls/t/:streamToken/*":
+//
+// The allow-list is keyed on method + path so any future handler added
+// at one of these paths under a different verb is fail-closed by default.
+func isPrivateModeExempt(method, path string) bool {
+	switch {
+	case method == http.MethodGet && path == "/api/v2/app/config":
+		return true
+	case method == http.MethodPost && path == "/api/v2/auth/login":
+		return true
+	case method == http.MethodGet && path == "/api/v2/auth/callback":
+		return true
+	case method == http.MethodPost && path == "/api/v2/streams/hls/:sourceID/start":
+		return true
+	case method == http.MethodPost && path == "/api/v2/streams/hls/heartbeat":
+		return true
+	case method == http.MethodGet && path == "/api/v2/streams/hls/status":
+		return true
+	case method == http.MethodGet && path == "/api/v2/streams/hls/t/:streamToken/playlist.m3u8":
+		return true
+	case method == http.MethodGet && path == "/api/v2/streams/hls/t/:streamToken/*":
 		return true
 	}
 	return false
