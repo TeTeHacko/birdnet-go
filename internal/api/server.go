@@ -762,7 +762,9 @@ func (s *Server) IsDevMode() bool {
 // By default, the dashboard, detections, analytics, search, about, and
 // unmatched /ui/* paths are public so guests can use the read-only UI.
 // When Security.PrivateMode is true, those routes also require
-// authentication. Settings and system routes are always protected.
+// authentication; the check is per-request so the setting hot-reloads
+// without a server restart. Settings and system routes are always
+// protected.
 func (s *Server) registerSPARoutes() {
 	// Redirect root path to dashboard
 	s.echo.GET("/", func(c echo.Context) error {
@@ -770,24 +772,11 @@ func (s *Server) registerSPARoutes() {
 	})
 
 	authMiddleware := s.getAuthMiddleware()
-	privateMode := s.settings.Security.PrivateMode
-
-	// When private mode is enabled, even the routes that are normally
-	// guest-readable require authentication.
-	guestRouteRequiresAuth := privateMode && authMiddleware != nil
-
-	registerGuestRoute := func(path string) {
-		if guestRouteRequiresAuth {
-			s.echo.GET(path, s.spaHandler.ServeApp, authMiddleware)
-		} else {
-			s.echo.GET(path, s.spaHandler.ServeApp)
-		}
-	}
 
 	// Login page is always public (required for authentication flow)
 	s.echo.GET("/login", s.spaHandler.ServeApp)
 
-	// Guest-readable routes (subject to PrivateMode)
+	// Guest-readable routes (gated dynamically by PrivateMode)
 	guestRoutes := []string{
 		"/ui",
 		"/ui/",
@@ -802,7 +791,7 @@ func (s *Server) registerSPARoutes() {
 		"/ui/about",
 	}
 	for _, route := range guestRoutes {
-		registerGuestRoute(route)
+		s.echo.GET(route, s.spaHandler.ServeApp, s.privateModeAuth)
 	}
 
 	// Settings and system routes are always protected
@@ -834,15 +823,28 @@ func (s *Server) registerSPARoutes() {
 		s.echo.GET("/ui/settings/*", s.spaHandler.ServeApp)
 	}
 
-	// Catch-all for any other unmatched /ui/* paths. Follows PrivateMode so
-	// new SPA pages added in the future are protected automatically when the
-	// operator opts in to private mode.
-	registerGuestRoute("/ui/*")
+	// Catch-all for any other unmatched /ui/* paths. Also subject to
+	// PrivateMode so any future SPA page is protected automatically when
+	// the operator opts in.
+	s.echo.GET("/ui/*", s.spaHandler.ServeApp, s.privateModeAuth)
 
 	s.slogger.Debug("SPA routes registered",
 		logger.Bool("auth_enabled", authMiddleware != nil),
-		logger.Bool("private_mode", privateMode),
 	)
+}
+
+// privateModeAuth is a dynamic middleware that checks Security.PrivateMode
+// on each request. When private mode is enabled and an auth middleware is
+// configured, the standard auth middleware is applied. Otherwise the
+// request proceeds without authentication. This allows the setting to take
+// effect immediately without a server restart.
+func (s *Server) privateModeAuth(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		if s.authMiddleware != nil && s.currentSettings().Security.PrivateMode {
+			return s.authMiddleware(next)(c)
+		}
+		return next(c)
+	}
 }
 
 // getAuthMiddleware returns the authentication middleware owned by the server.
