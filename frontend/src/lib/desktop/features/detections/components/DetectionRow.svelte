@@ -30,6 +30,8 @@
   import StatusBadges from '$lib/desktop/components/data/StatusBadges.svelte';
   import WeatherMetrics from '$lib/desktop/components/data/WeatherMetrics.svelte';
   import SourceBadge from '$lib/desktop/features/dashboard/components/SourceBadge.svelte';
+  import Checkbox from '$lib/desktop/components/forms/Checkbox.svelte';
+  import Button from '$lib/desktop/components/ui/Button.svelte';
   import { Volume2 } from '@lucide/svelte';
   import SpectrogramPlayer from '$lib/desktop/components/media/SpectrogramPlayer.svelte';
   import ConfirmModal from '$lib/desktop/components/modals/ConfirmModal.svelte';
@@ -57,6 +59,9 @@
       speciesName: string;
       detectionId: number;
     }) => void;
+    selectionActive?: boolean;
+    selected?: boolean;
+    onToggleSelect?: (_id: string, _shiftKey: boolean) => void;
   }
 
   let {
@@ -65,6 +70,9 @@
     onDetailsClick,
     onRefresh,
     onPlayMobileAudio,
+    selectionActive = false,
+    selected = false,
+    onToggleSelect,
   }: Props = $props();
 
   // Modal states
@@ -255,6 +263,18 @@
 </script>
 
 <!-- DetectionRow now returns table cells for proper table structure -->
+{#if selectionActive}
+  <td class="w-10 text-center" onclick={e => e.stopPropagation()}>
+    <Checkbox
+      checked={selected}
+      size="sm"
+      variant="primary"
+      onchange={(_checked, event) =>
+        onToggleSelect?.(String(detection.id), (event as MouseEvent).shiftKey ?? false)}
+    />
+  </td>
+{/if}
+
 <!-- Date & Time -->
 <td class="text-sm">
   <span>{detection.date} {detection.time}</span>
@@ -363,10 +383,15 @@
       </div>
       <!-- Mobile-only quick play button -->
       <div class="mt-2 md:hidden">
-        <button class="btn btn-primary btn-xs" aria-label="Play audio" onclick={playMobileAudio}>
+        <Button
+          variant="primary"
+          size="xs"
+          aria-label={t('detections.row.playAudio')}
+          onclick={playMobileAudio}
+        >
           <Volume2 class="h-4 w-4" />
-          Play
-        </button>
+          {t('detections.row.play')}
+        </Button>
       </div>
     </div>
   </div>

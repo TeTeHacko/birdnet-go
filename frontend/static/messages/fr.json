@@ -806,6 +806,25 @@
     "pagination": {
       "showing": "Affichage de {from} à {to} sur {total} résultats"
     },
+    "selection": {
+      "select": "Sélectionner",
+      "nSelected": "{count} sélectionnées",
+      "selectAllMatching": "Sélectionner les {count} détections correspondantes",
+      "allSelected": "Les {count} sélectionnées",
+      "clear": "Effacer la sélection",
+      "toolbarLabel": "Actions groupées",
+      "confirmBulkDelete": "Supprimer {count} détections ? Cette action est irréversible.",
+      "confirmBulkMarkCorrect": "Marquer {count} détections comme correctes ?",
+      "confirmBulkMarkFalsePositive": "Marquer {count} détections comme faux positif ?",
+      "confirmBulkLock": "Verrouiller {count} détections ?",
+      "confirmBulkUnlock": "Déverrouiller {count} détections ?",
+      "bulkSuccess": "{count} détections mises à jour",
+      "bulkDeleteSuccess": "{count} détections supprimées",
+      "bulkPartial": "{processed} mises à jour, {skipped} ignorées (verrouillées)",
+      "tooManyDetections": "Trop de détections ({count}). Affinez vos filtres pour en sélectionner moins de 500.",
+      "bulkError": "L'opération groupée a échoué. Veuillez réessayer.",
+      "switchToTable": "Passer en vue tableau pour sélectionner des détections"
+    },
     "weather": {
       "title": "Informations météo",
       "noData": "Aucune donnée météo",
@@ -874,7 +893,9 @@
       }
     },
     "row": {
-      "viewDetails": "Voir les détails pour {species}"
+      "viewDetails": "Voir les détails pour {species}",
+      "play": "Lire",
+      "playAudio": "Lire l'audio"
     },
     "media": {
       "title": "Enregistrement et spectrogramme",
