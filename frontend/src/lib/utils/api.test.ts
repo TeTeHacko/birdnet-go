@@ -304,6 +304,25 @@ describe('API utilities', () => {
       expect(window.location.href).not.toBe('/ui/');
     });
 
+    it('throws ApiError instead of redirecting when the login endpoint returns 401', async () => {
+      // The login endpoint is the only place a user can recover from 401;
+      // redirecting away would prevent LoginModal from showing the error.
+      mockPrivateMode = true;
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        headers: new Headers(),
+      });
+
+      await expect(fetchWithCSRF('/api/v2/auth/login')).rejects.toMatchObject({
+        message: 'errors.api.unauthorized',
+        status: 401,
+      });
+      expect(window.location.href).not.toBe('/ui/');
+    });
+
     it('redirects to login in private mode even when in guest mode', async () => {
       mockGuestMode = true;
       mockPrivateMode = true;

@@ -359,7 +359,14 @@
     )
   );
 
-  let exceptionsHasChanges = $derived(subnetBypassHasChanges || publicAccessHasChanges);
+  let privateModeHasChanges = $derived(
+    (store.originalData.security?.privateMode ?? false) !==
+      (store.formData.security?.privateMode ?? false)
+  );
+
+  let exceptionsHasChanges = $derived(
+    subnetBypassHasChanges || publicAccessHasChanges || privateModeHasChanges
+  );
 
   // Canonical base URL for redirect URIs (uses configured host/baseUrl)
   // This is what gets persisted to config.yaml for OAuth callbacks

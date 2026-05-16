@@ -454,8 +454,14 @@ export async function fetchWithCSRF<T = unknown>(
     // Guests get an ApiError so callers handle auth-gated endpoints
     // gracefully; session-expired users redirect to login. PrivateMode
     // disables the guest carve-out so guests are forced to log in instead
-    // of silently rendering empty widgets.
+    // of silently rendering empty widgets. The login endpoint itself is
+    // always exempted so LoginModal can display "Invalid credentials"
+    // rather than triggering a full-page redirect.
     if (response.status === 401) {
+      const isLoginRequest = url === '/api/v2/auth/login' || url.startsWith('/api/v2/auth/login?');
+      if (isLoginRequest) {
+        throw new ApiError(getSecureErrorMessage(401), 401, response);
+      }
       if (isGuestMode() && !appState.security.privateMode) {
         throw new ApiError(getSecureErrorMessage(401), 401, response);
       }

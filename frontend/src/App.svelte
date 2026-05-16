@@ -71,11 +71,17 @@
   // or controls until they log in. The data layer is enforced server-side.
   let requireLogin = $derived(privateMode && securityEnabled && !accessAllowed);
 
-  // After login, send the user back to the page they originally requested
-  // (current pathname including /ui/* route).
-  let postLoginRedirect = $derived(
-    typeof window !== 'undefined' ? window.location.pathname + window.location.search : '/ui/'
-  );
+  // After login, send the user back to the page they originally requested.
+  // Reading navigation.currentPath makes this $derived re-evaluate on every
+  // client-side route change so the redirect target always reflects the
+  // current view (which is what the user expects when they log in mid-session).
+  let postLoginRedirect = $derived.by(() => {
+    const path = navigation.currentPath || '/ui/';
+    if (typeof window !== 'undefined') {
+      return path + window.location.search;
+    }
+    return path;
+  });
 
   // App initialization state
   let appInitialized = $derived(appState.initialized);
