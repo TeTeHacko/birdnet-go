@@ -759,19 +759,41 @@ func (s *Server) IsDevMode() bool {
 
 // registerSPARoutes registers all frontend SPA routes.
 // These routes serve the HTML shell that loads the Svelte application.
+// By default, the dashboard, detections, analytics, search, about, and
+// unmatched /ui/* paths are public so guests can use the read-only UI.
+// When Security.PrivateMode is true, those routes also require
+// authentication. Settings and system routes are always protected.
 func (s *Server) registerSPARoutes() {
 	// Redirect root path to dashboard
 	s.echo.GET("/", func(c echo.Context) error {
 		return c.Redirect(http.StatusFound, ingressPath(c, s.currentSettings())+"/ui/dashboard")
 	})
 
-	// Public routes (no authentication required)
-	publicRoutes := []string{
-		"/login",
+	authMiddleware := s.getAuthMiddleware()
+	privateMode := s.settings.Security.PrivateMode
+
+	// When private mode is enabled, even the routes that are normally
+	// guest-readable require authentication.
+	guestRouteRequiresAuth := privateMode && authMiddleware != nil
+
+	registerGuestRoute := func(path string) {
+		if guestRouteRequiresAuth {
+			s.echo.GET(path, s.spaHandler.ServeApp, authMiddleware)
+		} else {
+			s.echo.GET(path, s.spaHandler.ServeApp)
+		}
+	}
+
+	// Login page is always public (required for authentication flow)
+	s.echo.GET("/login", s.spaHandler.ServeApp)
+
+	// Guest-readable routes (subject to PrivateMode)
+	guestRoutes := []string{
 		"/ui",
 		"/ui/",
 		"/ui/dashboard",
 		"/ui/detections",
+		"/ui/detections/:id",
 		"/ui/notifications",
 		"/ui/analytics",
 		"/ui/analytics/species",
@@ -779,22 +801,11 @@ func (s *Server) registerSPARoutes() {
 		"/ui/search",
 		"/ui/about",
 	}
-
-	// Public dynamic routes (with path parameters)
-	publicDynamicRoutes := []string{
-		"/ui/detections/:id", // Detection detail page
+	for _, route := range guestRoutes {
+		registerGuestRoute(route)
 	}
 
-	for _, route := range publicRoutes {
-		s.echo.GET(route, s.spaHandler.ServeApp)
-	}
-
-	for _, route := range publicDynamicRoutes {
-		s.echo.GET(route, s.spaHandler.ServeApp)
-	}
-
-	// Protected routes (authentication required)
-	// These will be protected by the API v2 auth middleware
+	// Settings and system routes are always protected
 	protectedRoutes := []string{
 		"/ui/system",
 		"/ui/settings",
@@ -808,10 +819,6 @@ func (s *Server) registerSPARoutes() {
 		"/ui/settings/support",
 		"/ui/settings/userinterface",
 	}
-
-	// Get the auth middleware from API controller if available
-	authMiddleware := s.getAuthMiddleware()
-
 	for _, route := range protectedRoutes {
 		if authMiddleware != nil {
 			s.echo.GET(route, s.spaHandler.ServeApp, authMiddleware)
@@ -821,23 +828,20 @@ func (s *Server) registerSPARoutes() {
 	}
 
 	// Protected catch-all for settings routes
-	// Any /ui/settings/* route not explicitly listed above requires authentication
-	// This ensures new settings pages are protected by default
 	if authMiddleware != nil {
 		s.echo.GET("/ui/settings/*", s.spaHandler.ServeApp, authMiddleware)
 	} else {
 		s.echo.GET("/ui/settings/*", s.spaHandler.ServeApp)
 	}
 
-	// Catch-all route for any unmatched /ui/* paths (public)
-	// This ensures SPA handles client-side routing for unknown routes
-	// Must be registered last to not override specific routes
-	s.echo.GET("/ui/*", s.spaHandler.ServeApp)
+	// Catch-all for any other unmatched /ui/* paths. Follows PrivateMode so
+	// new SPA pages added in the future are protected automatically when the
+	// operator opts in to private mode.
+	registerGuestRoute("/ui/*")
 
 	s.slogger.Debug("SPA routes registered",
-		logger.Int("public_routes", len(publicRoutes)),
-		logger.Int("public_dynamic_routes", len(publicDynamicRoutes)),
-		logger.Int("protected_routes", len(protectedRoutes)),
+		logger.Bool("auth_enabled", authMiddleware != nil),
+		logger.Bool("private_mode", privateMode),
 	)
 }
 

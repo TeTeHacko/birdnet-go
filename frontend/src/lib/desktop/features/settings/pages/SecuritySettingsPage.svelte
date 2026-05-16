@@ -92,6 +92,7 @@
       publicAccess: {
         liveAudio: false,
       },
+      privateMode: false,
     }
   );
 
@@ -591,6 +592,10 @@
     settingsActions.updateSection('security', {
       publicAccess: { ...(settings.publicAccess ?? {}), liveAudio: checked },
     });
+  }
+
+  function updatePrivateMode(checked: boolean) {
+    settingsActions.updateSection('security', { privateMode: checked });
   }
 
   // Terminal toggle — reads from webServer section of the settings store
@@ -1332,6 +1337,14 @@
       currentData={store.formData.security?.publicAccess}
     >
       <div class="space-y-4">
+        <Checkbox
+          checked={settings.privateMode ?? false}
+          label={t('settings.security.privateMode.label')}
+          helpText={t('settings.security.privateMode.help')}
+          disabled={store.isLoading || store.isSaving}
+          onchange={updatePrivateMode}
+        />
+
         <Checkbox
           checked={settings.publicAccess?.liveAudio ?? false}
           label={t('settings.security.publicAccess.liveAudioLabel')}
