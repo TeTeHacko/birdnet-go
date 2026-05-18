@@ -177,6 +177,63 @@ func (_c *MockInterface_Close_Call) RunAndReturn(run func() error) *MockInterfac
 	return _c
 }
 
+// CountDetectionsSince provides a mock function with given fields: ctx, since
+func (_m *MockInterface) CountDetectionsSince(ctx context.Context, since time.Time) (int, error) {
+	ret := _m.Called(ctx, since)
+
+	if len(ret) == 0 {
+		panic("no return value specified for CountDetectionsSince")
+	}
+
+	var r0 int
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, time.Time) (int, error)); ok {
+		return rf(ctx, since)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, time.Time) int); ok {
+		r0 = rf(ctx, since)
+	} else {
+		r0 = ret.Get(0).(int)
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, time.Time) error); ok {
+		r1 = rf(ctx, since)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockInterface_CountDetectionsSince_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'CountDetectionsSince'
+type MockInterface_CountDetectionsSince_Call struct {
+	*mock.Call
+}
+
+// CountDetectionsSince is a helper method to define mock.On call
+//   - ctx context.Context
+//   - since time.Time
+func (_e *MockInterface_Expecter) CountDetectionsSince(ctx interface{}, since interface{}) *MockInterface_CountDetectionsSince_Call {
+	return &MockInterface_CountDetectionsSince_Call{Call: _e.mock.On("CountDetectionsSince", ctx, since)}
+}
+
+func (_c *MockInterface_CountDetectionsSince_Call) Run(run func(ctx context.Context, since time.Time)) *MockInterface_CountDetectionsSince_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(time.Time))
+	})
+	return _c
+}
+
+func (_c *MockInterface_CountDetectionsSince_Call) Return(_a0 int, _a1 error) *MockInterface_CountDetectionsSince_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockInterface_CountDetectionsSince_Call) RunAndReturn(run func(context.Context, time.Time) (int, error)) *MockInterface_CountDetectionsSince_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // CountHourlyDetections provides a mock function with given fields: date, hour, duration
 func (_m *MockInterface) CountHourlyDetections(date string, hour string, duration int) (int64, error) {
 	ret := _m.Called(date, hour, duration)
@@ -1782,9 +1839,9 @@ func (_c *MockInterface_GetDailyEvents_Call) RunAndReturn(run func(string) (data
 	return _c
 }
 
-// GetDatabaseStats provides a mock function with no fields
-func (_m *MockInterface) GetDatabaseStats() (*datastore.DatabaseStats, error) {
-	ret := _m.Called()
+// GetDatabaseStats provides a mock function with given fields: ctx
+func (_m *MockInterface) GetDatabaseStats(ctx context.Context) (*datastore.DatabaseStats, error) {
+	ret := _m.Called(ctx)
 
 	if len(ret) == 0 {
 		panic("no return value specified for GetDatabaseStats")
@@ -1792,19 +1849,19 @@ func (_m *MockInterface) GetDatabaseStats() (*datastore.DatabaseStats, error) {
 
 	var r0 *datastore.DatabaseStats
 	var r1 error
-	if rf, ok := ret.Get(0).(func() (*datastore.DatabaseStats, error)); ok {
-		return rf()
+	if rf, ok := ret.Get(0).(func(context.Context) (*datastore.DatabaseStats, error)); ok {
+		return rf(ctx)
 	}
-	if rf, ok := ret.Get(0).(func() *datastore.DatabaseStats); ok {
-		r0 = rf()
+	if rf, ok := ret.Get(0).(func(context.Context) *datastore.DatabaseStats); ok {
+		r0 = rf(ctx)
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).(*datastore.DatabaseStats)
 		}
 	}
 
-	if rf, ok := ret.Get(1).(func() error); ok {
-		r1 = rf()
+	if rf, ok := ret.Get(1).(func(context.Context) error); ok {
+		r1 = rf(ctx)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -1818,13 +1875,14 @@ type MockInterface_GetDatabaseStats_Call struct {
 }
 
 // GetDatabaseStats is a helper method to define mock.On call
-func (_e *MockInterface_Expecter) GetDatabaseStats() *MockInterface_GetDatabaseStats_Call {
-	return &MockInterface_GetDatabaseStats_Call{Call: _e.mock.On("GetDatabaseStats")}
+//   - ctx context.Context
+func (_e *MockInterface_Expecter) GetDatabaseStats(ctx interface{}) *MockInterface_GetDatabaseStats_Call {
+	return &MockInterface_GetDatabaseStats_Call{Call: _e.mock.On("GetDatabaseStats", ctx)}
 }
 
-func (_c *MockInterface_GetDatabaseStats_Call) Run(run func()) *MockInterface_GetDatabaseStats_Call {
+func (_c *MockInterface_GetDatabaseStats_Call) Run(run func(ctx context.Context)) *MockInterface_GetDatabaseStats_Call {
 	_c.Call.Run(func(args mock.Arguments) {
-		run()
+		run(args[0].(context.Context))
 	})
 	return _c
 }
@@ -1834,7 +1892,7 @@ func (_c *MockInterface_GetDatabaseStats_Call) Return(_a0 *datastore.DatabaseSta
 	return _c
 }
 
-func (_c *MockInterface_GetDatabaseStats_Call) RunAndReturn(run func() (*datastore.DatabaseStats, error)) *MockInterface_GetDatabaseStats_Call {
+func (_c *MockInterface_GetDatabaseStats_Call) RunAndReturn(run func(context.Context) (*datastore.DatabaseStats, error)) *MockInterface_GetDatabaseStats_Call {
 	_c.Call.Return(run)
 	return _c
 }
@@ -3761,6 +3819,62 @@ func (_c *MockInterface_Optimize_Call) Return(_a0 error) *MockInterface_Optimize
 }
 
 func (_c *MockInterface_Optimize_Call) RunAndReturn(run func(context.Context) error) *MockInterface_Optimize_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// PingWithLatency provides a mock function with given fields: ctx
+func (_m *MockInterface) PingWithLatency(ctx context.Context) (time.Duration, error) {
+	ret := _m.Called(ctx)
+
+	if len(ret) == 0 {
+		panic("no return value specified for PingWithLatency")
+	}
+
+	var r0 time.Duration
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context) (time.Duration, error)); ok {
+		return rf(ctx)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context) time.Duration); ok {
+		r0 = rf(ctx)
+	} else {
+		r0 = ret.Get(0).(time.Duration)
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context) error); ok {
+		r1 = rf(ctx)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockInterface_PingWithLatency_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'PingWithLatency'
+type MockInterface_PingWithLatency_Call struct {
+	*mock.Call
+}
+
+// PingWithLatency is a helper method to define mock.On call
+//   - ctx context.Context
+func (_e *MockInterface_Expecter) PingWithLatency(ctx interface{}) *MockInterface_PingWithLatency_Call {
+	return &MockInterface_PingWithLatency_Call{Call: _e.mock.On("PingWithLatency", ctx)}
+}
+
+func (_c *MockInterface_PingWithLatency_Call) Run(run func(ctx context.Context)) *MockInterface_PingWithLatency_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context))
+	})
+	return _c
+}
+
+func (_c *MockInterface_PingWithLatency_Call) Return(_a0 time.Duration, _a1 error) *MockInterface_PingWithLatency_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockInterface_PingWithLatency_Call) RunAndReturn(run func(context.Context) (time.Duration, error)) *MockInterface_PingWithLatency_Call {
 	_c.Call.Return(run)
 	return _c
 }

@@ -228,7 +228,16 @@
     "analyticsSubmenu": "Sous-menu analyses",
     "settingsSubmenu": "Sous-menu paramètres",
     "systemSubmenu": "Sous-menu système",
-    "systemTerminal": "Terminal"
+    "systemTerminal": "Terminal",
+    "help": "Aide",
+    "helpSubmenu": "Sous-menu d'aide",
+    "helpAndSupport": "Aide et support",
+    "reportBug": "Signaler un bug",
+    "askQuestion": "Poser une question",
+    "reportBugAriaLabel": "Signaler un bug sur GitHub (ouvre dans une nouvelle fenêtre)",
+    "askQuestionAriaLabel": "Poser une question sur GitHub Discussions (ouvre dans une nouvelle fenêtre)",
+    "viewOnGithubAriaLabel": "Voir BirdNET-Go sur GitHub (ouvre dans une nouvelle fenêtre)",
+    "health": "Health"
   },
   "about": {
     "title": "BirdNET-Go",
@@ -424,7 +433,7 @@
       },
       "buffer": {
         "overloadTitle": "Analyse audio surchargée",
-        "overloadMessage": "Votre système perd {dropRate} % des échantillons audio de la source '{sourceName}' car il ne peut pas suivre le rythme de l'analyse. Réduisez la valeur de chevauchement BirdNET dans les paramètres de détection ou envisagez de passer à un processeur plus rapide."
+        "overloadMessage": "Votre système perd {dropRate} % des échantillons audio de la source ''{sourceName}'' car il ne peut pas suivre le rythme de l'analyse. Réduisez la valeur de chevauchement BirdNET dans les paramètres de détection ou envisagez de passer à un processeur plus rapide."
       },
       "alert": {
         "firedTitle": "{rule_name}",
@@ -4703,5 +4712,115 @@
     "bannerMessage": "Les modifications de configuration nécessitent un redémarrage :",
     "bannerAction": "Redémarrer maintenant",
     "restartFailed": "Échec du lancement du redémarrage"
+  },
+  "help": {
+    "title": "Aide et support",
+    "subtitle": "Obtenez de l'aide, signalez des problèmes et connectez-vous avec la communauté",
+    "reportBug": {
+      "description": "Si vous rencontrez un problème, générez d'abord un rapport de support pour capturer les informations système et les journaux, puis ouvrez un rapport de bug sur GitHub."
+    },
+    "askQuestion": {
+      "description": "Vous avez une question sur la configuration, les fonctionnalités ou l'utilisation ? Le forum GitHub Discussions est le meilleur endroit pour obtenir de l'aide de la communauté."
+    },
+    "diagnostics": {
+      "description": "Générez un rapport de support pour aider au diagnostic des problèmes. Il capture votre configuration système et les journaux récents."
+    },
+    "quickLinks": {
+      "title": "Liens rapides",
+      "releases": "Notes de version"
+    }
+  },
+  "reportBug": {
+    "title": "Signaler un bug",
+    "subtitle": "Aidez-nous à corriger les problèmes en fournissant les informations nécessaires",
+    "systemInfo": {
+      "title": "Vos informations système",
+      "description": "Ces informations aident à identifier votre configuration. Copiez-les dans votre rapport de bug.",
+      "version": "Version",
+      "buildDate": "Date de compilation",
+      "os": "Système d'exploitation",
+      "copy": "Copier dans le presse-papiers",
+      "copied": "Copié !",
+      "architecture": "Architecture",
+      "hardware": "Matériel",
+      "environment": "Environnement"
+    },
+    "whatToInclude": {
+      "title": "Que faut-il inclure dans votre rapport",
+      "description": "Un bon rapport de bug nous aide à résoudre votre problème rapidement. Veuillez inclure les éléments suivants :",
+      "step1": {
+        "title": "Description claire du problème",
+        "description": "Ce qui s'est passé, ce que vous attendiez et comment reproduire le problème."
+      },
+      "step2": {
+        "title": "Votre méthode d'installation",
+        "description": "Comment vous avez installé BirdNET-Go : script install.sh, Docker Compose, compilation manuelle ou autre."
+      },
+      "step3": {
+        "title": "Informations système",
+        "description": "Copiez les détails système affichés ci-dessus, y compris la version, le système d'exploitation et la date de compilation."
+      },
+      "step4": {
+        "title": "Rapport de support",
+        "description": "Générez et téléchargez un rapport de support ci-dessous. Il capture les journaux et la configuration qui accélèrent considérablement le diagnostic."
+      }
+    },
+    "supportDump": {
+      "title": "Générer un rapport de support",
+      "description": "Télécharger un rapport de support avec votre signalement aide considérablement au diagnostic. Il capture votre configuration et les journaux récents avec les données sensibles supprimées."
+    },
+    "openIssue": {
+      "title": "Ouvrir un ticket sur GitHub",
+      "description": "Une fois les informations ci-dessus rassemblées et le rapport de support généré, ouvrez un ticket sur GitHub pour décrire le problème.",
+      "button": "Ouvrir un ticket sur GitHub"
+    }
+  },
+  "health": {
+    "title": "System Health",
+    "subtitle": "Run diagnostics to check your system's health and identify potential issues",
+    "runDiagnostics": "Run Diagnostics",
+    "running": "Running diagnostics...",
+    "lastRun": "Last run",
+    "noResults": "No diagnostics have been run yet. Click 'Run Diagnostics' to check your system.",
+    "exportText": "Copy Report",
+    "exportJSON": "Download JSON",
+    "copied": "Report copied to clipboard",
+    "duration": "Duration",
+    "summary": {
+      "healthy": "Healthy",
+      "warnings": "Warnings",
+      "critical": "Critical",
+      "skipped": "Skipped",
+      "total": "Total checks"
+    },
+    "categories": {
+      "system": "System",
+      "audio": "Audio Pipeline",
+      "analysis": "Analysis",
+      "streams": "Audio Streams",
+      "database": "Database",
+      "network": "Network",
+      "config": "Configuration",
+      "logs": "Logs"
+    },
+    "status": {
+      "healthy": "Healthy",
+      "warning": "Warning",
+      "critical": "Critical",
+      "unknown": "Unknown",
+      "skipped": "Skipped"
+    },
+    "errors": {
+      "title": "Recent Errors",
+      "noErrors": "No recent errors",
+      "fetchFailed": "Failed to load diagnostics"
+    },
+    "export": {
+      "reportTitle": "BirdNET-Go System Health Report",
+      "statusLabel": "Status",
+      "timeLabel": "Time",
+      "durationLabel": "Duration",
+      "checksLabel": "Checks"
+    }
   }
 }

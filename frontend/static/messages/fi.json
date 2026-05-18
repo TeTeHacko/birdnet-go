@@ -228,7 +228,16 @@
     "analyticsSubmenu": "Analytiikan alavalikko",
     "settingsSubmenu": "Asetusten alavalikko",
     "systemSubmenu": "Järjestelmän alavalikko",
-    "systemTerminal": "Terminaali"
+    "systemTerminal": "Terminaali",
+    "help": "Ohje",
+    "helpSubmenu": "Ohje-alavalikko",
+    "helpAndSupport": "Ohje ja tuki",
+    "reportBug": "Ilmoita virheestä",
+    "askQuestion": "Esitä kysymys",
+    "reportBugAriaLabel": "Ilmoita virheestä GitHubissa (avautuu uuteen ikkunaan)",
+    "askQuestionAriaLabel": "Esitä kysymys GitHub Discussions -foorumilla (avautuu uuteen ikkunaan)",
+    "viewOnGithubAriaLabel": "Näytä BirdNET-Go GitHubissa (avautuu uuteen ikkunaan)",
+    "health": "Health"
   },
   "about": {
     "title": "BirdNET-Go",
@@ -424,7 +433,7 @@
       },
       "buffer": {
         "overloadTitle": "Äänianalyysi ylikuormitettu",
-        "overloadMessage": "Järjestelmäsi hylkää {dropRate} % lähteen '{sourceName}' ääninäytteistä, koska se ei pysy analyysin tahdissa. Pienennä BirdNET-päällekkäisyysarvoa tunnistusasetuksista tai harkitse nopeamman suorittimen hankkimista."
+        "overloadMessage": "Järjestelmäsi hylkää {dropRate} % lähteen ''{sourceName}'' ääninäytteistä, koska se ei pysy analyysin tahdissa. Pienennä BirdNET-päällekkäisyysarvoa tunnistusasetuksista tai harkitse nopeamman suorittimen hankkimista."
       },
       "alert": {
         "firedTitle": "{rule_name}",
@@ -4703,5 +4712,115 @@
     "bannerMessage": "Asetusten muutokset vaativat uudelleenkäynnistyksen:",
     "bannerAction": "Käynnistä uudelleen nyt",
     "restartFailed": "Uudelleenkäynnistyksen aloittaminen epäonnistui"
+  },
+  "help": {
+    "title": "Ohje ja tuki",
+    "subtitle": "Saa apua, ilmoita ongelmista ja ota yhteyttä yhteisöön",
+    "reportBug": {
+      "description": "Jos kohtaat ongelman, luo ensin tukipaketti järjestelmätietojen ja lokien tallentamiseksi ja avaa sitten virheraportti GitHubissa."
+    },
+    "askQuestion": {
+      "description": "Onko sinulla kysyttävää asennuksesta, ominaisuuksista tai käytöstä? GitHub Discussions -foorumi on paras paikka saada apua yhteisöltä."
+    },
+    "diagnostics": {
+      "description": "Luo tukipaketti ongelmien diagnosoimiseksi. Se tallentaa järjestelmäkokoonpanon ja viimeisimmät lokit."
+    },
+    "quickLinks": {
+      "title": "Pikalinkit",
+      "releases": "Julkaisutiedot"
+    }
+  },
+  "reportBug": {
+    "title": "Ilmoita virheestä",
+    "subtitle": "Auta meitä korjaamaan ongelmia antamalla tarvittavat tiedot",
+    "systemInfo": {
+      "title": "Järjestelmätietosi",
+      "description": "Nämä tiedot auttavat tunnistamaan asennuksesi. Kopioi ne virheraporttiin.",
+      "version": "Versio",
+      "buildDate": "Käännöspäivä",
+      "os": "Käyttöjärjestelmä",
+      "copy": "Kopioi leikepöydälle",
+      "copied": "Kopioitu!",
+      "architecture": "Arkkitehtuuri",
+      "hardware": "Laitteisto",
+      "environment": "Ympäristö"
+    },
+    "whatToInclude": {
+      "title": "Mitä raporttiin tulee sisällyttää",
+      "description": "Hyvä virheraportti auttaa meitä korjaamaan ongelmasi nopeasti. Sisällytä seuraavat tiedot:",
+      "step1": {
+        "title": "Selkeä kuvaus ongelmasta",
+        "description": "Mitä tapahtui, mitä odotit tapahtuvan ja miten ongelma toistetaan."
+      },
+      "step2": {
+        "title": "Asennustapasi",
+        "description": "Miten asensit BirdNET-Go:n: install.sh-skripti, Docker Compose, manuaalinen käännös tai muu."
+      },
+      "step3": {
+        "title": "Järjestelmätiedot",
+        "description": "Kopioi yllä näkyvät järjestelmätiedot, mukaan lukien versio, käyttöjärjestelmä ja käännöspäivä."
+      },
+      "step4": {
+        "title": "Tukipaketti",
+        "description": "Luo ja lataa tukipaketti alla. Se tallentaa lokit ja asetukset, jotka nopeuttavat merkittävästi vianmääritystä."
+      }
+    },
+    "supportDump": {
+      "title": "Luo tukipaketti",
+      "description": "Tukipaketin lataaminen virheraportin yhteydessä auttaa merkittävästi vianmäärityksessä. Se tallentaa asetuksesi ja viimeisimmät lokit arkaluontoiset tiedot poistettuna."
+    },
+    "openIssue": {
+      "title": "Avaa GitHub-raportti",
+      "description": "Kun olet kerännyt yllä olevat tiedot ja luonut tukipaketin, avaa raportti GitHubissa ongelman kuvaamiseksi.",
+      "button": "Avaa raportti GitHubissa"
+    }
+  },
+  "health": {
+    "title": "System Health",
+    "subtitle": "Run diagnostics to check your system's health and identify potential issues",
+    "runDiagnostics": "Run Diagnostics",
+    "running": "Running diagnostics...",
+    "lastRun": "Last run",
+    "noResults": "No diagnostics have been run yet. Click 'Run Diagnostics' to check your system.",
+    "exportText": "Copy Report",
+    "exportJSON": "Download JSON",
+    "copied": "Report copied to clipboard",
+    "duration": "Duration",
+    "summary": {
+      "healthy": "Healthy",
+      "warnings": "Warnings",
+      "critical": "Critical",
+      "skipped": "Skipped",
+      "total": "Total checks"
+    },
+    "categories": {
+      "system": "System",
+      "audio": "Audio Pipeline",
+      "analysis": "Analysis",
+      "streams": "Audio Streams",
+      "database": "Database",
+      "network": "Network",
+      "config": "Configuration",
+      "logs": "Logs"
+    },
+    "status": {
+      "healthy": "Healthy",
+      "warning": "Warning",
+      "critical": "Critical",
+      "unknown": "Unknown",
+      "skipped": "Skipped"
+    },
+    "errors": {
+      "title": "Recent Errors",
+      "noErrors": "No recent errors",
+      "fetchFailed": "Failed to load diagnostics"
+    },
+    "export": {
+      "reportTitle": "BirdNET-Go System Health Report",
+      "statusLabel": "Status",
+      "timeLabel": "Time",
+      "durationLabel": "Duration",
+      "checksLabel": "Checks"
+    }
   }
 }

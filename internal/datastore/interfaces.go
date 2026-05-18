@@ -220,7 +220,11 @@ type Interface interface {
 	GetActiveNotificationHistory(after time.Time) ([]NotificationHistory, error)
 	DeleteExpiredNotificationHistory(before time.Time) (int64, error) // Returns count deleted
 	// Database stats method for runtime statistics
-	GetDatabaseStats() (*DatabaseStats, error)
+	GetDatabaseStats(ctx context.Context) (*DatabaseStats, error)
+	// PingWithLatency executes a trivial query (SELECT 1) and returns the round-trip time.
+	PingWithLatency(ctx context.Context) (time.Duration, error)
+	// CountDetectionsSince returns the number of detections recorded since the given time.
+	CountDetectionsSince(ctx context.Context, since time.Time) (int, error)
 	// SchemaVersion returns the datastore schema version ("legacy" or "v2").
 	SchemaVersion() string
 	// UpdateNameMaps rebuilds species name lookup maps from updated BirdNET labels.
@@ -251,6 +255,31 @@ type DataStore struct {
 	monitoringCancel context.CancelFunc // Function to cancel monitoring
 	monitoringMu     sync.Mutex         // Mutex to protect monitoring state
 	monitoringWg     sync.WaitGroup     // WaitGroup for monitoring goroutines
+}
+
+// PingWithLatency executes SELECT 1 and returns the round-trip time.
+func (ds *DataStore) PingWithLatency(ctx context.Context) (time.Duration, error) {
+	if ds.DB == nil {
+		return 0, ErrDBNotConnected
+	}
+	start := time.Now()
+	var result int
+	if err := ds.DB.WithContext(ctx).Raw("SELECT 1").Scan(&result).Error; err != nil {
+		return 0, fmt.Errorf("database ping failed: %w", err)
+	}
+	return time.Since(start), nil
+}
+
+// CountDetectionsSince returns the number of detections recorded since the given time.
+func (ds *DataStore) CountDetectionsSince(ctx context.Context, since time.Time) (int, error) {
+	if ds.DB == nil {
+		return 0, ErrDBNotConnected
+	}
+	var count int64
+	if err := ds.DB.WithContext(ctx).Model(&Note{}).Where("begin_time >= ?", since).Count(&count).Error; err != nil {
+		return 0, fmt.Errorf("count detections failed: %w", err)
+	}
+	return int(count), nil
 }
 
 // NewDataStore creates a new DataStore instance based on the provided configuration context.
@@ -2418,10 +2447,14 @@ func (ds *DataStore) SearchDetections(filters *SearchFilters) ([]DetectionRecord
 		query = query.Order("notes.date ASC, notes.time ASC")
 	case "species_asc":
 		query = query.Order("notes.common_name ASC")
+	case "species_desc":
+		query = query.Order("notes.common_name DESC")
+	case "confidence_asc":
+		query = query.Order("notes.confidence ASC")
 	case "confidence_desc":
 		query = query.Order("notes.confidence DESC")
 	default:
-		query = query.Order("notes.date DESC, notes.time DESC") // Default sort by date, newest first
+		query = query.Order("notes.date DESC, notes.time DESC")
 	}
 
 	// Apply pagination (PerPage and Page are already sanitised)

@@ -423,9 +423,35 @@ func (ds *Datastore) SchemaVersion() string {
 	return datastore.SchemaVersionV2
 }
 
+// PingWithLatency executes SELECT 1 and returns the round-trip time.
+func (ds *Datastore) PingWithLatency(ctx context.Context) (time.Duration, error) {
+	db := ds.manager.DB()
+	if db == nil {
+		return 0, datastore.ErrDBNotConnected
+	}
+	start := time.Now()
+	var result int
+	if err := db.WithContext(ctx).Raw("SELECT 1").Scan(&result).Error; err != nil {
+		return 0, fmt.Errorf("database ping failed: %w", err)
+	}
+	return time.Since(start), nil
+}
+
+// CountDetectionsSince returns the number of detections recorded since the given time.
+func (ds *Datastore) CountDetectionsSince(ctx context.Context, since time.Time) (int, error) {
+	db := ds.manager.DB()
+	if db == nil {
+		return 0, datastore.ErrDBNotConnected
+	}
+	var count int64
+	if err := db.WithContext(ctx).Model(&entities.Detection{}).Where("detected_at >= ?", since.Unix()).Count(&count).Error; err != nil {
+		return 0, fmt.Errorf("count detections failed: %w", err)
+	}
+	return int(count), nil
+}
+
 // GetDatabaseStats returns database statistics.
-func (ds *Datastore) GetDatabaseStats() (*datastore.DatabaseStats, error) {
-	ctx := context.Background()
+func (ds *Datastore) GetDatabaseStats(ctx context.Context) (*datastore.DatabaseStats, error) {
 	count, err := ds.detection.CountAll(ctx)
 	if err != nil {
 		return nil, err
@@ -443,20 +469,17 @@ func (ds *Datastore) GetDatabaseStats() (*datastore.DatabaseStats, error) {
 		Location:        ds.manager.Path(),
 	}
 
-	// Get database size (best-effort)
-	if !ds.manager.IsMySQL() {
-		var pageCount, pageSize int64
-		db := ds.manager.DB()
-		db.Raw("PRAGMA page_count").Scan(&pageCount)
-		db.Raw("PRAGMA page_size").Scan(&pageSize)
-		stats.SizeBytes = pageCount * pageSize
-	} else {
-		db := ds.manager.DB()
-		db.Raw(`
-			SELECT SUM(DATA_LENGTH + INDEX_LENGTH)
-			FROM information_schema.TABLES
-			WHERE TABLE_SCHEMA = DATABASE()
-		`).Scan(&stats.SizeBytes)
+	// Get database size (best-effort); guard against nil DB after concurrent Close()
+	if db := ds.manager.DB(); db != nil {
+		if !ds.manager.IsMySQL() {
+			_ = db.WithContext(ctx).Raw("SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()").Scan(&stats.SizeBytes).Error
+		} else {
+			_ = db.WithContext(ctx).Raw(`
+				SELECT SUM(DATA_LENGTH + INDEX_LENGTH)
+				FROM information_schema.TABLES
+				WHERE TABLE_SCHEMA = DATABASE()
+			`).Scan(&stats.SizeBytes).Error
+		}
 	}
 
 	return stats, nil
@@ -1027,7 +1050,7 @@ func (ds *Datastore) GetTopBirdsData(selectedDate string, minConfidenceNormalize
 		return nil, err
 	}
 	startTime := t.Unix()
-	endTime := t.Add(24 * time.Hour).Unix()
+	endTime := t.AddDate(0, 0, 1).Unix()
 
 	// Use provided limit or fall back to config value
 	reportCount := limit
@@ -1129,7 +1152,7 @@ func (ds *Datastore) GetHourlyOccurrences(date, commonName string, minConfidence
 	}
 
 	startTime := t.Unix()
-	endTime := t.Add(24 * time.Hour).Unix()
+	endTime := t.AddDate(0, 0, 1).Unix()
 
 	// Single query with IN clause for all label IDs (multi-model support)
 	return ds.detection.GetHourlyOccurrences(ctx, labelIDs, startTime, endTime, minConfidenceNormalized)
@@ -1280,7 +1303,7 @@ func (ds *Datastore) SpeciesDetections(species, date, hour string, duration int,
 			} else {
 				// No hour specified - search the full day (matches legacy behavior)
 				start := t.Unix()
-				end := t.Add(24 * time.Hour).Unix()
+				end := t.AddDate(0, 0, 1).Unix()
 				startTime = &start
 				endTime = &end
 			}
@@ -1848,7 +1871,7 @@ func (ds *Datastore) CountSpeciesDetections(species, date, hour string, duration
 			} else {
 				// No hour specified - search the full day (matches legacy behavior)
 				start := t.Unix()
-				end := t.Add(24 * time.Hour).Unix()
+				end := t.AddDate(0, 0, 1).Unix()
 				startTime = &start
 				endTime = &end
 			}
@@ -2288,7 +2311,7 @@ func (ds *Datastore) parseDateRange(startDate, endDate string) (start, end int64
 			return 0, 0, fmt.Errorf("invalid end date format: %w", parseErr)
 		}
 		// End time is exclusive (start of next day) - use with < in queries
-		end = t.Add(24 * time.Hour).Unix()
+		end = t.AddDate(0, 0, 1).Unix()
 	}
 
 	// When no end date specified, use max int64 to include all records.

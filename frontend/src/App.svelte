@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import Button from './lib/desktop/components/ui/Button.svelte';
+  import LoadingSpinner from './lib/desktop/components/ui/LoadingSpinner.svelte';
   import RootLayout from './lib/desktop/layouts/RootLayout.svelte';
   import DashboardPage from './lib/desktop/features/dashboard/pages/DashboardPage.svelte'; // Keep dashboard for initial load
   import LoginModal from './lib/desktop/components/modals/LoginModal.svelte';
@@ -35,6 +37,9 @@
   let Species = $state<Component | null>(null);
   let Search = $state<Component | null>(null);
   let About = $state<Component | null>(null);
+  let Help = $state<Component | null>(null);
+  let ReportBug = $state<Component | null>(null);
+  let SystemHealth = $state<Component | null>(null);
   let System = $state<Component | null>(null);
   let Settings = $state<Component | null>(null);
   let Notifications = $state<Component | null>(null);
@@ -142,7 +147,20 @@
       component: 'detection-detail',
     },
     { route: 'about', page: 'about', titleKey: 'navigation.about', component: 'about' },
+    { route: 'help', page: 'help', titleKey: 'navigation.helpAndSupport', component: 'help' },
+    {
+      route: 'report-bug',
+      page: 'help/report-bug',
+      titleKey: 'navigation.reportBug',
+      component: 'report-bug',
+    },
     { route: 'system', page: 'system', titleKey: 'navigation.system', component: 'system' },
+    {
+      route: 'system-health',
+      page: 'system/health',
+      titleKey: 'health.title',
+      component: 'system-health',
+    },
     { route: 'settings', page: 'settings', titleKey: 'navigation.settings', component: 'settings' },
   ];
 
@@ -208,6 +226,24 @@
           if (!About) {
             const module = await import('./lib/desktop/views/About.svelte');
             About = module.default;
+          }
+          break;
+        case 'help':
+          if (!Help) {
+            const module = await import('./lib/desktop/views/Help.svelte');
+            Help = module.default;
+          }
+          break;
+        case 'report-bug':
+          if (!ReportBug) {
+            const module = await import('./lib/desktop/views/ReportBug.svelte');
+            ReportBug = module.default;
+          }
+          break;
+        case 'system-health':
+          if (!SystemHealth) {
+            const module = await import('./lib/desktop/views/SystemHealth.svelte');
+            SystemHealth = module.default;
           }
           break;
         case 'system':
@@ -318,7 +354,10 @@
     [uiPath('search')]: findRouteConfig('search'),
     [uiPath('detections')]: findRouteConfig('detections'),
     [uiPath('about')]: findRouteConfig('about'),
+    [uiPath('help')]: findRouteConfig('help'),
+    [uiPath('help', 'report-bug')]: findRouteConfig('report-bug'),
     [uiPath('system')]: findRouteConfig('system'),
+    [uiPath('system', 'health')]: findRouteConfig('system-health'),
     [uiPath('settings')]: findRouteConfig('settings'),
   });
 
@@ -374,6 +413,15 @@
 
     // Handle system and settings subpages
     if (UI_SYSTEM_PREFIX_RE.test(path)) {
+      const normalizedPath = path.endsWith('/') && path.length > 1 ? path.slice(0, -1) : path;
+      const exactMatch = pathToRouteMap.get(normalizedPath);
+      if (exactMatch) {
+        currentRoute = exactMatch.route;
+        currentPage = exactMatch.page;
+        pageTitleKey = exactMatch.titleKey;
+        if (exactMatch.component) loadComponent(exactMatch.component);
+        return;
+      }
       handleSubpageRouting(path, 'system', systemSubpages, 'pageTitle.systemNotAvailable');
       return;
     }
@@ -537,12 +585,12 @@
 
 <!-- Show loading screen during initialization -->
 {#if appLoading || (!appInitialized && !appError)}
-  <div class="flex h-screen w-full items-center justify-center bg-base-200">
+  <div class="flex h-screen w-full items-center justify-center bg-[var(--color-base-200)]">
     <div class="flex flex-col items-center gap-4">
-      <span class="loading loading-spinner loading-lg text-primary"></span>
-      <p class="text-base-content/70">{t('common.loading')}</p>
+      <LoadingSpinner size="lg" />
+      <p class="text-[var(--color-base-content)]/70">{t('common.loading')}</p>
       {#if appState.retryCount > 0}
-        <p class="text-sm text-warning">
+        <p class="text-sm text-[var(--color-warning)]">
           {t('common.retrying')} ({appState.retryCount}/{MAX_RETRIES})...
         </p>
       {/if}
@@ -555,19 +603,21 @@
   </div>
   <!-- Show fatal error page if initialization failed -->
 {:else if appError}
-  <div class="flex min-h-screen flex-col items-center justify-center bg-base-200 p-4">
-    <div class="card max-w-lg bg-base-100 shadow-xl">
-      <div class="card-body items-center text-center">
-        <div class="mb-4 text-6xl text-error">500</div>
-        <h2 class="card-title text-error">{t('error.server.title')}</h2>
-        <p class="text-base-content/70">{t('error.server.description')}</p>
-        <div class="mt-4 rounded-lg bg-base-200 p-4 text-left">
-          <p class="font-mono text-sm text-error">{appError}</p>
+  <div
+    class="flex min-h-screen flex-col items-center justify-center bg-[var(--color-base-200)] p-4"
+  >
+    <div class="max-w-lg rounded-lg bg-[var(--color-base-100)] shadow-xl">
+      <div class="flex flex-col items-center p-6 text-center">
+        <div class="mb-4 text-6xl text-[var(--color-error)]">500</div>
+        <h2 class="text-xl font-semibold text-[var(--color-error)]">{t('error.server.title')}</h2>
+        <p class="mt-1 text-[var(--color-base-content)]/70">{t('error.server.description')}</p>
+        <div class="mt-4 w-full rounded-lg bg-[var(--color-base-200)] p-4 text-left">
+          <p class="font-mono text-sm text-[var(--color-error)]">{appError}</p>
         </div>
-        <div class="card-actions mt-6">
-          <button class="btn btn-primary" onclick={() => window.location.reload()}>
+        <div class="mt-6">
+          <Button variant="primary" size="md" onclick={() => window.location.reload()}>
             {t('common.retry')}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -599,6 +649,12 @@
       {@render renderRoute(Search)}
     {:else if currentRoute === 'about'}
       {@render renderRoute(About)}
+    {:else if currentRoute === 'help'}
+      {@render renderRoute(Help)}
+    {:else if currentRoute === 'report-bug'}
+      {@render renderRoute(ReportBug)}
+    {:else if currentRoute === 'system-health'}
+      {@render renderRoute(SystemHealth)}
     {:else if currentRoute === 'system'}
       {@render renderRoute(System)}
     {:else if currentRoute === 'settings'}

@@ -2124,18 +2124,50 @@ func (c *Controller) handleSettingsChanges(oldSettings, currentSettings *conf.Se
 	}
 	reconfigActions = append(reconfigActions, audioActions...)
 
-	// Trigger reconfigurations asynchronously
+	// Trigger reconfigurations asynchronously.
+	// Capture debug flag from the settings snapshot so the goroutine never
+	// reads c.Settings (which may be overwritten by a concurrent update).
 	if len(reconfigActions) > 0 {
-		go func(actions []string) {
-			for _, action := range actions {
-				c.Debug("Asynchronously executing action: %s", action)
-				c.controlChan <- action
-				time.Sleep(actionDelay)
-			}
-		}(reconfigActions)
+		debugEnabled := currentSettings.WebServer.Debug
+		c.wg.Go(func() {
+			c.sendReconfigActions(reconfigActions, debugEnabled)
+		})
 	}
 
 	return nil
+}
+
+// sendReconfigActions sends reconfig actions to controlChan with a delay between
+// each to avoid overwhelming the control monitor with rapid-fire reconfiguration.
+// Unlike quiet_hours.go:trySendSoundCardSignal (which drops signals via a default
+// branch), this blocks until either the send succeeds or shutdown cancels the
+// context, because settings reconfig actions are order-dependent and must not be
+// lost. The recover guard is defense-in-depth against a TOCTOU race where
+// api_service.go closes controlChan before the context cancellation propagates.
+func (c *Controller) sendReconfigActions(actions []string, debugEnabled bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.logWarnIfEnabled("Recovered from send on closed controlChan during shutdown",
+				logger.Any("panic", r))
+		}
+	}()
+
+	for _, action := range actions {
+		if debugEnabled {
+			c.logDebugIfEnabled("Asynchronously executing action", logger.String("action", action))
+		}
+		select {
+		case <-c.ctx.Done():
+			return
+		case c.controlChan <- action:
+		}
+
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-time.After(actionDelay):
+		}
+	}
 }
 
 // intervalSettingsChanged checks if species interval or global interval settings have changed.

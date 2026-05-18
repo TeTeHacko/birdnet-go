@@ -44,8 +44,12 @@ const (
 	minHourRangeParts     = 2                // Minimum parts for hour range parsing
 
 	// queryType values for detection queries
+	queryTypeHourly  = "hourly"
 	queryTypeSpecies = "species"
 	queryTypeSearch  = "search"
+
+	// Default sort order for non-hourly query types
+	sortByDateDesc = "date_desc"
 )
 
 // Regex to validate YYYY-MM-DD format and check for unwanted characters
@@ -267,12 +271,12 @@ type detectionQueryParams struct {
 // advancedSearchCacheKey generates a deterministic cache key for advanced search queries.
 // Includes all filter parameters to avoid cache collisions.
 func (p *detectionQueryParams) advancedSearchCacheKey() string {
-	return fmt.Sprintf("adv_search:%s:%d:%d:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s",
+	return fmt.Sprintf("adv_search:%s:%d:%d:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%d",
 		p.Search, p.NumResults, p.Offset,
 		p.Confidence, p.TimeOfDay, p.HourRange,
 		p.Verified, p.Location, p.Locked,
 		p.Species, p.Date, p.StartDate+":"+p.EndDate,
-		p.SortBy)
+		p.SortBy, p.QueryType, p.Hour, p.Duration)
 }
 
 // parseDetectionQueryParams extracts and validates query parameters from the request
@@ -302,6 +306,9 @@ func (c *Controller) parseDetectionQueryParams(ctx echo.Context) (*detectionQuer
 	duration, _ := strconv.Atoi(ctx.QueryParam("duration"))
 	if duration <= 0 {
 		duration = 1
+	}
+	if duration > 24 {
+		return nil, echo.NewHTTPError(http.StatusBadRequest, "duration must be between 1 and 24 hours")
 	}
 	params.Duration = duration
 
@@ -337,6 +344,8 @@ func (c *Controller) parseDetectionQueryParams(ctx echo.Context) (*detectionQuer
 			"date_desc":       {},
 			"date_asc":        {},
 			"species_asc":     {},
+			"species_desc":    {},
+			"confidence_asc":  {},
 			"confidence_desc": {},
 			"status":          {},
 		}
@@ -360,7 +369,7 @@ func (c *Controller) parseDetectionQueryParams(ctx echo.Context) (*detectionQuer
 	}
 
 	// Validate hour parameter based on query type
-	if params.QueryType == "hourly" {
+	if params.QueryType == queryTypeHourly {
 		// Hourly queries require a single valid integer hour (0-23), not a range
 		if params.Hour == "" {
 			return nil, echo.NewHTTPError(http.StatusBadRequest, "hour parameter is required for hourly query type")
@@ -593,17 +602,44 @@ func (c *Controller) GetDetections(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, response)
 }
 
+// needsAdvancedRouting reports whether the query parameters require routing
+// through the advanced search path instead of the dedicated handlers.
+// It checks for advanced filters, non-default sort, and cross-type parameters
+// that the simple handlers would silently ignore.
+func (p *detectionQueryParams) needsAdvancedRouting() bool {
+	if p.Confidence != "" || p.TimeOfDay != "" ||
+		p.HourRange != "" || p.Verified != "" ||
+		p.Location != "" || p.Locked != "" ||
+		p.StartDate != "" || p.EndDate != "" {
+		return true
+	}
+
+	if p.SortBy != "" {
+		if p.QueryType == queryTypeHourly || p.SortBy != sortByDateDesc {
+			return true
+		}
+	}
+
+	if p.QueryType != queryTypeSpecies && p.Species != "" {
+		return true
+	}
+	if p.QueryType != queryTypeSearch && p.Search != "" {
+		return true
+	}
+
+	// Date and Hour are handled natively by hourly and species handlers.
+	// For search and default query types, they must trigger advanced routing.
+	if p.QueryType != queryTypeHourly && p.QueryType != queryTypeSpecies {
+		if p.Date != "" || p.Hour != "" {
+			return true
+		}
+	}
+
+	return false
+}
+
 // getDetectionsByQueryType retrieves detections based on the query type
 func (c *Controller) getDetectionsByQueryType(params *detectionQueryParams) ([]datastore.Note, int64, error) {
-	// Check if advanced filters are present (non-default sort counts as advanced).
-	// Date parameters are included so that ?date=2025-03-07 without an explicit
-	// queryType routes through the advanced search path instead of being ignored.
-	hasAdvancedFilters := params.Confidence != "" || params.TimeOfDay != "" ||
-		params.HourRange != "" || params.Verified != "" ||
-		params.Location != "" || params.Locked != "" ||
-		params.Date != "" || params.StartDate != "" || params.EndDate != "" ||
-		(params.SortBy != "" && params.SortBy != "date_desc")
-
 	// Resolve locale common names to scientific names before routing so every
 	// query type benefits without per-case duplication.
 	if resolved, hit := c.resolveSpeciesToScientific(params.Species); hit {
@@ -614,19 +650,23 @@ func (c *Controller) getDetectionsByQueryType(params *detectionQueryParams) ([]d
 	}
 
 	switch params.QueryType {
-	case "hourly":
+	case queryTypeHourly:
+		if params.needsAdvancedRouting() {
+			return c.getSearchDetectionsAdvanced(params)
+		}
 		return c.getHourlyDetections(params.Date, params.Hour, params.Duration, params.NumResults, params.Offset)
 	case queryTypeSpecies:
+		if params.needsAdvancedRouting() {
+			return c.getSearchDetectionsAdvanced(params)
+		}
 		return c.getSpeciesDetections(params.Species, params.Date, params.Hour, params.Duration, params.NumResults, params.Offset)
 	case queryTypeSearch:
-		// Use advanced search if filters are present
-		if hasAdvancedFilters {
+		if params.needsAdvancedRouting() {
 			return c.getSearchDetectionsAdvanced(params)
 		}
 		return c.getSearchDetections(params.Search, params.NumResults, params.Offset)
-	default: // "all" or any other value
-		// Check if there are filters even without explicit search text
-		if hasAdvancedFilters {
+	default:
+		if params.needsAdvancedRouting() {
 			return c.getSearchDetectionsAdvanced(params)
 		}
 		return c.getAllDetections(params.NumResults, params.Offset)
@@ -963,9 +1003,18 @@ func (c *Controller) getSpeciesDetections(species, date, hour string, duration, 
 
 // getSearchDetectionsAdvanced handles advanced search with filters
 func (c *Controller) getSearchDetectionsAdvanced(params *detectionQueryParams) ([]datastore.Note, int64, error) {
+	cacheKey := params.advancedSearchCacheKey()
+
+	if cachedData, found := c.detectionCache.Get(cacheKey); found {
+		cachedResult := cachedData.(struct {
+			Notes []datastore.Note
+			Total int64
+		})
+		return cachedResult.Notes, cachedResult.Total, nil
+	}
+
 	filters := c.buildAdvancedSearchFilters(params)
 
-	// Use the advanced search method
 	notes, totalCount, err := c.DS.SearchNotesAdvanced(&filters)
 	if err != nil {
 		c.logErrorIfEnabled("Failed to perform advanced search",
@@ -975,8 +1024,7 @@ func (c *Controller) getSearchDetectionsAdvanced(params *detectionQueryParams) (
 		return nil, 0, err
 	}
 
-	// Cache the results with key that includes all filter parameters
-	c.detectionCache.Set(params.advancedSearchCacheKey(), struct {
+	c.detectionCache.Set(cacheKey, struct {
 		Notes []datastore.Note
 		Total int64
 	}{notes, totalCount}, cache.DefaultExpiration)
@@ -1012,9 +1060,13 @@ func (c *Controller) buildAdvancedSearchFilters(params *detectionQueryParams) da
 		hourParam = params.Hour
 	}
 	if hourFilter := parseHourFilter(hourParam); hourFilter != nil {
+		endHour := hourFilter.End
+		if hourFilter.Start == hourFilter.End && params.Duration > 1 {
+			endHour = (hourFilter.Start + params.Duration - 1) % 24
+		}
 		filters.Hour = &datastore.HourFilter{
 			Start: hourFilter.Start,
-			End:   hourFilter.End,
+			End:   endHour,
 		}
 	}
 
