@@ -155,7 +155,7 @@
         "falsePositive": "Falso positivo",
         "notReviewed": "No revisado",
         "locked": "Bloqueado",
-        "unlikely": "Improbable"
+        "unlikely": "Unlikely"
       },
       "form": {
         "correctDetection": "Detección correcta",
@@ -433,7 +433,7 @@
       },
       "buffer": {
         "overloadTitle": "Análisis de audio sobrecargado",
-        "overloadMessage": "Su sistema está descartando el {dropRate} % de las muestras de audio de la fuente ''{sourceName}'' porque no puede seguir el ritmo del análisis. Reduzca el valor de superposición de BirdNET en los ajustes de detección o considere actualizar a una CPU más rápida."
+        "overloadMessage": "Su sistema está descartando el {dropRate} % de las muestras de audio de la fuente '{sourceName}' porque no puede seguir el ritmo del análisis. Reduzca el valor de superposición de BirdNET en los ajustes de detección o considere actualizar a una CPU más rápida."
       },
       "alert": {
         "firedTitle": "{rule_name}",
@@ -529,7 +529,7 @@
       "unverified": "No verificado",
       "locked": "Bloqueado",
       "unlocked": "Desbloqueado",
-      "unlikely": "Improbable"
+      "unlikely": "Unlikely"
     },
     "review": {
       "review": "Revisar",
@@ -658,7 +658,7 @@
         "false": "Falso",
         "unverified": "No verificado",
         "locked": "Bloqueado",
-        "unlikely": "Improbable"
+        "unlikely": "Unlikely"
       },
       "modals": {
         "showSpecies": "Mostrar especie {species}",
@@ -816,23 +816,23 @@
       "showing": "Mostrando {from} a {to} de {total} resultados"
     },
     "selection": {
-      "select": "Seleccionar",
-      "nSelected": "{count} seleccionadas",
-      "selectAllMatching": "Seleccionar las {count} detecciones coincidentes",
-      "allSelected": "Todas las {count} seleccionadas",
-      "clear": "Limpiar selección",
-      "toolbarLabel": "Acciones masivas",
-      "confirmBulkDelete": "¿Eliminar {count} detecciones? Esta acción no se puede deshacer.",
-      "confirmBulkMarkCorrect": "¿Marcar {count} detecciones como correctas?",
-      "confirmBulkMarkFalsePositive": "¿Marcar {count} detecciones como falso positivo?",
-      "confirmBulkLock": "¿Bloquear {count} detecciones?",
-      "confirmBulkUnlock": "¿Desbloquear {count} detecciones?",
-      "bulkSuccess": "{count} detecciones actualizadas",
-      "bulkDeleteSuccess": "{count} detecciones eliminadas",
-      "bulkPartial": "{processed} actualizadas, {skipped} omitidas (bloqueadas)",
-      "tooManyDetections": "Demasiadas detecciones ({count}). Reduce los filtros para seleccionar menos de 500.",
-      "bulkError": "La operación masiva falló. Por favor, inténtalo de nuevo.",
-      "switchToTable": "Cambia a vista de tabla para seleccionar detecciones"
+      "select": "Select",
+      "nSelected": "{count} selected",
+      "selectAllMatching": "Select all {count} matching detections",
+      "allSelected": "All {count} selected",
+      "clear": "Clear selection",
+      "toolbarLabel": "Bulk actions",
+      "confirmBulkDelete": "Delete {count} detections? This cannot be undone.",
+      "confirmBulkMarkCorrect": "Mark {count} detections as correct?",
+      "confirmBulkMarkFalsePositive": "Mark {count} detections as false positive?",
+      "confirmBulkLock": "Lock {count} detections?",
+      "confirmBulkUnlock": "Unlock {count} detections?",
+      "bulkSuccess": "{count} detections updated",
+      "bulkDeleteSuccess": "{count} detections deleted",
+      "bulkPartial": "{processed} updated, {skipped} skipped (locked)",
+      "tooManyDetections": "Too many detections ({count}). Narrow your filters to select fewer than 500.",
+      "bulkError": "Bulk operation failed. Please try again.",
+      "switchToTable": "Switch to table view to select detections"
     },
     "weather": {
       "title": "Información meteorológica",
@@ -856,55 +856,56 @@
         "pressure": "hPa"
       },
       "conditions": {
-        "clearsky": "Cielo despejado",
+        "clearsky": "Clear Sky",
         "cloudy": "Nublado",
-        "fair": "Despejado",
+        "fair": "Fair",
         "fog": "Niebla",
-        "heavyrain": "Lluvia fuerte",
-        "heavyrainandthunder": "Lluvia fuerte con tormenta",
-        "heavyrainshowers": "Chubascos fuertes",
-        "heavyrainshowersandthunder": "Chubascos fuertes con tormenta",
-        "heavysleet": "Aguanieve fuerte",
-        "heavysleetandthunder": "Aguanieve fuerte con tormenta",
-        "heavysleetshowers": "Chubascos fuertes de aguanieve",
-        "heavysleetshowersandthunder": "Chubascos fuertes de aguanieve con tormenta",
-        "heavysnow": "Nieve fuerte",
-        "heavysnowandthunder": "Nieve fuerte con tormenta",
-        "heavysnowshowers": "Nevadas fuertes",
-        "heavysnowshowersandthunder": "Nevadas fuertes con tormenta",
-        "lightrain": "Lluvia ligera",
-        "lightrainandthunder": "Lluvia ligera con tormenta",
-        "lightrainshowers": "Chubascos ligeros",
-        "lightrainshowersandthunder": "Chubascos ligeros con tormenta",
-        "lightsleet": "Aguanieve ligera",
-        "lightsleetandthunder": "Aguanieve ligera con tormenta",
-        "lightsleetshowers": "Chubascos ligeros de aguanieve",
-        "lightsnow": "Nieve ligera",
-        "lightsnowandthunder": "Nieve ligera con tormenta",
-        "lightsnowshowers": "Nevadas ligeras",
-        "lightssleetshowersandthunder": "Chubascos ligeros de aguanieve con tormenta",
-        "lightssnowshowersandthunder": "Nevadas ligeras con tormenta",
-        "partlycloudy": "Parcialmente nublado",
+        "heavyrain": "Heavy Rain",
+        "heavyrainandthunder": "Heavy Rain and Thunder",
+        "heavyrainshowers": "Heavy Rain Showers",
+        "heavyrainshowersandthunder": "Heavy Rain Showers and Thunder",
+        "heavysleet": "Heavy Sleet",
+        "heavysleetandthunder": "Heavy Sleet and Thunder",
+        "heavysleetshowers": "Heavy Sleet Showers",
+        "heavysleetshowersandthunder": "Heavy Sleet Showers and Thunder",
+        "heavysnow": "Heavy Snow",
+        "heavysnowandthunder": "Heavy Snow and Thunder",
+        "heavysnowshowers": "Heavy Snow Showers",
+        "heavysnowshowersandthunder": "Heavy Snow Showers and Thunder",
+        "lightrain": "Light Rain",
+        "lightrainandthunder": "Light Rain and Thunder",
+        "lightrainshowers": "Light Rain Showers",
+        "lightrainshowersandthunder": "Light Rain Showers and Thunder",
+        "lightsleet": "Light Sleet",
+        "lightsleetandthunder": "Light Sleet and Thunder",
+        "lightsleetshowers": "Light Sleet Showers",
+        "lightsnow": "Light Snow",
+        "lightsnowandthunder": "Light Snow and Thunder",
+        "lightsnowshowers": "Light Snow Showers",
+        "lightssleetshowersandthunder": "Light Sleet Showers and Thunder",
+        "lightssnowshowersandthunder": "Light Snow Showers and Thunder",
+        "partlycloudy": "Partly Cloudy",
         "rain": "Lluvia",
-        "rainandthunder": "Lluvia con tormenta",
-        "rainshowers": "Chubascos",
-        "rainshowersandthunder": "Chubascos con tormenta",
+        "rainandthunder": "Rain and Thunder",
+        "rainshowers": "Rain Showers",
+        "rainshowersandthunder": "Rain Showers and Thunder",
         "sleet": "Aguanieve",
-        "sleetandthunder": "Aguanieve con tormenta",
-        "sleetshowers": "Chubascos de aguanieve",
-        "sleetshowersandthunder": "Chubascos de aguanieve con tormenta",
+        "sleetandthunder": "Sleet and Thunder",
+        "sleetshowers": "Sleet Showers",
+        "sleetshowersandthunder": "Sleet Showers and Thunder",
         "snow": "Nieve",
-        "snowandthunder": "Nieve con tormenta",
-        "snowshowers": "Nevadas",
-        "snowshowersandthunder": "Nevadas con tormenta",
+        "snowandthunder": "Snow and Thunder",
+        "snowshowers": "Snow Showers",
+        "snowshowersandthunder": "Snow Showers and Thunder",
         "thunder": "Tormenta",
         "unknown": "Desconocido"
       }
     },
     "row": {
       "viewDetails": "Ver detalles para {species}",
-      "play": "Reproducir",
-      "playAudio": "Reproducir audio"
+      "openDetailFromStatus": "Abrir página de detalles de {species}",
+      "play": "Play",
+      "playAudio": "Play audio"
     },
     "media": {
       "title": "Grabación y espectrograma",
@@ -947,6 +948,24 @@
       "loadFailed": "Error al cargar la detección (Error {status}). Actualice la página.",
       "noIdProvided": "No se proporcionó ID de detección.",
       "fetchFailed": "Error al obtener las detecciones"
+    },
+    "reanalyze": {
+      "title": "Reanalizar este clip",
+      "running": "Analizando…",
+      "noPredictions": "No se devolvieron predicciones.",
+      "colSpecies": "Especie",
+      "button": "Reanalizar",
+      "buttonAriaLabel": "Reanalizar el clip de {species} con otro modelo",
+      "descriptionMulti": "Abajo se muestra cómo puntúa cada clasificador cargado este clip. Pulsa 'Usar esta' en la fila que consideres correcta para actualizar la detección.",
+      "multiModelSummary": "{models} • {duration} de audio",
+      "useThis": "Usar esta",
+      "useThisAriaLabel": "Aplicar esta especie ({species}) como detección corregida",
+      "noModelForCorrection": "Ningún modelo ha puntuado esta especie; no se puede aplicar.",
+      "correctionApplied": "Detección actualizada a {species}.",
+      "confirmTitle": "¿Reemplazar la detección por {species}?",
+      "confirmBody": "Esto actualiza la especie, el modelo y la confianza de la detección, y la marca como verificada. El estado de revisión anterior se sobrescribe.",
+      "confirmApply": "Sí, aplicar corrección",
+      "applying": "Aplicando…"
     }
   },
   "species": {
@@ -1557,7 +1576,10 @@
       "applyFilters": "Aplicar filtros",
       "exportCsv": "Exportar CSV",
       "species": "especies",
-      "filtered": "(filtrado)"
+      "filtered": "(filtrado)",
+      "audioSource": "Fuente de audio",
+      "audioSourceAll": "Todas las fuentes de audio",
+      "audioSourceUnknown": "Fuente desconocida"
     },
     "timePeriodOptions": {
       "allTime": "Todo el tiempo",
@@ -1821,15 +1843,15 @@
           "overlapAdjusted": "La configuración de superposición se ajustó automáticamente a {overlap}s para cumplir con los requisitos del filtro",
           "overlapReduced": "La configuración de superposición se redujo a {overlap}s para coincidir con el nivel del filtro",
           "levelNames": {
-            "off": "Desactivado",
-            "lenient": "Bajo",
-            "moderate": "Moderado",
-            "balanced": "Equilibrado",
-            "strict": "Estricto",
-            "maximum": "Máximo",
-            "unknown": "Desconocido"
+            "off": "Off",
+            "lenient": "Lenient",
+            "moderate": "Moderate",
+            "balanced": "Balanced",
+            "strict": "Strict",
+            "maximum": "Maximum",
+            "unknown": "Unknown"
           },
-          "warningOff": "Sin filtrado, cualquier detección por encima del umbral de confianza se acepta inmediatamente. Esto produce típicamente varios falsos positivos al día. Incluso un filtrado bajo mejora significativamente la calidad de los resultados."
+          "warningOff": "With filtering disabled, any detection above the confidence threshold is accepted immediately. This typically produces several false positives per day. Even lenient filtering significantly improves result quality."
         },
         "rangeFilter": {
           "title": "Filtro de rango",
@@ -2463,11 +2485,11 @@
             "name": "Gotify",
             "server": {
               "label": "URL del servidor",
-              "placeholder": "gotify.example.com:8070",
-              "helpText": "Nombre de host y puerto de su servidor Gotify"
+              "placeholder": "gotify.example.com",
+              "helpText": "Nombre de host de tu servidor Gotify (sin https://)"
             },
             "protocol": {
-              "label": "Protocolo"
+              "label": "Protocol"
             },
             "token": {
               "label": "Token de aplicación",
@@ -4288,7 +4310,7 @@
         "extracting": "Extrayendo clip...",
         "extractError": "Error al extraer el clip",
         "formatLabel": "Formato",
-        "rangeLabel": "{start}s - {end}s"
+        "rangeLabel": "{start}s – {end}s"
       },
       "processing": {
         "playSelection": "Reproducir selección",
@@ -4559,8 +4581,8 @@
   "analysis": {
     "title": "Análisis",
     "tabs": {
-      "settings": "Ajustes",
-      "models": "Modelos"
+      "settings": "Settings",
+      "models": "Models"
     },
     "detection": {
       "title": "Configuración de detección",
@@ -4570,60 +4592,60 @@
         "helpText": "Puntuación mínima de confianza (0.0 - 1.0) requerida para registrar una detección."
       },
       "batThreshold": {
-        "label": "Umbral de detección de murciélagos",
-        "helpText": "Puntuación de confianza mínima para detecciones de especies de murciélagos. Solo se aplica a modelos clasificadores de murciélagos."
+        "label": "Bat Detection Threshold",
+        "helpText": "Minimum confidence score for bat species detections. Only applies to bat classifier models."
       },
       "batFilter": {
-        "label": "Filtro de paso alto para murciélagos",
-        "helpText": "Filtra las frecuencias audibles antes del análisis de murciélagos para reducir falsos positivos por cantos de aves y ruido ambiental."
+        "label": "Bat Audio High-Pass Filter",
+        "helpText": "Filters out human-audible frequencies before bat analysis to reduce false positives from bird songs and ambient noise."
       },
       "batNighttimeOnly": {
-        "label": "Solo nocturno",
-        "helpText": "Cuando está activado, la detección de murciélagos funciona solo entre el crepúsculo civil y el amanecer civil. Requiere que la ubicación esté configurada. Desactive para ejecutar la detección de murciélagos las 24 horas."
+        "label": "Nighttime Only",
+        "helpText": "When enabled, bat detection runs only between civil dusk and civil dawn. Requires location to be configured. Disable to run bat detection around the clock."
       },
       "batUltrasonicFilter": {
-        "label": "Validación posterior a la detección",
-        "helpText": "Cuando está activado, las detecciones de murciélagos se validan analizando los patrones de energía ultrasónica en el audio fuente. Las detecciones sin características de ecolocalización se marcan como improbables."
+        "label": "Post Detection Validation",
+        "helpText": "When enabled, bat detections are validated by analyzing ultrasonic energy patterns in the source audio. Detections that lack bat echolocation characteristics are tagged as unlikely."
       },
       "batFalsePositiveFilter": {
-        "label": "Filtro de falsos positivos de murciélagos",
-        "helpText": "Requiere múltiples confirmaciones de una detección de murciélago dentro de una ventana deslizante antes de aceptarla. Niveles más altos requieren más confirmaciones, reduciendo los falsos positivos. El modelo de murciélagos usa una superposición fija del 50%, por lo que no se necesita ajuste de superposición.",
+        "label": "Bat False Positive Filter",
+        "helpText": "Requires multiple confirmations of a bat detection within a sliding window before accepting it. Higher levels require more confirmations, reducing false positives. The bat model uses a fixed 50% overlap, so no overlap adjustment is needed.",
         "levels": {
-          "off": "Sin filtrado; acepta cualquier detección de murciélago inmediatamente.",
-          "moderate": "Buen equilibrio para la mayoría de configuraciones. Reduce significativamente los falsos positivos.",
-          "strict": "Filtrado máximo para la mayor precisión."
+          "off": "No filtering; accepts any bat detection immediately.",
+          "moderate": "Good balance for most setups. Significantly reduces false positives.",
+          "strict": "Maximum filtering for highest accuracy."
         },
-        "detectionCount": "{count} confirmaciones requeridas. {description}",
-        "warningOff": "Sin filtrado hay una alta probabilidad de falsos positivos. Activar el filtrado mejora significativamente la precisión."
+        "detectionCount": "{count} confirmations required. {description}",
+        "warningOff": "Without filtering there is a high probability of false positives. Enabling filtering significantly improves accuracy."
       },
       "locale": {
-        "label": "Idioma de especies",
-        "helpText": "Idioma utilizado para los nombres comunes de especies en la interfaz."
+        "label": "Species Language",
+        "helpText": "Language used for species common names in the interface."
       }
     },
     "rangeFilter": {
-      "birdOnlyNote": "El filtro de rango se aplica solo a clasificadores de aves. Los modelos de murciélagos usan sus propias listas de especies.",
+      "birdOnlyNote": "Range filter applies to bird classifiers only. Bat models use their own species lists.",
       "status": {
-        "title": "Resumen del filtro de rango",
-        "geomodelInfo": "BirdNET Geomodelo {version} - {species} especies conocidas",
+        "title": "Filtro de rango activo",
+        "geomodelInfo": "BirdNET Geomodel {version} - {species} known species",
         "autoSelected": "Seleccionado automáticamente",
         "manual": "Manual",
-        "classifier": "Clasificador",
+        "classifier": "Classifier",
         "totalSpecies": "Total de especies",
-        "withRangeData": "Con datos de rango",
-        "withoutRangeData": "Sin datos de rango",
-        "withRangeDataTooltip": "Especies que el geomodelo puede evaluar por probabilidad geográfica en su ubicación",
-        "withoutRangeDataTooltip": "Especies sin datos geográficos en el geomodelo, gestionadas por la configuración de especies no mapeadas a continuación",
+        "withRangeData": "With Range Data",
+        "withoutRangeData": "Without Range Data",
+        "withRangeDataTooltip": "Species that the geomodel can evaluate for geographic probability at your location",
+        "withoutRangeDataTooltip": "Species without geographic data in the geomodel, handled by the unmapped species setting below",
         "noFilter": "Ningún filtro de rango activo",
         "passUnmapped": {
-          "label": "Permitir especies sin datos de rango",
-          "helpText": "Permitir detecciones de especies para las que el geomodelo no tiene datos geográficos. Cuando está desactivado, estas especies siempre se filtran."
+          "label": "Allow species without range data",
+          "helpText": "Allow detections of species the geomodel has no geographic data for. When disabled, these species are always filtered out."
         }
       }
     },
     "advanced": {
-      "title": "Avanzado",
-      "description": "Configuración de procesamiento y modelos personalizados."
+      "title": "Advanced",
+      "description": "Processing and custom model configuration."
     },
     "gallery": {
       "title": "Galería de modelos",
@@ -4644,8 +4666,8 @@
       "noInstalledModels": "No hay modelos adicionales instalados. Explore la pestaña Disponibles para agregar más clasificadores.",
       "noAvailableModels": "No hay modelos adicionales disponibles para su plataforma.",
       "sections": {
-        "acoustic": "Clasificadores acústicos",
-        "geomodel": "Geomodelos"
+        "acoustic": "Acoustic Classifiers",
+        "geomodel": "Geomodels"
       },
       "categories": {
         "wildlife": "Clasificadores de fauna",
@@ -4690,15 +4712,15 @@
       "geomodelBadge": "Incluye BirdNET v3.0 geomodel"
     },
     "bird": {
-      "title": "Detección de aves",
-      "description": "Configure el umbral de confianza, el idioma de especies y el filtrado de falsos positivos para clasificadores de aves."
+      "title": "Bird Detection",
+      "description": "Configure confidence threshold, species language, and false positive filtering for bird classifiers."
     },
     "bat": {
-      "title": "Detección de murciélagos",
-      "description": "Configure el umbral, la programación y el filtrado de falsos positivos para clasificadores de murciélagos."
+      "title": "Bat Detection",
+      "description": "Configure threshold, scheduling, and false positive filtering for bat classifiers."
     },
     "dynamicThreshold": {
-      "birdOnlyNote": "El umbral dinámico se aplica solo a clasificadores de aves."
+      "birdOnlyNote": "Dynamic threshold applies to bird classifiers only."
     }
   },
   "restart": {

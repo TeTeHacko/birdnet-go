@@ -155,7 +155,7 @@
         "falsePositive": "Virheellinen havainto",
         "notReviewed": "Ei tarkistettu",
         "locked": "Lukittu",
-        "unlikely": "Epätodennäköinen"
+        "unlikely": "Unlikely"
       },
       "form": {
         "correctDetection": "Oikea havainto",
@@ -433,7 +433,7 @@
       },
       "buffer": {
         "overloadTitle": "Äänianalyysi ylikuormitettu",
-        "overloadMessage": "Järjestelmäsi hylkää {dropRate} % lähteen ''{sourceName}'' ääninäytteistä, koska se ei pysy analyysin tahdissa. Pienennä BirdNET-päällekkäisyysarvoa tunnistusasetuksista tai harkitse nopeamman suorittimen hankkimista."
+        "overloadMessage": "Järjestelmäsi hylkää {dropRate} % lähteen '{sourceName}' ääninäytteistä, koska se ei pysy analyysin tahdissa. Pienennä BirdNET-päällekkäisyysarvoa tunnistusasetuksista tai harkitse nopeamman suorittimen hankkimista."
       },
       "alert": {
         "firedTitle": "{rule_name}",
@@ -529,7 +529,7 @@
       "unverified": "Todentamaton",
       "locked": "Lukittu",
       "unlocked": "Avoin",
-      "unlikely": "Epätodennäköinen"
+      "unlikely": "Unlikely"
     },
     "review": {
       "review": "Tarkista",
@@ -658,7 +658,7 @@
         "false": "Virheellinen",
         "unverified": "Todentamaton",
         "locked": "Lukittu",
-        "unlikely": "Epätodennäköinen"
+        "unlikely": "Unlikely"
       },
       "modals": {
         "showSpecies": "Näytä laji {species}",
@@ -816,23 +816,23 @@
       "showing": "Näytetään {from}-{to} / {total} tuloksesta"
     },
     "selection": {
-      "select": "Valitse",
-      "nSelected": "{count} valittu",
-      "selectAllMatching": "Valitse kaikki {count} vastaavaa havaintoa",
-      "allSelected": "Kaikki {count} valittu",
-      "clear": "Tyhjennä valinta",
-      "toolbarLabel": "Joukkotoiminnot",
-      "confirmBulkDelete": "Poistetaanko {count} havaintoa? Tätä ei voi perua.",
-      "confirmBulkMarkCorrect": "Merkitäänkö {count} havaintoa oikeiksi?",
-      "confirmBulkMarkFalsePositive": "Merkitäänkö {count} havaintoa virheellisiksi?",
-      "confirmBulkLock": "Lukitaanko {count} havaintoa?",
-      "confirmBulkUnlock": "Avataanko {count} havainnon lukitus?",
-      "bulkSuccess": "{count} havaintoa päivitetty",
-      "bulkDeleteSuccess": "{count} havaintoa poistettu",
-      "bulkPartial": "{processed} päivitetty, {skipped} ohitettu (lukittu)",
-      "tooManyDetections": "Liian monta havaintoa ({count}). Rajaa suodattimia valitaksesi alle 500.",
-      "bulkError": "Joukkotoiminto epäonnistui. Yritä uudelleen.",
-      "switchToTable": "Vaihda taulukkonäkymään valitaksesi havaintoja"
+      "select": "Select",
+      "nSelected": "{count} selected",
+      "selectAllMatching": "Select all {count} matching detections",
+      "allSelected": "All {count} selected",
+      "clear": "Clear selection",
+      "toolbarLabel": "Bulk actions",
+      "confirmBulkDelete": "Delete {count} detections? This cannot be undone.",
+      "confirmBulkMarkCorrect": "Mark {count} detections as correct?",
+      "confirmBulkMarkFalsePositive": "Mark {count} detections as false positive?",
+      "confirmBulkLock": "Lock {count} detections?",
+      "confirmBulkUnlock": "Unlock {count} detections?",
+      "bulkSuccess": "{count} detections updated",
+      "bulkDeleteSuccess": "{count} detections deleted",
+      "bulkPartial": "{processed} updated, {skipped} skipped (locked)",
+      "tooManyDetections": "Too many detections ({count}). Narrow your filters to select fewer than 500.",
+      "bulkError": "Bulk operation failed. Please try again.",
+      "switchToTable": "Switch to table view to select detections"
     },
     "weather": {
       "title": "Säätiedot",
@@ -856,55 +856,56 @@
         "pressure": "hPa"
       },
       "conditions": {
-        "clearsky": "Selkeä taivas",
+        "clearsky": "Clear Sky",
         "cloudy": "Pilvistä",
-        "fair": "Melko selkeää",
+        "fair": "Fair",
         "fog": "Sumua",
-        "heavyrain": "Voimakasta sadetta",
-        "heavyrainandthunder": "Voimakasta sadetta ja ukkosta",
-        "heavyrainshowers": "Voimakkaita sadekuuroja",
-        "heavyrainshowersandthunder": "Voimakkaita sadekuuroja ja ukkosta",
-        "heavysleet": "Voimakasta räntää",
-        "heavysleetandthunder": "Voimakasta räntää ja ukkosta",
-        "heavysleetshowers": "Voimakkaita räntäkuuroja",
-        "heavysleetshowersandthunder": "Voimakkaita räntäkuuroja ja ukkosta",
-        "heavysnow": "Voimakasta lumisadetta",
-        "heavysnowandthunder": "Voimakasta lumisadetta ja ukkosta",
-        "heavysnowshowers": "Voimakkaita lumikuuroja",
-        "heavysnowshowersandthunder": "Voimakkaita lumikuuroja ja ukkosta",
-        "lightrain": "Heikkoa sadetta",
-        "lightrainandthunder": "Heikkoa sadetta ja ukkosta",
-        "lightrainshowers": "Heikkoja sadekuuroja",
-        "lightrainshowersandthunder": "Heikkoja sadekuuroja ja ukkosta",
-        "lightsleet": "Heikkoa räntää",
-        "lightsleetandthunder": "Heikkoa räntää ja ukkosta",
-        "lightsleetshowers": "Heikkoja räntäkuuroja",
-        "lightsnow": "Heikkoa lumisadetta",
-        "lightsnowandthunder": "Heikkoa lumisadetta ja ukkosta",
-        "lightsnowshowers": "Heikkoja lumikuuroja",
-        "lightssleetshowersandthunder": "Heikkoja räntäkuuroja ja ukkosta",
-        "lightssnowshowersandthunder": "Heikkoja lumikuuroja ja ukkosta",
-        "partlycloudy": "Puolipilvistä",
+        "heavyrain": "Heavy Rain",
+        "heavyrainandthunder": "Heavy Rain and Thunder",
+        "heavyrainshowers": "Heavy Rain Showers",
+        "heavyrainshowersandthunder": "Heavy Rain Showers and Thunder",
+        "heavysleet": "Heavy Sleet",
+        "heavysleetandthunder": "Heavy Sleet and Thunder",
+        "heavysleetshowers": "Heavy Sleet Showers",
+        "heavysleetshowersandthunder": "Heavy Sleet Showers and Thunder",
+        "heavysnow": "Heavy Snow",
+        "heavysnowandthunder": "Heavy Snow and Thunder",
+        "heavysnowshowers": "Heavy Snow Showers",
+        "heavysnowshowersandthunder": "Heavy Snow Showers and Thunder",
+        "lightrain": "Light Rain",
+        "lightrainandthunder": "Light Rain and Thunder",
+        "lightrainshowers": "Light Rain Showers",
+        "lightrainshowersandthunder": "Light Rain Showers and Thunder",
+        "lightsleet": "Light Sleet",
+        "lightsleetandthunder": "Light Sleet and Thunder",
+        "lightsleetshowers": "Light Sleet Showers",
+        "lightsnow": "Light Snow",
+        "lightsnowandthunder": "Light Snow and Thunder",
+        "lightsnowshowers": "Light Snow Showers",
+        "lightssleetshowersandthunder": "Light Sleet Showers and Thunder",
+        "lightssnowshowersandthunder": "Light Snow Showers and Thunder",
+        "partlycloudy": "Partly Cloudy",
         "rain": "Sadetta",
-        "rainandthunder": "Sadetta ja ukkosta",
-        "rainshowers": "Sadekuuroja",
-        "rainshowersandthunder": "Sadekuuroja ja ukkosta",
+        "rainandthunder": "Rain and Thunder",
+        "rainshowers": "Rain Showers",
+        "rainshowersandthunder": "Rain Showers and Thunder",
         "sleet": "Räntää",
-        "sleetandthunder": "Räntää ja ukkosta",
-        "sleetshowers": "Räntäkuuroja",
-        "sleetshowersandthunder": "Räntäkuuroja ja ukkosta",
+        "sleetandthunder": "Sleet and Thunder",
+        "sleetshowers": "Sleet Showers",
+        "sleetshowersandthunder": "Sleet Showers and Thunder",
         "snow": "Lunta",
-        "snowandthunder": "Lumisadetta ja ukkosta",
-        "snowshowers": "Lumikuuroja",
-        "snowshowersandthunder": "Lumikuuroja ja ukkosta",
+        "snowandthunder": "Snow and Thunder",
+        "snowshowers": "Snow Showers",
+        "snowshowersandthunder": "Snow Showers and Thunder",
         "thunder": "Ukkosta",
         "unknown": "Tuntematon"
       }
     },
     "row": {
       "viewDetails": "Näytä {species} tiedot",
-      "play": "Toista",
-      "playAudio": "Toista ääni"
+      "openDetailFromStatus": "Avaa {species}-havainnon yksityiskohdat",
+      "play": "Play",
+      "playAudio": "Play audio"
     },
     "media": {
       "title": "Tallenne ja spektrogrammi",
@@ -947,6 +948,24 @@
       "loadFailed": "Havainnon lataaminen epäonnistui (Virhe {status}). Päivitä sivu.",
       "noIdProvided": "Havainnon tunnistetta ei annettu.",
       "fetchFailed": "Havaintojen hakeminen epäonnistui"
+    },
+    "reanalyze": {
+      "title": "Analysoi tämä klippi uudelleen",
+      "running": "Analysoidaan…",
+      "noPredictions": "Ennusteita ei palautettu.",
+      "colSpecies": "Laji",
+      "button": "Analysoi uudelleen",
+      "buttonAriaLabel": "Analysoi {species}-klippi uudelleen toisella mallilla",
+      "descriptionMulti": "Alla näet, miten kukin ladattu luokittelija arvioi tämän klipin. Paina 'Käytä tätä' rivillä, jonka uskot oikeaksi, päivittääksesi havainnon.",
+      "multiModelSummary": "{models} • {duration} ääntä",
+      "useThis": "Käytä tätä",
+      "useThisAriaLabel": "Käytä tätä lajia ({species}) korjattuna havaintona",
+      "noModelForCorrection": "Mikään malli ei ole pisteyttänyt tätä lajia; ei voi soveltaa.",
+      "correctionApplied": "Havainto päivitetty lajiksi {species}.",
+      "confirmTitle": "Korvataanko havainto lajilla {species}?",
+      "confirmBody": "Tämä päivittää havainnon lajin, mallin ja luottamuksen ja merkitsee sen vahvistetuksi. Olemassa oleva tarkistustila korvataan.",
+      "confirmApply": "Kyllä, käytä korjausta",
+      "applying": "Sovelletaan…"
     }
   },
   "species": {
@@ -1478,7 +1497,7 @@
       "samples": "näytettä",
       "available": "saatav.",
       "min": "Min",
-      "max": "Maks",
+      "max": "Max",
       "limit": "Raja",
       "tempUnavailable": "Ei saatavilla",
       "online": "Verkossa",
@@ -1557,7 +1576,10 @@
       "applyFilters": "Käytä suodattimia",
       "exportCsv": "Vie CSV",
       "species": "lajia",
-      "filtered": "(suodatettu)"
+      "filtered": "(suodatettu)",
+      "audioSource": "Äänilähde",
+      "audioSourceAll": "Kaikki äänilähteet",
+      "audioSourceUnknown": "Tuntematon lähde"
     },
     "timePeriodOptions": {
       "allTime": "Koko aika",
@@ -1821,15 +1843,15 @@
           "overlapAdjusted": "Päällekkäisyysasetus säädetty automaattisesti arvoon {overlap}s suodatinvaatimusten täyttämiseksi",
           "overlapReduced": "Päällekkäisyysasetus pienennetty arvoon {overlap}s vastaamaan suodatustasoa",
           "levelNames": {
-            "off": "Pois",
-            "lenient": "Matala",
-            "moderate": "Kohtalainen",
-            "balanced": "Tasapainoinen",
-            "strict": "Tiukka",
-            "maximum": "Maksimi",
-            "unknown": "Tuntematon"
+            "off": "Off",
+            "lenient": "Lenient",
+            "moderate": "Moderate",
+            "balanced": "Balanced",
+            "strict": "Strict",
+            "maximum": "Maximum",
+            "unknown": "Unknown"
           },
-          "warningOff": "Ilman suodatusta jokainen luottamuskynnyksen ylittävä havainto hyväksytään välittömästi. Tämä tuottaa tyypillisesti useita vääriä positiivisia päivässä. Jo matala suodatus parantaa tulosten laatua merkittävästi."
+          "warningOff": "With filtering disabled, any detection above the confidence threshold is accepted immediately. This typically produces several false positives per day. Even lenient filtering significantly improves result quality."
         },
         "rangeFilter": {
           "title": "Aluesuodatin",
@@ -2462,12 +2484,12 @@
           "gotify": {
             "name": "Gotify",
             "server": {
-              "label": "Palvelin",
-              "placeholder": "gotify.example.com:8070",
-              "helpText": "Gotify-palvelimesi isäntänimi ja portti"
+              "label": "Palvelimen URL",
+              "placeholder": "gotify.example.com",
+              "helpText": "Gotify-palvelimesi isäntänimi (ilman https://)"
             },
             "protocol": {
-              "label": "Protokolla"
+              "label": "Protocol"
             },
             "token": {
               "label": "Sovelluksen token",
@@ -4002,22 +4024,22 @@
     },
     "userInterface": {
       "tabs": {
-        "appearance": "Ulkoasu",
-        "language": "Kieli ja alue",
-        "visualContent": "Visuaalinen sisältö",
+        "appearance": "Appearance",
+        "language": "Language & Regional",
+        "visualContent": "Visual Content",
         "audioPlayback": "Äänentoisto"
       },
       "appearance": {
-        "title": "Ulkoasu",
-        "description": "Mukauta BirdNET-Go-käyttöliittymän ulkoasua"
+        "title": "Appearance",
+        "description": "Customize the look and feel of your BirdNET-Go interface"
       },
       "language": {
-        "title": "Kieli ja alue",
-        "description": "Kieli, lämpötilayksiköt ja alueelliset näyttöasetukset"
+        "title": "Language & Regional",
+        "description": "Language, temperature units, and regional display preferences"
       },
       "visualContent": {
-        "title": "Visuaalinen sisältö",
-        "description": "Lintukuvien ja spektrogramminäytön asetukset"
+        "title": "Visual Content",
+        "description": "Configure bird images and spectrogram display settings"
       },
       "audioPlayback": {
         "title": "Äänentoisto",
@@ -4288,7 +4310,7 @@
         "extracting": "Puretaan leikettä...",
         "extractError": "Leikkeen purku epäonnistui",
         "formatLabel": "Muoto",
-        "rangeLabel": "{start}s - {end}s"
+        "rangeLabel": "{start}s – {end}s"
       },
       "processing": {
         "playSelection": "Toista valinta",
@@ -4559,8 +4581,8 @@
   "analysis": {
     "title": "Analyysi",
     "tabs": {
-      "settings": "Asetukset",
-      "models": "Mallit"
+      "settings": "Settings",
+      "models": "Models"
     },
     "detection": {
       "title": "Tunnistusasetukset",
@@ -4570,60 +4592,60 @@
         "helpText": "Vähimmäisluotettavuuspisteet (0.0 - 1.0), joka vaaditaan tunnistuksen tallentamiseen."
       },
       "batThreshold": {
-        "label": "Lepakkotunnistuksen kynnysarvo",
-        "helpText": "Vähimmäisluottamusarvo lepakkolajien tunnistuksille. Koskee vain lepakkoluokittelumalleja."
+        "label": "Bat Detection Threshold",
+        "helpText": "Minimum confidence score for bat species detections. Only applies to bat classifier models."
       },
       "batFilter": {
-        "label": "Lepakkoäänen ylipäästösuodatin",
-        "helpText": "Suodattaa kuultavat taajuudet ennen lepakkoanalyysiä vähentääkseen linnunlaulun ja taustamelun aiheuttamia vääriä tunnistuksia."
+        "label": "Bat Audio High-Pass Filter",
+        "helpText": "Filters out human-audible frequencies before bat analysis to reduce false positives from bird songs and ambient noise."
       },
       "batNighttimeOnly": {
-        "label": "Vain yöaikaan",
-        "helpText": "Kun käytössä, lepakkotunnistus toimii vain siviilihämärän ja siviiliaamunkoiton välillä. Vaatii, että sijainti on määritetty. Poista käytöstä, jos haluat lepakkotunnistuksen olevan käytössä ympäri vuorokauden."
+        "label": "Nighttime Only",
+        "helpText": "When enabled, bat detection runs only between civil dusk and civil dawn. Requires location to be configured. Disable to run bat detection around the clock."
       },
       "batUltrasonicFilter": {
-        "label": "Tunnistuksen jälkitarkistus",
-        "helpText": "Kun käytössä, lepakkotunnistukset validoidaan analysoimalla ultraäänienergiakuvioita lähdeäänitteestä. Tunnistukset, joista puuttuvat kaikuluotausominaisuudet, merkitään epätodennäköisiksi."
+        "label": "Post Detection Validation",
+        "helpText": "When enabled, bat detections are validated by analyzing ultrasonic energy patterns in the source audio. Detections that lack bat echolocation characteristics are tagged as unlikely."
       },
       "batFalsePositiveFilter": {
-        "label": "Lepakon väärien positiivisten suodatin",
-        "helpText": "Vaatii useita vahvistuksia lepakkotunnistuksesta liukuvan ikkunan sisällä ennen kuin se hyväksytään. Korkeammat tasot vaativat enemmän vahvistuksia, mikä vähentää vääriä positiivisia. Lepakkomalli käyttää kiinteää 50 % päällekkäisyyttä, joten päällekkäisyyden säätöä ei tarvita.",
+        "label": "Bat False Positive Filter",
+        "helpText": "Requires multiple confirmations of a bat detection within a sliding window before accepting it. Higher levels require more confirmations, reducing false positives. The bat model uses a fixed 50% overlap, so no overlap adjustment is needed.",
         "levels": {
-          "off": "Ei suodatusta; hyväksyy minkä tahansa lepakkohavainnon välittömästi.",
-          "moderate": "Hyvä tasapaino useimpiin asetuksiin. Vähentää merkittävästi vääriä positiivisia.",
-          "strict": "Maksimaalinen suodatus korkeimman tarkkuuden saavuttamiseksi."
+          "off": "No filtering; accepts any bat detection immediately.",
+          "moderate": "Good balance for most setups. Significantly reduces false positives.",
+          "strict": "Maximum filtering for highest accuracy."
         },
-        "detectionCount": "{count} vahvistusta vaaditaan. {description}",
-        "warningOff": "Ilman suodatusta väärien positiivisten todennäköisyys on suuri. Suodatuksen käyttöönotto parantaa tarkkuutta merkittävästi."
+        "detectionCount": "{count} confirmations required. {description}",
+        "warningOff": "Without filtering there is a high probability of false positives. Enabling filtering significantly improves accuracy."
       },
       "locale": {
-        "label": "Lajien kieli",
-        "helpText": "Kieli, jolla lajien yleisnimistö näytetään käyttöliittymässä."
+        "label": "Species Language",
+        "helpText": "Language used for species common names in the interface."
       }
     },
     "rangeFilter": {
-      "birdOnlyNote": "Aluesuodatin koskee vain lintuluokittimia. Lepakkomallit käyttävät omia lajilistojaan.",
+      "birdOnlyNote": "Range filter applies to bird classifiers only. Bat models use their own species lists.",
       "status": {
-        "title": "Aluesuodattimen yhteenveto",
-        "geomodelInfo": "BirdNET-geomalli {version} - {species} tunnettua lajia",
+        "title": "Aktiivinen aluesuodatin",
+        "geomodelInfo": "BirdNET Geomodel {version} - {species} known species",
         "autoSelected": "Automaattisesti valittu",
         "manual": "Manuaalinen",
-        "classifier": "Luokittelija",
+        "classifier": "Classifier",
         "totalSpecies": "Lajeja yhteensä",
-        "withRangeData": "Aluetiedoilla",
-        "withoutRangeData": "Ilman aluetietoja",
-        "withRangeDataTooltip": "Lajit, joiden maantieteellisen todennäköisyyden geomalli voi arvioida sijainnissasi",
-        "withoutRangeDataTooltip": "Lajit, joilla ei ole maantieteellisiä tietoja geomallissa, käsitellään alla olevalla kartoittamattomien lajien asetuksella",
+        "withRangeData": "With Range Data",
+        "withoutRangeData": "Without Range Data",
+        "withRangeDataTooltip": "Species that the geomodel can evaluate for geographic probability at your location",
+        "withoutRangeDataTooltip": "Species without geographic data in the geomodel, handled by the unmapped species setting below",
         "noFilter": "Ei aktiivista aluesuodatinta",
         "passUnmapped": {
-          "label": "Salli lajit ilman aluetietoja",
-          "helpText": "Salli sellaisten lajien havainnot, joille geomallilla ei ole maantieteellisiä tietoja. Kun pois päältä, nämä lajit suodatetaan aina pois."
+          "label": "Allow species without range data",
+          "helpText": "Allow detections of species the geomodel has no geographic data for. When disabled, these species are always filtered out."
         }
       }
     },
     "advanced": {
-      "title": "Lisäasetukset",
-      "description": "Käsittelyn ja mukautettujen mallien asetukset."
+      "title": "Advanced",
+      "description": "Processing and custom model configuration."
     },
     "gallery": {
       "title": "Malligalleria",
@@ -4644,8 +4666,8 @@
       "noInstalledModels": "Ei asennettuja lisämalleja. Selaa Saatavilla-välilehteä lisätäksesi luokittelijoita.",
       "noAvailableModels": "Ei lisämalleja saatavilla alustallesi.",
       "sections": {
-        "acoustic": "Akustiset luokittelijat",
-        "geomodel": "Geomallit"
+        "acoustic": "Acoustic Classifiers",
+        "geomodel": "Geomodels"
       },
       "categories": {
         "wildlife": "Eläinluokittelijat",
@@ -4690,15 +4712,15 @@
       "geomodelBadge": "Sisältää BirdNET v3.0 -geomallin"
     },
     "bird": {
-      "title": "Lintuhavainnot",
-      "description": "Määritä luottamuskynnys, lajikieli ja väärien positiivisten suodatus lintuluokittimille."
+      "title": "Bird Detection",
+      "description": "Configure confidence threshold, species language, and false positive filtering for bird classifiers."
     },
     "bat": {
-      "title": "Lepakkohavainnot",
-      "description": "Määritä kynnys, ajastus ja väärien positiivisten suodatus lepakkoluokittimille."
+      "title": "Bat Detection",
+      "description": "Configure threshold, scheduling, and false positive filtering for bat classifiers."
     },
     "dynamicThreshold": {
-      "birdOnlyNote": "Dynaaminen kynnys koskee vain lintuluokittimia."
+      "birdOnlyNote": "Dynamic threshold applies to bird classifiers only."
     }
   },
   "restart": {

@@ -155,7 +155,7 @@
         "falsePositive": "Faux positif",
         "notReviewed": "Non examiné",
         "locked": "Verrouillé",
-        "unlikely": "Improbable"
+        "unlikely": "Unlikely"
       },
       "form": {
         "correctDetection": "Détection correcte",
@@ -433,7 +433,7 @@
       },
       "buffer": {
         "overloadTitle": "Analyse audio surchargée",
-        "overloadMessage": "Votre système perd {dropRate} % des échantillons audio de la source ''{sourceName}'' car il ne peut pas suivre le rythme de l'analyse. Réduisez la valeur de chevauchement BirdNET dans les paramètres de détection ou envisagez de passer à un processeur plus rapide."
+        "overloadMessage": "Votre système perd {dropRate} % des échantillons audio de la source '{sourceName}' car il ne peut pas suivre le rythme de l'analyse. Réduisez la valeur de chevauchement BirdNET dans les paramètres de détection ou envisagez de passer à un processeur plus rapide."
       },
       "alert": {
         "firedTitle": "{rule_name}",
@@ -529,7 +529,7 @@
       "unverified": "Non vérifié",
       "locked": "Verrouillé",
       "unlocked": "Déverrouillé",
-      "unlikely": "Improbable"
+      "unlikely": "Unlikely"
     },
     "review": {
       "review": "Vérifier",
@@ -658,7 +658,7 @@
         "false": "Faux",
         "unverified": "Non vérifié",
         "locked": "Verrouillé",
-        "unlikely": "Improbable"
+        "unlikely": "Unlikely"
       },
       "modals": {
         "showSpecies": "Afficher l'espèce {species}",
@@ -674,8 +674,8 @@
       },
       "actions": {
         "menuLabel": "Actions pour {species}",
-        "markCorrect": "Correcte",
-        "markFalsePositive": "Incorrecte",
+        "markCorrect": "Correct",
+        "markFalsePositive": "Incorrect",
         "review": "Examiner la détection",
         "showSpecies": "Afficher l'espèce",
         "ignoreSpecies": "Ignorer l'espèce",
@@ -816,23 +816,23 @@
       "showing": "Affichage de {from} à {to} sur {total} résultats"
     },
     "selection": {
-      "select": "Sélectionner",
-      "nSelected": "{count} sélectionnées",
-      "selectAllMatching": "Sélectionner les {count} détections correspondantes",
-      "allSelected": "Les {count} sélectionnées",
-      "clear": "Effacer la sélection",
-      "toolbarLabel": "Actions groupées",
-      "confirmBulkDelete": "Supprimer {count} détections ? Cette action est irréversible.",
-      "confirmBulkMarkCorrect": "Marquer {count} détections comme correctes ?",
-      "confirmBulkMarkFalsePositive": "Marquer {count} détections comme faux positif ?",
-      "confirmBulkLock": "Verrouiller {count} détections ?",
-      "confirmBulkUnlock": "Déverrouiller {count} détections ?",
-      "bulkSuccess": "{count} détections mises à jour",
-      "bulkDeleteSuccess": "{count} détections supprimées",
-      "bulkPartial": "{processed} mises à jour, {skipped} ignorées (verrouillées)",
-      "tooManyDetections": "Trop de détections ({count}). Affinez vos filtres pour en sélectionner moins de 500.",
-      "bulkError": "L'opération groupée a échoué. Veuillez réessayer.",
-      "switchToTable": "Passer en vue tableau pour sélectionner des détections"
+      "select": "Select",
+      "nSelected": "{count} selected",
+      "selectAllMatching": "Select all {count} matching detections",
+      "allSelected": "All {count} selected",
+      "clear": "Clear selection",
+      "toolbarLabel": "Bulk actions",
+      "confirmBulkDelete": "Delete {count} detections? This cannot be undone.",
+      "confirmBulkMarkCorrect": "Mark {count} detections as correct?",
+      "confirmBulkMarkFalsePositive": "Mark {count} detections as false positive?",
+      "confirmBulkLock": "Lock {count} detections?",
+      "confirmBulkUnlock": "Unlock {count} detections?",
+      "bulkSuccess": "{count} detections updated",
+      "bulkDeleteSuccess": "{count} detections deleted",
+      "bulkPartial": "{processed} updated, {skipped} skipped (locked)",
+      "tooManyDetections": "Too many detections ({count}). Narrow your filters to select fewer than 500.",
+      "bulkError": "Bulk operation failed. Please try again.",
+      "switchToTable": "Switch to table view to select detections"
     },
     "weather": {
       "title": "Informations météo",
@@ -856,55 +856,56 @@
         "pressure": "hPa"
       },
       "conditions": {
-        "clearsky": "Ciel clair",
+        "clearsky": "Clear Sky",
         "cloudy": "Nuageux",
-        "fair": "Beau temps",
+        "fair": "Fair",
         "fog": "Brouillard",
-        "heavyrain": "Forte pluie",
-        "heavyrainandthunder": "Forte pluie et orage",
-        "heavyrainshowers": "Fortes averses",
-        "heavyrainshowersandthunder": "Fortes averses et orage",
-        "heavysleet": "Fort grésil",
-        "heavysleetandthunder": "Fort grésil et orage",
-        "heavysleetshowers": "Fortes averses de grésil",
-        "heavysleetshowersandthunder": "Fortes averses de grésil et orage",
-        "heavysnow": "Forte neige",
-        "heavysnowandthunder": "Forte neige et orage",
-        "heavysnowshowers": "Fortes averses de neige",
-        "heavysnowshowersandthunder": "Fortes averses de neige et orage",
-        "lightrain": "Pluie légère",
-        "lightrainandthunder": "Pluie légère et orage",
-        "lightrainshowers": "Averses légères",
-        "lightrainshowersandthunder": "Averses légères et orage",
-        "lightsleet": "Grésil léger",
-        "lightsleetandthunder": "Grésil léger et orage",
-        "lightsleetshowers": "Averses légères de grésil",
-        "lightsnow": "Neige légère",
-        "lightsnowandthunder": "Neige légère et orage",
-        "lightsnowshowers": "Averses légères de neige",
-        "lightssleetshowersandthunder": "Averses légères de grésil et orage",
-        "lightssnowshowersandthunder": "Averses légères de neige et orage",
-        "partlycloudy": "Partiellement couvert",
+        "heavyrain": "Heavy Rain",
+        "heavyrainandthunder": "Heavy Rain and Thunder",
+        "heavyrainshowers": "Heavy Rain Showers",
+        "heavyrainshowersandthunder": "Heavy Rain Showers and Thunder",
+        "heavysleet": "Heavy Sleet",
+        "heavysleetandthunder": "Heavy Sleet and Thunder",
+        "heavysleetshowers": "Heavy Sleet Showers",
+        "heavysleetshowersandthunder": "Heavy Sleet Showers and Thunder",
+        "heavysnow": "Heavy Snow",
+        "heavysnowandthunder": "Heavy Snow and Thunder",
+        "heavysnowshowers": "Heavy Snow Showers",
+        "heavysnowshowersandthunder": "Heavy Snow Showers and Thunder",
+        "lightrain": "Light Rain",
+        "lightrainandthunder": "Light Rain and Thunder",
+        "lightrainshowers": "Light Rain Showers",
+        "lightrainshowersandthunder": "Light Rain Showers and Thunder",
+        "lightsleet": "Light Sleet",
+        "lightsleetandthunder": "Light Sleet and Thunder",
+        "lightsleetshowers": "Light Sleet Showers",
+        "lightsnow": "Light Snow",
+        "lightsnowandthunder": "Light Snow and Thunder",
+        "lightsnowshowers": "Light Snow Showers",
+        "lightssleetshowersandthunder": "Light Sleet Showers and Thunder",
+        "lightssnowshowersandthunder": "Light Snow Showers and Thunder",
+        "partlycloudy": "Partly Cloudy",
         "rain": "Pluie",
-        "rainandthunder": "Pluie et orage",
-        "rainshowers": "Averses",
-        "rainshowersandthunder": "Averses et orage",
+        "rainandthunder": "Rain and Thunder",
+        "rainshowers": "Rain Showers",
+        "rainshowersandthunder": "Rain Showers and Thunder",
         "sleet": "Grésil",
-        "sleetandthunder": "Grésil et orage",
-        "sleetshowers": "Averses de grésil",
-        "sleetshowersandthunder": "Averses de grésil et orage",
+        "sleetandthunder": "Sleet and Thunder",
+        "sleetshowers": "Sleet Showers",
+        "sleetshowersandthunder": "Sleet Showers and Thunder",
         "snow": "Neige",
-        "snowandthunder": "Neige et orage",
-        "snowshowers": "Averses de neige",
-        "snowshowersandthunder": "Averses de neige et orage",
+        "snowandthunder": "Snow and Thunder",
+        "snowshowers": "Snow Showers",
+        "snowshowersandthunder": "Snow Showers and Thunder",
         "thunder": "Orage",
         "unknown": "Inconnu"
       }
     },
     "row": {
       "viewDetails": "Voir les détails pour {species}",
-      "play": "Lire",
-      "playAudio": "Lire l'audio"
+      "openDetailFromStatus": "Ouvrir la page de détail pour {species}",
+      "play": "Play",
+      "playAudio": "Play audio"
     },
     "media": {
       "title": "Enregistrement et spectrogramme",
@@ -947,6 +948,24 @@
       "loadFailed": "Échec du chargement de la détection (Erreur {status}). Veuillez actualiser la page.",
       "noIdProvided": "Aucun identifiant de détection fourni.",
       "fetchFailed": "Échec de la récupération des détections"
+    },
+    "reanalyze": {
+      "title": "Réanalyser ce clip",
+      "running": "Analyse en cours…",
+      "noPredictions": "Aucune prédiction retournée.",
+      "colSpecies": "Espèce",
+      "button": "Réanalyser",
+      "buttonAriaLabel": "Réanalyser le clip de {species} avec un autre modèle",
+      "descriptionMulti": "Voici comment chaque classifieur chargé a noté ce clip. Cliquez sur 'Utiliser celle-ci' à la ligne qui vous semble correcte pour mettre à jour la détection.",
+      "multiModelSummary": "{models} • {duration} d'audio",
+      "useThis": "Utiliser celle-ci",
+      "useThisAriaLabel": "Appliquer cette espèce ({species}) comme détection corrigée",
+      "noModelForCorrection": "Aucun modèle n'a noté cette espèce; application impossible.",
+      "correctionApplied": "Détection mise à jour vers {species}.",
+      "confirmTitle": "Remplacer la détection par {species} ?",
+      "confirmBody": "Ceci met à jour l'espèce, le modèle et la confiance de la détection, et la marque comme vérifiée. L'état de révision existant est écrasé.",
+      "confirmApply": "Oui, appliquer la correction",
+      "applying": "Application en cours…"
     }
   },
   "species": {
@@ -1557,7 +1576,10 @@
       "applyFilters": "Appliquer les filtres",
       "exportCsv": "Exporter au format CSV",
       "species": "espèces",
-      "filtered": "(filtré)"
+      "filtered": "(filtré)",
+      "audioSource": "Source audio",
+      "audioSourceAll": "Toutes les sources audio",
+      "audioSourceUnknown": "Source inconnue"
     },
     "timePeriodOptions": {
       "allTime": "Depuis toujours",
@@ -1821,15 +1843,15 @@
           "overlapAdjusted": "Le paramètre de chevauchement a été automatiquement ajusté à {overlap}s pour répondre aux exigences du filtre",
           "overlapReduced": "Le paramètre de chevauchement a été réduit à {overlap}s pour correspondre au niveau du filtre",
           "levelNames": {
-            "off": "Désactivé",
-            "lenient": "Faible",
-            "moderate": "Modéré",
-            "balanced": "Équilibré",
+            "off": "Off",
+            "lenient": "Lenient",
+            "moderate": "Moderate",
+            "balanced": "Balanced",
             "strict": "Strict",
             "maximum": "Maximum",
-            "unknown": "Inconnu"
+            "unknown": "Unknown"
           },
-          "warningOff": "Sans filtrage, toute détection au-dessus du seuil de confiance est acceptée immédiatement. Cela produit typiquement plusieurs faux positifs par jour. Même un filtrage faible améliore considérablement la qualité des résultats."
+          "warningOff": "With filtering disabled, any detection above the confidence threshold is accepted immediately. This typically produces several false positives per day. Even lenient filtering significantly improves result quality."
         },
         "rangeFilter": {
           "title": "Filtre de portée",
@@ -2463,11 +2485,11 @@
             "name": "Gotify",
             "server": {
               "label": "URL du serveur",
-              "placeholder": "gotify.example.com:8070",
-              "helpText": "Nom d'hôte et port de votre serveur Gotify"
+              "placeholder": "gotify.example.com",
+              "helpText": "Nom d'hôte de votre serveur Gotify (sans https://)"
             },
             "protocol": {
-              "label": "Protocole"
+              "label": "Protocol"
             },
             "token": {
               "label": "Token d'application",
@@ -3083,7 +3105,7 @@
         "description": "Surveiller et signaler les niveaux sonores environnementaux",
         "enable": "Activer la surveillance du niveau sonore",
         "enableHelp": "Suivre les niveaux de bruit ambiant pour comprendre votre environnement d'enregistrement et corréler avec les modèles d'activité des oiseaux.",
-        "disabled": "La surveillance du niveau sonore est désactivée",
+        "disabled": "Sound level monitoring is disabled",
         "intervalLabel": "Intervalle de mesure (secondes)",
         "intervalHelp": "Fréquence de mesure et de rapport des niveaux sonores. Des valeurs plus faibles fournissent des données plus granulaires mais utilisent plus de ressources. Minimum 5 secondes, recommandé 60 secondes.",
         "dataOutputTitle": "Sortie des données de niveau sonore",
@@ -3112,7 +3134,7 @@
         "normalization": "Normalisation audio",
         "normalizationEnable": "Activer la normalisation de volume",
         "normalizationHelp": "Ajuster automatiquement les niveaux audio selon la norme de diffusion EBU R128 pour un volume de lecture cohérent sur tous les clips.",
-        "normalizationDisabled": "La normalisation audio est désactivée",
+        "normalizationDisabled": "Audio normalization is disabled",
         "targetLUFSLabel": "Volume cible (LUFS)",
         "targetLUFSHelp": "Cible de volume intégré en LUFS (Loudness Units relative to Full Scale). -23 LUFS est la norme de diffusion EBU R128. Plage : -40 à -10 LUFS.",
         "loudnessRangeLabel": "Plage de volume (LU)",
@@ -3129,7 +3151,7 @@
         "bitrateLabel": "Débit",
         "bitrateHelp": "Débit de compression audio pour les formats avec perte. Plage : {min}-{max} kbps. Des valeurs plus élevées offrent une meilleure qualité mais des fichiers plus volumineux.",
         "losslessNote": "Les formats sans perte préservent la qualité audio originale sans artefacts de compression.",
-        "disabledInfo": "Activez l'enregistrement de clips ci-dessus pour configurer les paramètres de clip, le format de fichier et les options de stockage."
+        "disabledInfo": "Enable clip recording above to configure clip settings, file format, and storage options."
       },
       "extendedCapture": {
         "title": "Capture étendue",
@@ -3190,12 +3212,12 @@
           "age": "Âge",
           "usage": "Utilisation"
         },
-        "noRetentionTitle": "Tous les clips conservés",
-        "noRetentionDescription": "Les clips audio seront conservés indéfiniment. Surveillez l'utilisation du disque pour éviter les problèmes de stockage.",
-        "ageRetentionTitle": "Nettoyage par ancienneté",
-        "ageRetentionDescription": "Les clips plus anciens que l'âge spécifié seront automatiquement supprimés, tout en conservant le nombre minimum par espèce.",
-        "usageRetentionTitle": "Nettoyage par utilisation",
-        "usageRetentionDescription": "Lorsque l'utilisation du disque dépasse le seuil, les clips les plus anciens seront supprimés jusqu'à ce que l'utilisation soit dans les limites."
+        "noRetentionTitle": "All Clips Retained",
+        "noRetentionDescription": "Audio clips will be kept indefinitely. Monitor disk usage to prevent storage issues.",
+        "ageRetentionTitle": "Age-Based Cleanup",
+        "ageRetentionDescription": "Clips older than the specified age will be automatically deleted, while preserving the minimum number per species.",
+        "usageRetentionTitle": "Usage-Based Cleanup",
+        "usageRetentionDescription": "When disk usage exceeds the threshold, oldest clips will be deleted until usage is within limits."
       },
       "formats": {
         "wav": "WAV",
@@ -3251,7 +3273,7 @@
         "title": "Authentification basique",
         "description": "Accès sécurisé avec un mot de passe simple",
         "enableLabel": "Activer l'authentification par mot de passe",
-        "disabled": "L'authentification par mot de passe est désactivée",
+        "disabled": "Password authentication is disabled",
         "passwordLabel": "Mot de passe",
         "passwordHelpText": "Limiter l'accès aux paramètres avec un mot de passe."
       },
@@ -3366,7 +3388,7 @@
       "bypassAuthentication": {
         "title": "Contourner l'authentification",
         "description": "Autoriser l'accès aux paramètres sans authentification",
-        "disabled": "Le contournement par sous-réseau est désactivé"
+        "disabled": "Subnet bypass is disabled"
       },
       "exceptions": {
         "title": "Exceptions"
@@ -3558,27 +3580,27 @@
           "thresholdPlaceholder": "0.5",
           "intervalPlaceholder": "0"
         },
-        "addConfiguration": "Ajouter une configuration",
-        "newConfiguration": "Nouvelle configuration",
-        "editing": "Modification : {species}",
-        "configuredCount": "{count} configurées",
+        "addConfiguration": "Add Configuration",
+        "newConfiguration": "New Configuration",
+        "editing": "Editing: {species}",
+        "configuredCount": "{count} configured",
         "searchPlaceholder": "Type to search...",
-        "saving": "Enregistrement...",
-        "save": "Enregistrer",
-        "cancel": "Annuler",
-        "configureActions": "Configurer les actions",
-        "actionsConfigured": "Configurées",
+        "saving": "Saving...",
+        "save": "Save",
+        "cancel": "Cancel",
+        "configureActions": "Configure Actions",
+        "actionsConfigured": "Configured",
         "list": {
-          "threshold": "Seuil :",
-          "interval": "Intervalle :",
-          "intervalNone": "Aucun",
+          "threshold": "Threshold:",
+          "interval": "Interval:",
+          "intervalNone": "None",
           "actionBadge": "Action",
-          "editTitle": "Modifier la configuration",
-          "removeTitle": "Supprimer la configuration"
+          "editTitle": "Edit configuration",
+          "removeTitle": "Remove configuration"
         },
         "emptyState": {
-          "title": "Aucune configuration pour le moment.",
-          "description": "Cliquez sur « Ajouter une configuration » pour personnaliser les paramètres de détection des espèces."
+          "title": "No configurations yet.",
+          "description": "Click \"Add Configuration\" to customize species detection settings."
         }
       },
       "synonyms": {
@@ -4232,7 +4254,7 @@
         "urlPlaceholder": "rtsp://username:password@192.168.1.100:554/stream"
       },
       "subnet": {
-        "maxSubnetsReached": "Nombre maximum de sous-réseaux ({max}) atteint."
+        "maxSubnetsReached": "Maximum number of subnets ({max}) reached."
       },
       "species": {
         "loadingSpecies": "Chargement des espèces...",
@@ -4559,8 +4581,8 @@
   "analysis": {
     "title": "Analyse",
     "tabs": {
-      "settings": "Paramètres",
-      "models": "Modèles"
+      "settings": "Settings",
+      "models": "Models"
     },
     "detection": {
       "title": "Paramètres de détection",
@@ -4570,60 +4592,60 @@
         "helpText": "Score de confiance minimum (0.0 - 1.0) requis pour qu'une détection soit enregistrée."
       },
       "batThreshold": {
-        "label": "Seuil de détection des chauves-souris",
-        "helpText": "Score de confiance minimum pour les détections d'espèces de chauves-souris. S'applique uniquement aux modèles classificateurs de chauves-souris."
+        "label": "Bat Detection Threshold",
+        "helpText": "Minimum confidence score for bat species detections. Only applies to bat classifier models."
       },
       "batFilter": {
-        "label": "Filtre passe-haut pour chauves-souris",
-        "helpText": "Filtre les fréquences audibles avant l'analyse des chauves-souris pour réduire les faux positifs dus aux chants d'oiseaux et au bruit ambiant."
+        "label": "Bat Audio High-Pass Filter",
+        "helpText": "Filters out human-audible frequencies before bat analysis to reduce false positives from bird songs and ambient noise."
       },
       "batNighttimeOnly": {
-        "label": "Nocturne uniquement",
-        "helpText": "Lorsqu'activé, la détection de chauves-souris fonctionne uniquement entre le crépuscule civil et l'aube civile. Nécessite la configuration de l'emplacement. Désactivez pour exécuter la détection en permanence."
+        "label": "Nighttime Only",
+        "helpText": "When enabled, bat detection runs only between civil dusk and civil dawn. Requires location to be configured. Disable to run bat detection around the clock."
       },
       "batUltrasonicFilter": {
-        "label": "Validation post-détection",
-        "helpText": "Lorsqu'activé, les détections de chauves-souris sont validées en analysant les motifs d'énergie ultrasonique dans l'audio source. Les détections sans caractéristiques d'écholocation sont marquées comme improbables."
+        "label": "Post Detection Validation",
+        "helpText": "When enabled, bat detections are validated by analyzing ultrasonic energy patterns in the source audio. Detections that lack bat echolocation characteristics are tagged as unlikely."
       },
       "batFalsePositiveFilter": {
-        "label": "Filtre de faux positifs chauves-souris",
-        "helpText": "Nécessite plusieurs confirmations d'une détection de chauve-souris dans une fenêtre glissante avant de l'accepter. Les niveaux supérieurs nécessitent plus de confirmations, réduisant les faux positifs. Le modèle chauve-souris utilise un chevauchement fixe de 50 %, aucun ajustement n'est donc nécessaire.",
+        "label": "Bat False Positive Filter",
+        "helpText": "Requires multiple confirmations of a bat detection within a sliding window before accepting it. Higher levels require more confirmations, reducing false positives. The bat model uses a fixed 50% overlap, so no overlap adjustment is needed.",
         "levels": {
-          "off": "Aucun filtrage ; accepte toute détection de chauve-souris immédiatement.",
-          "moderate": "Bon équilibre pour la plupart des configurations. Réduit considérablement les faux positifs.",
-          "strict": "Filtrage maximal pour la plus grande précision."
+          "off": "No filtering; accepts any bat detection immediately.",
+          "moderate": "Good balance for most setups. Significantly reduces false positives.",
+          "strict": "Maximum filtering for highest accuracy."
         },
-        "detectionCount": "{count} confirmations requises. {description}",
-        "warningOff": "Sans filtrage, la probabilité de faux positifs est élevée. L'activation du filtrage améliore considérablement la précision."
+        "detectionCount": "{count} confirmations required. {description}",
+        "warningOff": "Without filtering there is a high probability of false positives. Enabling filtering significantly improves accuracy."
       },
       "locale": {
-        "label": "Langue des espèces",
-        "helpText": "Langue utilisée pour les noms communs des espèces dans l'interface."
+        "label": "Species Language",
+        "helpText": "Language used for species common names in the interface."
       }
     },
     "rangeFilter": {
-      "birdOnlyNote": "Le filtre de zone s'applique uniquement aux classificateurs d'oiseaux. Les modèles de chauves-souris utilisent leurs propres listes d'espèces.",
+      "birdOnlyNote": "Range filter applies to bird classifiers only. Bat models use their own species lists.",
       "status": {
-        "title": "Aperçu du filtre de zone",
-        "geomodelInfo": "BirdNET Géomodèle {version} - {species} espèces connues",
+        "title": "Filtre de zone actif",
+        "geomodelInfo": "BirdNET Geomodel {version} - {species} known species",
         "autoSelected": "Sélectionné automatiquement",
         "manual": "Manuel",
-        "classifier": "Classificateur",
+        "classifier": "Classifier",
         "totalSpecies": "Total des espèces",
-        "withRangeData": "Avec données de zone",
-        "withoutRangeData": "Sans données de zone",
-        "withRangeDataTooltip": "Espèces que le géomodèle peut évaluer par probabilité géographique à votre emplacement",
-        "withoutRangeDataTooltip": "Espèces sans données géographiques dans le géomodèle, gérées par le paramètre des espèces non cartographiées ci-dessous",
+        "withRangeData": "With Range Data",
+        "withoutRangeData": "Without Range Data",
+        "withRangeDataTooltip": "Species that the geomodel can evaluate for geographic probability at your location",
+        "withoutRangeDataTooltip": "Species without geographic data in the geomodel, handled by the unmapped species setting below",
         "noFilter": "Aucun filtre de zone actif",
         "passUnmapped": {
-          "label": "Autoriser les espèces sans données de zone",
-          "helpText": "Autoriser les détections d'espèces pour lesquelles le géomodèle n'a pas de données géographiques. Lorsque désactivé, ces espèces sont toujours filtrées."
+          "label": "Allow species without range data",
+          "helpText": "Allow detections of species the geomodel has no geographic data for. When disabled, these species are always filtered out."
         }
       }
     },
     "advanced": {
-      "title": "Avancé",
-      "description": "Configuration du traitement et des modèles personnalisés."
+      "title": "Advanced",
+      "description": "Processing and custom model configuration."
     },
     "gallery": {
       "title": "Galerie de modèles",
@@ -4644,8 +4666,8 @@
       "noInstalledModels": "Aucun modèle supplémentaire installé. Parcourez l'onglet Disponibles pour ajouter des classificateurs.",
       "noAvailableModels": "Aucun modèle supplémentaire disponible pour votre plateforme.",
       "sections": {
-        "acoustic": "Classificateurs acoustiques",
-        "geomodel": "Géomodèles"
+        "acoustic": "Acoustic Classifiers",
+        "geomodel": "Geomodels"
       },
       "categories": {
         "wildlife": "Classificateurs de faune",
@@ -4690,15 +4712,15 @@
       "geomodelBadge": "Inclut le BirdNET v3.0 geomodel"
     },
     "bird": {
-      "title": "Détection des oiseaux",
-      "description": "Configurez le seuil de confiance, la langue des espèces et le filtrage des faux positifs pour les classificateurs d'oiseaux."
+      "title": "Bird Detection",
+      "description": "Configure confidence threshold, species language, and false positive filtering for bird classifiers."
     },
     "bat": {
-      "title": "Détection des chauves-souris",
-      "description": "Configurez le seuil, la planification et le filtrage des faux positifs pour les classificateurs de chauves-souris."
+      "title": "Bat Detection",
+      "description": "Configure threshold, scheduling, and false positive filtering for bat classifiers."
     },
     "dynamicThreshold": {
-      "birdOnlyNote": "Le seuil dynamique s'applique uniquement aux classificateurs d'oiseaux."
+      "birdOnlyNote": "Dynamic threshold applies to bird classifiers only."
     }
   },
   "restart": {

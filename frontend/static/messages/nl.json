@@ -155,7 +155,7 @@
         "falsePositive": "Afgekeurd",
         "notReviewed": "Niet beoordeeld",
         "locked": "Vergrendeld",
-        "unlikely": "Onwaarschijnlijk"
+        "unlikely": "Unlikely"
       },
       "form": {
         "correctDetection": "Herkenning goedgekeurd",
@@ -433,7 +433,7 @@
       },
       "buffer": {
         "overloadTitle": "Audio-analyse overbelast",
-        "overloadMessage": "Uw systeem verliest {dropRate} % van de audiosamples van bron ''{sourceName}'' omdat het de analyse niet kan bijhouden. Verlaag de BirdNET-overlappingswaarde in de detectie-instellingen of overweeg een snellere CPU."
+        "overloadMessage": "Uw systeem verliest {dropRate} % van de audiosamples van bron '{sourceName}' omdat het de analyse niet kan bijhouden. Verlaag de BirdNET-overlappingswaarde in de detectie-instellingen of overweeg een snellere CPU."
       },
       "alert": {
         "firedTitle": "{rule_name}",
@@ -529,7 +529,7 @@
       "unverified": "Niet beoordeeld",
       "locked": "Vergrendeld",
       "unlocked": "Ontgrendeld",
-      "unlikely": "Onwaarschijnlijk"
+      "unlikely": "Unlikely"
     },
     "review": {
       "review": "Beoordelen",
@@ -658,7 +658,7 @@
         "false": "Afgekeurd",
         "unverified": "Niet beoordeeld",
         "locked": "Vergrendeld",
-        "unlikely": "Onwaarschijnlijk"
+        "unlikely": "Unlikely"
       },
       "modals": {
         "showSpecies": "Toon soort {species}",
@@ -816,23 +816,23 @@
       "showing": "Toont {from} tot {to} van {total} resultaten"
     },
     "selection": {
-      "select": "Selecteren",
-      "nSelected": "{count} geselecteerd",
-      "selectAllMatching": "Alle {count} overeenkomende detecties selecteren",
-      "allSelected": "Alle {count} geselecteerd",
-      "clear": "Selectie wissen",
-      "toolbarLabel": "Bulkacties",
-      "confirmBulkDelete": "{count} detecties verwijderen? Dit kan niet ongedaan worden gemaakt.",
-      "confirmBulkMarkCorrect": "{count} detecties als correct markeren?",
-      "confirmBulkMarkFalsePositive": "{count} detecties als fout-positief markeren?",
-      "confirmBulkLock": "{count} detecties vergrendelen?",
-      "confirmBulkUnlock": "{count} detecties ontgrendelen?",
-      "bulkSuccess": "{count} detecties bijgewerkt",
-      "bulkDeleteSuccess": "{count} detecties verwijderd",
-      "bulkPartial": "{processed} bijgewerkt, {skipped} overgeslagen (vergrendeld)",
-      "tooManyDetections": "Te veel detecties ({count}). Verfijn uw filters om minder dan 500 te selecteren.",
-      "bulkError": "Bulkbewerking mislukt. Probeer het opnieuw.",
-      "switchToTable": "Schakel naar tabelweergave om detecties te selecteren"
+      "select": "Select",
+      "nSelected": "{count} selected",
+      "selectAllMatching": "Select all {count} matching detections",
+      "allSelected": "All {count} selected",
+      "clear": "Clear selection",
+      "toolbarLabel": "Bulk actions",
+      "confirmBulkDelete": "Delete {count} detections? This cannot be undone.",
+      "confirmBulkMarkCorrect": "Mark {count} detections as correct?",
+      "confirmBulkMarkFalsePositive": "Mark {count} detections as false positive?",
+      "confirmBulkLock": "Lock {count} detections?",
+      "confirmBulkUnlock": "Unlock {count} detections?",
+      "bulkSuccess": "{count} detections updated",
+      "bulkDeleteSuccess": "{count} detections deleted",
+      "bulkPartial": "{processed} updated, {skipped} skipped (locked)",
+      "tooManyDetections": "Too many detections ({count}). Narrow your filters to select fewer than 500.",
+      "bulkError": "Bulk operation failed. Please try again.",
+      "switchToTable": "Switch to table view to select detections"
     },
     "weather": {
       "title": "Weerinformatie",
@@ -856,55 +856,56 @@
         "pressure": "hPa"
       },
       "conditions": {
-        "clearsky": "Helder",
+        "clearsky": "Clear Sky",
         "cloudy": "Bewolkt",
-        "fair": "Licht bewolkt",
+        "fair": "Fair",
         "fog": "Mist",
-        "heavyrain": "Zware regen",
-        "heavyrainandthunder": "Zware regen en onweer",
-        "heavyrainshowers": "Zware regenbuien",
-        "heavyrainshowersandthunder": "Zware regenbuien en onweer",
-        "heavysleet": "Zware natte sneeuw",
-        "heavysleetandthunder": "Zware natte sneeuw en onweer",
-        "heavysleetshowers": "Zware natte sneeuwbuien",
-        "heavysleetshowersandthunder": "Zware natte sneeuwbuien en onweer",
-        "heavysnow": "Zware sneeuw",
-        "heavysnowandthunder": "Zware sneeuw en onweer",
-        "heavysnowshowers": "Zware sneeuwbuien",
-        "heavysnowshowersandthunder": "Zware sneeuwbuien en onweer",
-        "lightrain": "Lichte regen",
-        "lightrainandthunder": "Lichte regen en onweer",
-        "lightrainshowers": "Lichte regenbuien",
-        "lightrainshowersandthunder": "Lichte regenbuien en onweer",
-        "lightsleet": "Lichte natte sneeuw",
-        "lightsleetandthunder": "Lichte natte sneeuw en onweer",
-        "lightsleetshowers": "Lichte natte sneeuwbuien",
-        "lightsnow": "Lichte sneeuw",
-        "lightsnowandthunder": "Lichte sneeuw en onweer",
-        "lightsnowshowers": "Lichte sneeuwbuien",
-        "lightssleetshowersandthunder": "Lichte natte sneeuwbuien en onweer",
-        "lightssnowshowersandthunder": "Lichte sneeuwbuien en onweer",
-        "partlycloudy": "Half bewolkt",
+        "heavyrain": "Heavy Rain",
+        "heavyrainandthunder": "Heavy Rain and Thunder",
+        "heavyrainshowers": "Heavy Rain Showers",
+        "heavyrainshowersandthunder": "Heavy Rain Showers and Thunder",
+        "heavysleet": "Heavy Sleet",
+        "heavysleetandthunder": "Heavy Sleet and Thunder",
+        "heavysleetshowers": "Heavy Sleet Showers",
+        "heavysleetshowersandthunder": "Heavy Sleet Showers and Thunder",
+        "heavysnow": "Heavy Snow",
+        "heavysnowandthunder": "Heavy Snow and Thunder",
+        "heavysnowshowers": "Heavy Snow Showers",
+        "heavysnowshowersandthunder": "Heavy Snow Showers and Thunder",
+        "lightrain": "Light Rain",
+        "lightrainandthunder": "Light Rain and Thunder",
+        "lightrainshowers": "Light Rain Showers",
+        "lightrainshowersandthunder": "Light Rain Showers and Thunder",
+        "lightsleet": "Light Sleet",
+        "lightsleetandthunder": "Light Sleet and Thunder",
+        "lightsleetshowers": "Light Sleet Showers",
+        "lightsnow": "Light Snow",
+        "lightsnowandthunder": "Light Snow and Thunder",
+        "lightsnowshowers": "Light Snow Showers",
+        "lightssleetshowersandthunder": "Light Sleet Showers and Thunder",
+        "lightssnowshowersandthunder": "Light Snow Showers and Thunder",
+        "partlycloudy": "Partly Cloudy",
         "rain": "Regen",
-        "rainandthunder": "Regen en onweer",
-        "rainshowers": "Regenbuien",
-        "rainshowersandthunder": "Regenbuien en onweer",
+        "rainandthunder": "Rain and Thunder",
+        "rainshowers": "Rain Showers",
+        "rainshowersandthunder": "Rain Showers and Thunder",
         "sleet": "Natte sneeuw",
-        "sleetandthunder": "Natte sneeuw en onweer",
-        "sleetshowers": "Natte sneeuwbuien",
-        "sleetshowersandthunder": "Natte sneeuwbuien en onweer",
+        "sleetandthunder": "Sleet and Thunder",
+        "sleetshowers": "Sleet Showers",
+        "sleetshowersandthunder": "Sleet Showers and Thunder",
         "snow": "Sneeuw",
-        "snowandthunder": "Sneeuw en onweer",
-        "snowshowers": "Sneeuwbuien",
-        "snowshowersandthunder": "Sneeuwbuien en onweer",
+        "snowandthunder": "Snow and Thunder",
+        "snowshowers": "Snow Showers",
+        "snowshowersandthunder": "Snow Showers and Thunder",
         "thunder": "Onweer",
         "unknown": "Onbekend"
       }
     },
     "row": {
       "viewDetails": "Bekijk details voor {species}",
-      "play": "Afspelen",
-      "playAudio": "Geluid afspelen"
+      "openDetailFromStatus": "Detailpagina voor {species} openen",
+      "play": "Play",
+      "playAudio": "Play audio"
     },
     "media": {
       "title": "Geluid opname & Spectrogram",
@@ -947,6 +948,24 @@
       "loadFailed": "Kon detectie niet laden (Fout {status}). Ververs de pagina.",
       "noIdProvided": "Geen detectie-ID opgegeven.",
       "fetchFailed": "Detecties konden niet worden opgehaald"
+    },
+    "reanalyze": {
+      "title": "Clip heranalyseren",
+      "running": "Bezig met analyseren…",
+      "noPredictions": "Geen voorspellingen ontvangen.",
+      "colSpecies": "Soort",
+      "button": "Heranalyseren",
+      "buttonAriaLabel": "Clip van {species} heranalyseren met een ander model",
+      "descriptionMulti": "Hieronder zie je wat elk geladen model van deze clip vindt. Klik op 'Deze gebruiken' bij de regel die volgens jou klopt om de detectie aan te passen.",
+      "multiModelSummary": "{models} • {duration} audio",
+      "useThis": "Deze gebruiken",
+      "useThisAriaLabel": "Deze soort ({species}) toepassen als gecorrigeerde detectie",
+      "noModelForCorrection": "Geen model heeft deze soort gescoord; kan niet toegepast worden.",
+      "correctionApplied": "Detectie bijgewerkt naar {species}.",
+      "confirmTitle": "Detectie vervangen door {species}?",
+      "confirmBody": "Dit werkt de soort, het model en de betrouwbaarheid van de detectie ter plekke bij en markeert hem als geverifieerd. Eventuele bestaande beoordeling wordt overschreven.",
+      "confirmApply": "Ja, correctie toepassen",
+      "applying": "Bezig met toepassen…"
     }
   },
   "species": {
@@ -1557,7 +1576,10 @@
       "applyFilters": "Filters toepassen",
       "exportCsv": "CSV Export",
       "species": "soorten",
-      "filtered": "(gefilterd)"
+      "filtered": "(gefilterd)",
+      "audioSource": "Audiobron",
+      "audioSourceAll": "Alle audiobronnen",
+      "audioSourceUnknown": "Onbekende bron"
     },
     "timePeriodOptions": {
       "allTime": "Alle herkenningen",
@@ -1821,15 +1843,15 @@
           "overlapAdjusted": "Overlap-instelling automatisch aangepast naar {overlap}s om aan de filtervereisten te voldoen",
           "overlapReduced": "Overlap-instelling verlaagd naar {overlap}s om overeen te komen met het filterniveau",
           "levelNames": {
-            "off": "Uit",
-            "lenient": "Laag",
-            "moderate": "Gemiddeld",
-            "balanced": "Gebalanceerd",
-            "strict": "Streng",
+            "off": "Off",
+            "lenient": "Lenient",
+            "moderate": "Moderate",
+            "balanced": "Balanced",
+            "strict": "Strict",
             "maximum": "Maximum",
-            "unknown": "Onbekend"
+            "unknown": "Unknown"
           },
-          "warningOff": "Zonder filtering wordt elke detectie boven de betrouwbaarheidsdrempel onmiddellijk geaccepteerd. Dit levert doorgaans meerdere vals-positieven per dag op. Zelfs lage filtering verbetert de resultaatkwaliteit aanzienlijk."
+          "warningOff": "With filtering disabled, any detection above the confidence threshold is accepted immediately. This typically produces several false positives per day. Even lenient filtering significantly improves result quality."
         },
         "rangeFilter": {
           "title": "Bereik Filter",
@@ -2463,8 +2485,8 @@
             "name": "Gotify",
             "server": {
               "label": "Server-URL",
-              "placeholder": "gotify.example.com:8070",
-              "helpText": "Uw Gotify-server hostnaam en poort"
+              "placeholder": "gotify.example.com",
+              "helpText": "Je Gotify-server hostnaam (zonder https://)"
             },
             "protocol": {
               "label": "Protocol"
@@ -4237,8 +4259,8 @@
       "species": {
         "loadingSpecies": "Soorten laden...",
         "typePlaceholder": "Typ soorten naam...",
-        "suggestionsAvailable": "{count} soortsuggesties beschikbaar. Gebruik pijltoetsen om te navigeren.",
-        "noSuggestions": "Geen soortsuggesties beschikbaar."
+        "suggestionsAvailable": "{count} soortsuggessies beschikbaar. Gebruik pijltoetsen om te navigeren.",
+        "noSuggestions": "Geen soortsuggessies beschikbaar."
       },
       "select": {
         "searchPlaceholder": "Zoeken...",
@@ -4559,8 +4581,8 @@
   "analysis": {
     "title": "Analyse",
     "tabs": {
-      "settings": "Instellingen",
-      "models": "Modellen"
+      "settings": "Settings",
+      "models": "Models"
     },
     "detection": {
       "title": "Detectie-instellingen",
@@ -4570,60 +4592,60 @@
         "helpText": "Minimale betrouwbaarheidsscore (0.0 - 1.0) vereist om een detectie vast te leggen."
       },
       "batThreshold": {
-        "label": "Vleermuis-detectiedrempel",
-        "helpText": "Minimale betrouwbaarheidsscore voor vleermuissoortdetecties. Geldt alleen voor vleermuisclassificatiemodellen."
+        "label": "Bat Detection Threshold",
+        "helpText": "Minimum confidence score for bat species detections. Only applies to bat classifier models."
       },
       "batFilter": {
-        "label": "Vleermuis audio hoogdoorlaatfilter",
-        "helpText": "Filtert hoorbare frequenties vóór de vleermuisanalyse om valse detecties door vogelzang en omgevingsgeluid te verminderen."
+        "label": "Bat Audio High-Pass Filter",
+        "helpText": "Filters out human-audible frequencies before bat analysis to reduce false positives from bird songs and ambient noise."
       },
       "batNighttimeOnly": {
-        "label": "Alleen 's nachts",
-        "helpText": "Wanneer ingeschakeld, werkt de vleermuisdetectie alleen tussen de burgerlijke schemering en de burgerlijke dageraad. Vereist dat de locatie is geconfigureerd. Schakel uit om vleermuisdetectie de klok rond uit te voeren."
+        "label": "Nighttime Only",
+        "helpText": "When enabled, bat detection runs only between civil dusk and civil dawn. Requires location to be configured. Disable to run bat detection around the clock."
       },
       "batUltrasonicFilter": {
-        "label": "Validatie na detectie",
-        "helpText": "Indien ingeschakeld worden vleermuisdetecties gevalideerd door analyse van ultrasone energiepatronen in de bronaudio. Detecties zonder echolocatiekenmerken worden gemarkeerd als onwaarschijnlijk."
+        "label": "Post Detection Validation",
+        "helpText": "When enabled, bat detections are validated by analyzing ultrasonic energy patterns in the source audio. Detections that lack bat echolocation characteristics are tagged as unlikely."
       },
       "batFalsePositiveFilter": {
-        "label": "Vleermuis vals-positief filter",
-        "helpText": "Vereist meerdere bevestigingen van een vleermuisdetectie binnen een schuifvenster voordat deze wordt geaccepteerd. Hogere niveaus vereisen meer bevestigingen, waardoor valse positieven worden verminderd. Het vleermuismodel gebruikt een vaste overlap van 50%, dus er is geen overlapaanpassing nodig.",
+        "label": "Bat False Positive Filter",
+        "helpText": "Requires multiple confirmations of a bat detection within a sliding window before accepting it. Higher levels require more confirmations, reducing false positives. The bat model uses a fixed 50% overlap, so no overlap adjustment is needed.",
         "levels": {
-          "off": "Geen filtering; accepteert elke vleermuisdetectie onmiddellijk.",
-          "moderate": "Goede balans voor de meeste opstellingen. Vermindert vals-positieven aanzienlijk.",
-          "strict": "Maximale filtering voor de hoogste nauwkeurigheid."
+          "off": "No filtering; accepts any bat detection immediately.",
+          "moderate": "Good balance for most setups. Significantly reduces false positives.",
+          "strict": "Maximum filtering for highest accuracy."
         },
-        "detectionCount": "{count} bevestigingen vereist. {description}",
-        "warningOff": "Zonder filtering is er een grote kans op vals-positieven. Het inschakelen van filtering verbetert de nauwkeurigheid aanzienlijk."
+        "detectionCount": "{count} confirmations required. {description}",
+        "warningOff": "Without filtering there is a high probability of false positives. Enabling filtering significantly improves accuracy."
       },
       "locale": {
-        "label": "Soortentaal",
-        "helpText": "Taal voor de gangbare soortnamen in de interface."
+        "label": "Species Language",
+        "helpText": "Language used for species common names in the interface."
       }
     },
     "rangeFilter": {
-      "birdOnlyNote": "Bereikfilter geldt alleen voor vogelclassificatoren. Vleermuismodellen gebruiken hun eigen soortenlijsten.",
+      "birdOnlyNote": "Range filter applies to bird classifiers only. Bat models use their own species lists.",
       "status": {
-        "title": "Gebiedsfilter overzicht",
-        "geomodelInfo": "BirdNET Geomodel {version} - {species} bekende soorten",
+        "title": "Actief gebiedsfilter",
+        "geomodelInfo": "BirdNET Geomodel {version} - {species} known species",
         "autoSelected": "Automatisch geselecteerd",
         "manual": "Handmatig",
-        "classifier": "Classificator",
+        "classifier": "Classifier",
         "totalSpecies": "Totaal aantal soorten",
-        "withRangeData": "Met gebiedsgegevens",
-        "withoutRangeData": "Zonder gebiedsgegevens",
-        "withRangeDataTooltip": "Soorten waarvoor het geomodel de geografische waarschijnlijkheid op uw locatie kan evalueren",
-        "withoutRangeDataTooltip": "Soorten zonder geografische gegevens in het geomodel, afgehandeld door de instelling voor niet-gekoppelde soorten hieronder",
+        "withRangeData": "With Range Data",
+        "withoutRangeData": "Without Range Data",
+        "withRangeDataTooltip": "Species that the geomodel can evaluate for geographic probability at your location",
+        "withoutRangeDataTooltip": "Species without geographic data in the geomodel, handled by the unmapped species setting below",
         "noFilter": "Geen gebiedsfilter actief",
         "passUnmapped": {
-          "label": "Soorten zonder gebiedsgegevens toestaan",
-          "helpText": "Detecties toestaan van soorten waarvoor het geomodel geen geografische gegevens heeft. Wanneer uitgeschakeld, worden deze soorten altijd uitgefilterd."
+          "label": "Allow species without range data",
+          "helpText": "Allow detections of species the geomodel has no geographic data for. When disabled, these species are always filtered out."
         }
       }
     },
     "advanced": {
-      "title": "Geavanceerd",
-      "description": "Verwerking en aangepaste modelconfiguratie."
+      "title": "Advanced",
+      "description": "Processing and custom model configuration."
     },
     "gallery": {
       "title": "Modellengalerij",
@@ -4644,8 +4666,8 @@
       "noInstalledModels": "Geen extra modellen geïnstalleerd. Blader door het tabblad Beschikbaar om meer classificatoren toe te voegen.",
       "noAvailableModels": "Geen extra modellen beschikbaar voor uw platform.",
       "sections": {
-        "acoustic": "Akoestische classificatoren",
-        "geomodel": "Geomodellen"
+        "acoustic": "Acoustic Classifiers",
+        "geomodel": "Geomodels"
       },
       "categories": {
         "wildlife": "Wildlifeclassificatoren",
@@ -4690,15 +4712,15 @@
       "geomodelBadge": "Bevat BirdNET v3.0 geomodel"
     },
     "bird": {
-      "title": "Vogeldetectie",
-      "description": "Configureer betrouwbaarheidsdrempel, soortentaal en vals-positief filtering voor vogelclassificatoren."
+      "title": "Bird Detection",
+      "description": "Configure confidence threshold, species language, and false positive filtering for bird classifiers."
     },
     "bat": {
-      "title": "Vleermuisdetectie",
-      "description": "Configureer drempel, planning en vals-positief filtering voor vleermuisclassificatoren."
+      "title": "Bat Detection",
+      "description": "Configure threshold, scheduling, and false positive filtering for bat classifiers."
     },
     "dynamicThreshold": {
-      "birdOnlyNote": "Dynamische drempel geldt alleen voor vogelclassificatoren."
+      "birdOnlyNote": "Dynamic threshold applies to bird classifiers only."
     }
   },
   "restart": {

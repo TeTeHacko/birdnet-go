@@ -903,6 +903,7 @@
     },
     "row": {
       "viewDetails": "Zobrazit podrobnosti pro {species}",
+      "openDetailFromStatus": "Otevřít stránku s podrobnostmi pro {species}",
       "play": "Přehrát",
       "playAudio": "Přehrát zvuk"
     },
@@ -966,6 +967,24 @@
       "tooManyDetections": "Příliš mnoho detekcí ({count}). Zužte filtry, abyste vybrali méně než 500.",
       "bulkError": "Hromadná operace selhala. Zkuste to prosím znovu.",
       "switchToTable": "Pro výběr detekcí přepněte na zobrazení tabulky"
+    },
+    "reanalyze": {
+      "title": "Znovu analyzovat tento klip",
+      "running": "Analyzuje se…",
+      "noPredictions": "Žádné predikce nebyly vráceny.",
+      "colSpecies": "Druh",
+      "button": "Znovu analyzovat",
+      "buttonAriaLabel": "Znovu analyzovat klip {species} jiným modelem",
+      "descriptionMulti": "Níže je vidět, jak každý načtený klasifikátor ohodnotil tento klip. Klikněte na „Použít tuto“ u řádku, který považujete za správný, abyste aktualizovali detekci.",
+      "multiModelSummary": "{models} • {duration} zvuku",
+      "useThis": "Použít tuto",
+      "useThisAriaLabel": "Použít tento druh ({species}) jako opravenou detekci",
+      "noModelForCorrection": "Žádný model neskóroval tento druh; nelze použít.",
+      "correctionApplied": "Detekce aktualizována na {species}.",
+      "confirmTitle": "Nahradit detekci za {species}?",
+      "confirmBody": "Toto na místě aktualizuje druh, model a spolehlivost detekce a označí ji jako ověřenou. Stávající stav recenze bude přepsán.",
+      "confirmApply": "Ano, použít opravu",
+      "applying": "Aplikuje se…"
     }
   },
   "species": {
@@ -1576,7 +1595,10 @@
       "applyFilters": "Použít filtry",
       "exportCsv": "Exportovat CSV",
       "species": "druhy",
-      "filtered": "(filtrováno)"
+      "filtered": "(filtrováno)",
+      "audioSource": "Audio Source",
+      "audioSourceAll": "All audio sources",
+      "audioSourceUnknown": "Unknown source"
     },
     "timePeriodOptions": {
       "allTime": "Celá doba",

@@ -903,6 +903,7 @@
     },
     "row": {
       "viewDetails": "View details for {species}",
+      "openDetailFromStatus": "Open detail page for {species}",
       "play": "Play",
       "playAudio": "Play audio"
     },
@@ -947,6 +948,24 @@
       "loadFailed": "Failed to load detection (Error {status}). Please try refreshing the page.",
       "noIdProvided": "No detection ID provided.",
       "fetchFailed": "Failed to fetch detections"
+    },
+    "reanalyze": {
+      "title": "Reanalyze this clip",
+      "running": "Analyzing…",
+      "noPredictions": "No predictions returned.",
+      "colSpecies": "Species",
+      "button": "Reanalyze",
+      "buttonAriaLabel": "Reanalyze {species} clip with another model",
+      "descriptionMulti": "Below is how every loaded classifier scored this clip. Click 'Use this' on the row you think is right to update the detection.",
+      "multiModelSummary": "{models} • {duration} of audio",
+      "useThis": "Use this",
+      "useThisAriaLabel": "Apply this species ({species}) as the corrected detection",
+      "noModelForCorrection": "No model has scored this species; cannot apply.",
+      "correctionApplied": "Detection updated to {species}.",
+      "confirmTitle": "Replace detection with {species}?",
+      "confirmBody": "This updates the detection's species, model, and confidence in place, and marks it as verified. Existing review status is overwritten.",
+      "confirmApply": "Yes, apply correction",
+      "applying": "Applying…"
     }
   },
   "species": {
@@ -1557,7 +1576,10 @@
       "applyFilters": "Apply Filters",
       "exportCsv": "Export CSV",
       "species": "species",
-      "filtered": "(filtered)"
+      "filtered": "(filtered)",
+      "audioSource": "Audio Source",
+      "audioSourceAll": "All audio sources",
+      "audioSourceUnknown": "Unknown source"
     },
     "timePeriodOptions": {
       "allTime": "All Time",

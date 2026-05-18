@@ -129,6 +129,10 @@ func (c *Controller) initAnalyticsRoutes() {
 	timeGroup.GET("/daily", c.GetDailyAnalytics)
 	timeGroup.GET("/daily/batch", c.GetBatchDailySpeciesData)         // Batch daily trends for multiple species
 	timeGroup.GET("/distribution/hourly", c.GetTimeOfDayDistribution) // Renamed endpoint for time-of-day distribution
+
+	// Audio source listing for analytics filters: returns historical audio_sources with
+	// detection counts (distinct from /system/audio/sources which lists live engine sources).
+	analyticsGroup.GET("/sources", c.ListAnalyticsSources)
 }
 
 // GetDailySpeciesSummary handles GET /api/v2/analytics/species/daily
@@ -550,11 +554,13 @@ func applySpeciesStatusToSummary(summary *SpeciesDailySummary, status *species.S
 func (c *Controller) GetSpeciesSummary(ctx echo.Context) error {
 	startDate := ctx.QueryParam("start_date")
 	endDate := ctx.QueryParam("end_date")
+	sourceIDs := c.parseOptionalSourceIDs(ctx, "source_id")
 	ip, path := ctx.RealIP(), ctx.Request().URL.Path
 
 	c.logInfoIfEnabled("Retrieving species summary",
 		logger.String("start_date", startDate),
 		logger.String("end_date", endDate),
+		logger.Int("source_id_count", len(sourceIDs)),
 		logger.String("ip", ip),
 		logger.String("path", path),
 	)
@@ -564,7 +570,7 @@ func (c *Controller) GetSpeciesSummary(ctx echo.Context) error {
 	}
 
 	// Retrieve species summary data from the datastore
-	summaryData, dbDuration, err := c.fetchSpeciesSummaryData(ctx, startDate, endDate)
+	summaryData, dbDuration, err := c.fetchSpeciesSummaryData(ctx, startDate, endDate, sourceIDs)
 	c.logInfoIfEnabled("Database query completed",
 		logger.Int64("duration_ms", dbDuration.Milliseconds()),
 		logger.Int("record_count", len(summaryData)),
@@ -603,10 +609,11 @@ func (c *Controller) GetSpeciesSummary(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, response)
 }
 
-// fetchSpeciesSummaryData fetches species summary data with timing
-func (c *Controller) fetchSpeciesSummaryData(ctx echo.Context, startDate, endDate string) ([]datastore.SpeciesSummaryData, time.Duration, error) {
+// fetchSpeciesSummaryData fetches species summary data with timing.
+// sourceIDs (when non-empty) restricts the query to the listed audio sources.
+func (c *Controller) fetchSpeciesSummaryData(ctx echo.Context, startDate, endDate string, sourceIDs []uint) ([]datastore.SpeciesSummaryData, time.Duration, error) {
 	dbStart := time.Now()
-	summaryData, err := c.DS.GetSpeciesSummaryData(ctx.Request().Context(), startDate, endDate)
+	summaryData, err := c.DS.GetSpeciesSummaryData(ctx.Request().Context(), startDate, endDate, sourceIDs...)
 	return summaryData, time.Since(dbStart), err
 }
 
@@ -724,6 +731,7 @@ func (c *Controller) GetHourlyAnalytics(ctx echo.Context) error {
 
 	date := ctx.QueryParam("date")
 	speciesParam := ctx.QueryParam("species")
+	sourceIDs := c.parseOptionalSourceIDs(ctx, "source_id")
 
 	// Validate date format
 	if err := c.validateDateFormatWithResponse(ctx, date, "date", operation); err != nil {
@@ -733,6 +741,7 @@ func (c *Controller) GetHourlyAnalytics(ctx echo.Context) error {
 	c.logInfoIfEnabled("Retrieving hourly analytics",
 		logger.String("date", date),
 		logger.String("species", speciesParam),
+		logger.Int("source_id_count", len(sourceIDs)),
 		logger.String("ip", ctx.RealIP()),
 		logger.String("path", ctx.Request().URL.Path),
 	)
@@ -742,7 +751,7 @@ func (c *Controller) GetHourlyAnalytics(ctx echo.Context) error {
 	defer cancel()
 
 	// Get hourly analytics data from the datastore
-	hourlyData, err := c.DS.GetHourlyAnalyticsData(ctxWithTimeout, date, speciesParam)
+	hourlyData, err := c.DS.GetHourlyAnalyticsData(ctxWithTimeout, date, speciesParam, sourceIDs...)
 	if err != nil {
 		// Check if error was due to timeout
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -811,6 +820,7 @@ func (c *Controller) GetDailyAnalytics(ctx echo.Context) error {
 	startDate := ctx.QueryParam("start_date")
 	endDate := ctx.QueryParam("end_date")
 	speciesParam := ctx.QueryParam("species")
+	sourceIDs := c.parseOptionalSourceIDs(ctx, "source_id")
 
 	// Validate date formats strictly using regex
 	if err := c.validateDateFormatStrictWithResponse(ctx, startDate, "start_date", operation); err != nil {
@@ -835,6 +845,7 @@ func (c *Controller) GetDailyAnalytics(ctx echo.Context) error {
 		logger.String("start_date", startDate),
 		logger.String("end_date", endDate),
 		logger.String("species", speciesParam),
+		logger.Int("source_id_count", len(sourceIDs)),
 		logger.String("ip", ctx.RealIP()),
 		logger.String("path", ctx.Request().URL.Path),
 	)
@@ -844,7 +855,7 @@ func (c *Controller) GetDailyAnalytics(ctx echo.Context) error {
 	defer cancel()
 
 	// Get daily analytics data from the datastore
-	dailyData, err := c.DS.GetDailyAnalyticsData(ctxWithTimeout, startDate, endDate, speciesParam)
+	dailyData, err := c.DS.GetDailyAnalyticsData(ctxWithTimeout, startDate, endDate, speciesParam, sourceIDs...)
 	if err != nil {
 		// Check if error was due to timeout
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -925,6 +936,7 @@ func (c *Controller) GetSpeciesDiversity(ctx echo.Context) error {
 
 	startDate := ctx.QueryParam("start_date")
 	endDate := ctx.QueryParam("end_date")
+	sourceIDs := c.parseOptionalSourceIDs(ctx, "source_id")
 
 	// Validate date formats strictly using regex
 	if err := c.validateDateFormatStrictWithResponse(ctx, startDate, "start_date", operation); err != nil {
@@ -948,6 +960,7 @@ func (c *Controller) GetSpeciesDiversity(ctx echo.Context) error {
 	c.logInfoIfEnabled("Retrieving species diversity data",
 		logger.String("start_date", startDate),
 		logger.String("end_date", endDate),
+		logger.Int("source_id_count", len(sourceIDs)),
 		logger.String("ip", ctx.RealIP()),
 		logger.String("path", ctx.Request().URL.Path),
 	)
@@ -956,7 +969,7 @@ func (c *Controller) GetSpeciesDiversity(ctx echo.Context) error {
 	ctxWithTimeout, cancel := context.WithTimeout(ctx.Request().Context(), analyticsQueryTimeout)
 	defer cancel()
 
-	diversityData, err := c.DS.GetSpeciesDiversityData(ctxWithTimeout, startDate, endDate)
+	diversityData, err := c.DS.GetSpeciesDiversityData(ctxWithTimeout, startDate, endDate, sourceIDs...)
 	if err != nil {
 		// Check if error was due to timeout
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -1021,6 +1034,66 @@ func (c *Controller) GetSpeciesDiversity(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, response)
 }
 
+// AnalyticsSourceResponse is the API representation of a historical audio source for the
+// analytics filter picker. Mirrors datastore.AnalyticsSourceInfo with stable JSON field names.
+type AnalyticsSourceResponse struct {
+	ID             uint   `json:"id"`
+	DisplayName    string `json:"displayName"`
+	SourceURI      string `json:"sourceUri,omitempty"`
+	SourceType     string `json:"sourceType,omitempty"`
+	NodeName       string `json:"nodeName,omitempty"`
+	DetectionCount int64  `json:"detectionCount"`
+}
+
+// AnalyticsSourceListResponse wraps the source list. Wrapped (rather than bare array) so the
+// shape is forward-compatible if pagination or metadata is added later.
+type AnalyticsSourceListResponse struct {
+	Sources []AnalyticsSourceResponse `json:"sources"`
+}
+
+// ListAnalyticsSources handles GET /api/v2/analytics/sources.
+// Returns historical audio sources with detection counts, used to populate the source filter
+// picker on the analytics page. Always returns 200 with an empty list rather than 404 when no
+// detections exist, so the frontend can render an "All sources" picker without special-casing.
+//
+// This endpoint returns the same source metadata that GET /api/v2/detections already exposes
+// for every detection in its `source` field (id = SourceURI, displayName, type). Anonymizing
+// only here while detections.go ships the full URI to every unauthenticated request would be
+// security theater — a public viewer can read the detection list and learn the same things.
+// If upstream tightens that exposure later, this endpoint should follow the same model in
+// the same change rather than diverging unilaterally. Operators who do not want any of this
+// surface area public can put their dashboard behind an authenticator (basic auth, OAuth,
+// or a reverse proxy ACL); the API itself does not differentiate here, matching detections.
+func (c *Controller) ListAnalyticsSources(ctx echo.Context) error {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx.Request().Context(), analyticsQueryTimeout)
+	defer cancel()
+
+	sources, err := c.DS.ListAnalyticsSourcesData(ctxWithTimeout)
+	if err != nil {
+		return c.HandleError(ctx, err, "Failed to list analytics sources", http.StatusInternalServerError)
+	}
+
+	resp := AnalyticsSourceListResponse{Sources: make([]AnalyticsSourceResponse, 0, len(sources))}
+	for i := range sources {
+		s := &sources[i]
+		resp.Sources = append(resp.Sources, AnalyticsSourceResponse{
+			ID:             s.ID,
+			DisplayName:    s.DisplayName,
+			SourceURI:      s.SourceURI,
+			SourceType:     s.SourceType,
+			NodeName:       s.NodeName,
+			DetectionCount: s.DetectionCount,
+		})
+	}
+
+	c.logInfoIfEnabled("Analytics sources listed",
+		logger.Int("count", len(resp.Sources)),
+		logger.String("path", ctx.Request().URL.Path),
+		logger.String("ip", ctx.RealIP()),
+	)
+	return ctx.JSON(http.StatusOK, resp)
+}
+
 // GetTimeOfDayDistribution handles GET /api/v2/analytics/time/distribution/hourly
 // Returns an aggregated count of detections by hour of day across the given date range
 func (c *Controller) GetTimeOfDayDistribution(ctx echo.Context) error {
@@ -1030,6 +1103,7 @@ func (c *Controller) GetTimeOfDayDistribution(ctx echo.Context) error {
 	startDate := ctx.QueryParam("start_date")
 	endDate := ctx.QueryParam("end_date")
 	speciesParam := ctx.QueryParam("species")
+	sourceIDs := c.parseOptionalSourceIDs(ctx, "source_id")
 
 	if startDate == "" {
 		startDate = time.Now().AddDate(0, 0, -30).Format(time.DateOnly)
@@ -1043,8 +1117,13 @@ func (c *Controller) GetTimeOfDayDistribution(ctx echo.Context) error {
 		return err
 	}
 
+	// Bound the DB query so a stuck or slow query doesn't tie up the request handler;
+	// matches the pattern used by other analytics handlers in this file.
+	ctxWithTimeout, cancel := context.WithTimeout(ctx.Request().Context(), analyticsQueryTimeout)
+	defer cancel()
+
 	// Get hourly distribution data from the datastore
-	hourlyData, err := c.DS.GetHourlyDistribution(ctx.Request().Context(), startDate, endDate, speciesParam)
+	hourlyData, err := c.DS.GetHourlyDistribution(ctxWithTimeout, startDate, endDate, speciesParam, sourceIDs...)
 	if err != nil {
 		return c.HandleError(ctx, err, "Failed to get hourly distribution data", http.StatusInternalServerError)
 	}
@@ -1069,10 +1148,12 @@ func (c *Controller) GetNewSpeciesDetections(ctx echo.Context) error {
 
 	// Get query parameters with defaults (last 30 days)
 	startDate, endDate := getDefaultDateRange(ctx.QueryParam("start_date"), ctx.QueryParam("end_date"), -30, 0)
+	sourceIDs := c.parseOptionalSourceIDs(ctx, "source_id")
 
 	c.logInfoIfEnabled("Retrieving new species detections",
 		logger.String("start_date", startDate),
 		logger.String("end_date", endDate),
+		logger.Int("source_id_count", len(sourceIDs)),
 		logger.String("ip", ip),
 		logger.String("path", path),
 	)
@@ -1089,7 +1170,7 @@ func (c *Controller) GetNewSpeciesDetections(ctx echo.Context) error {
 	}
 
 	// Fetch data from datastore
-	newSpeciesData, err := c.DS.GetNewSpeciesDetections(ctx.Request().Context(), startDate, endDate, limit, offset)
+	newSpeciesData, err := c.DS.GetNewSpeciesDetections(ctx.Request().Context(), startDate, endDate, limit, offset, sourceIDs...)
 	if err != nil {
 		c.logErrorIfEnabled("Failed to get new species detections",
 			logger.String("start_date", startDate),
@@ -1315,16 +1396,18 @@ func (c *Controller) GetBatchHourlySpeciesData(ctx echo.Context) error {
 	}
 
 	minConfidence := c.parseOptionalFloat(ctx, "min_confidence", 0.0, PercentageMultiplier)
+	sourceIDs := c.parseOptionalSourceIDs(ctx, "source_id")
 	c.logInfoIfEnabled("Retrieving batch hourly species data",
 		logger.String("date", date),
 		logger.Int("species_count", len(speciesParams)),
 		logger.Float64("min_confidence", minConfidence),
+		logger.Int("source_id_count", len(sourceIDs)),
 		logger.String("ip", ip),
 		logger.String("path", path),
 	)
 
 	// Process all species
-	results, processingErrors := c.processHourlyBatchSpecies(ctx, speciesParams, date, ip, path)
+	results, processingErrors := c.processHourlyBatchSpecies(ctx, speciesParams, date, sourceIDs, ip, path)
 
 	// Handle results
 	return c.handleBatchHourlyResults(ctx, results, processingErrors, len(speciesParams), ip, path)
@@ -1351,8 +1434,14 @@ func (c *Controller) validateBatchHourlyParams(ctx echo.Context, operation strin
 	return speciesParams, date, nil
 }
 
-// processHourlyBatchSpecies processes each species for batch hourly data
-func (c *Controller) processHourlyBatchSpecies(ctx echo.Context, speciesParams []string, date, ip, path string) (results map[string][]HourlyDistribution, processingErrors []string) {
+// processHourlyBatchSpecies processes each species for batch hourly data.
+// All N per-species queries share the same analyticsQueryTimeout budget — that's the same
+// behavior other batch endpoints in this file rely on; per-call budgets would let a single
+// pathological species blow the request's total wall-clock.
+func (c *Controller) processHourlyBatchSpecies(ctx echo.Context, speciesParams []string, date string, sourceIDs []uint, ip, path string) (results map[string][]HourlyDistribution, processingErrors []string) {
+	queryCtx, cancel := context.WithTimeout(ctx.Request().Context(), analyticsQueryTimeout)
+	defer cancel()
+
 	results = make(map[string][]HourlyDistribution)
 	processingErrors = make([]string, 0)
 	seen := make(map[string]bool)
@@ -1364,7 +1453,7 @@ func (c *Controller) processHourlyBatchSpecies(ctx echo.Context, speciesParams [
 		}
 		seen[speciesItem] = true
 
-		hourlyData, err := c.DS.GetHourlyAnalyticsData(ctx.Request().Context(), date, speciesItem)
+		hourlyData, err := c.DS.GetHourlyAnalyticsData(queryCtx, date, speciesItem, sourceIDs...)
 		if err != nil {
 			processingErrors = append(processingErrors, fmt.Sprintf("Failed to get hourly data for species %s: %v", speciesItem, err))
 			c.logErrorIfEnabled("Error getting hourly data for species in batch request",
@@ -1417,17 +1506,19 @@ func (c *Controller) GetBatchDailySpeciesData(ctx echo.Context) error {
 		return err
 	}
 
+	sourceIDs := c.parseOptionalSourceIDs(ctx, "source_id")
 	c.logInfoIfEnabled("Retrieving batch daily species data",
 		logger.String("start_date", startDate),
 		logger.String("end_date", endDate),
 		logger.Int("species_requested", len(speciesParams)),
 		logger.Int("species_unique", len(uniqueSpecies)),
+		logger.Int("source_id_count", len(sourceIDs)),
 		logger.String("ip", ip),
 		logger.String("path", path),
 	)
 
 	// Process all species
-	results, processingErrors := c.processDailyBatchSpecies(ctx, uniqueSpecies, startDate, endDate, ip, path)
+	results, processingErrors := c.processDailyBatchSpecies(ctx, uniqueSpecies, startDate, endDate, sourceIDs, ip, path)
 
 	// Handle results
 	return c.handleBatchDailyResults(ctx, results, processingErrors, len(speciesParams), len(uniqueSpecies), ip, path)
@@ -1463,13 +1554,18 @@ func (c *Controller) validateBatchDailyParams(ctx echo.Context, operation string
 	return speciesParams, uniqueSpecies, startDate, endDate, nil
 }
 
-// processDailyBatchSpecies processes each species for batch daily data
-func (c *Controller) processDailyBatchSpecies(ctx echo.Context, uniqueSpecies []string, startDate, endDate, ip, path string) (results map[string]SpeciesDailyData, processingErrors []string) {
+// processDailyBatchSpecies processes each species for batch daily data.
+// Shares one analyticsQueryTimeout budget across all N per-species queries — matches the
+// hourly batch processor above and keeps total wall-clock bounded by the same constant.
+func (c *Controller) processDailyBatchSpecies(ctx echo.Context, uniqueSpecies []string, startDate, endDate string, sourceIDs []uint, ip, path string) (results map[string]SpeciesDailyData, processingErrors []string) {
+	queryCtx, cancel := context.WithTimeout(ctx.Request().Context(), analyticsQueryTimeout)
+	defer cancel()
+
 	results = make(map[string]SpeciesDailyData)
 	processingErrors = make([]string, 0)
 
 	for _, speciesItem := range uniqueSpecies {
-		dailyData, err := c.DS.GetDailyAnalyticsData(ctx.Request().Context(), startDate, endDate, speciesItem)
+		dailyData, err := c.DS.GetDailyAnalyticsData(queryCtx, startDate, endDate, speciesItem, sourceIDs...)
 		if err != nil {
 			processingErrors = append(processingErrors, fmt.Sprintf("Failed to get daily data for species %s: %v", speciesItem, err))
 			c.logErrorIfEnabled("Error getting daily data for species in batch request",
