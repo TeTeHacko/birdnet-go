@@ -4850,6 +4850,13 @@
       "timeLabel": "Time",
       "durationLabel": "Duration",
       "checksLabel": "Checks"
+    },
+    "logs": {
+      "topErrors": "Yleisimmät virheet",
+      "errorCount": "Lukumäärä",
+      "errorComponent": "Komponentti",
+      "errorLevel": "Taso",
+      "errorMessage": "Viesti"
     }
   }
 }

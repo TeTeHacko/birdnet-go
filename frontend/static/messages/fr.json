@@ -4850,6 +4850,13 @@
       "timeLabel": "Time",
       "durationLabel": "Duration",
       "checksLabel": "Checks"
+    },
+    "logs": {
+      "topErrors": "Erreurs fréquentes",
+      "errorCount": "Nombre",
+      "errorComponent": "Composant",
+      "errorLevel": "Niveau",
+      "errorMessage": "Message"
     }
   }
 }

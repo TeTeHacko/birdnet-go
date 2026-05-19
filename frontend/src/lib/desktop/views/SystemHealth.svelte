@@ -13,6 +13,8 @@
     SkipForward,
     Clock,
     Loader2,
+    Info,
+    ChevronDown,
   } from '@lucide/svelte';
   import { onMount } from 'svelte';
   import { t } from '$lib/i18n';
@@ -70,6 +72,45 @@
   let error = $state<string | null>(null);
   let copied = $state(false);
   let copyTimer: ReturnType<typeof setTimeout> | null = null;
+  let expandedChecks = $state(new Set<string>());
+
+  function toggleExpand(checkName: string) {
+    const next = new Set(expandedChecks);
+    if (next.has(checkName)) {
+      next.delete(checkName);
+    } else {
+      next.add(checkName);
+    }
+    expandedChecks = next;
+  }
+
+  interface ErrorGroup {
+    component?: string;
+    message: string;
+    count: number;
+    level: string;
+    sample_fields?: Record<string, unknown>;
+  }
+
+  function getTopErrors(result: DiagnosticsResult): ErrorGroup[] | null {
+    const topErrors = result.details?.top_errors;
+    if (!Array.isArray(topErrors) || topErrors.length === 0) return null;
+    return topErrors as ErrorGroup[];
+  }
+
+  function levelColor(level: string): string {
+    switch (level) {
+      case 'fatal':
+      case 'panic':
+      case 'error':
+        return 'var(--color-error)';
+      case 'warn':
+      case 'warning':
+        return 'var(--color-warning)';
+      default:
+        return 'var(--color-base-content)';
+    }
+  }
 
   onMount(() => {
     return () => {
@@ -93,7 +134,6 @@
         const existing = groups.get(r.category) ?? [];
         existing.push(r);
         groups.set(r.category, existing);
-        seen.add(r.category);
       }
     }
     return groups;
@@ -113,6 +153,7 @@
   }
 
   async function runDiagnostics() {
+    if (running) return;
     running = true;
     error = null;
     try {
@@ -173,10 +214,24 @@
   }
 </script>
 
+{#snippet statusIcon(status: HealthStatus, sizeClass: string)}
+  {#if status === 'healthy'}
+    <CheckCircle class={sizeClass} />
+  {:else if status === 'warning'}
+    <AlertTriangle class={sizeClass} />
+  {:else if status === 'critical'}
+    <XCircle class={sizeClass} />
+  {:else if status === 'skipped'}
+    <SkipForward class={sizeClass} />
+  {:else}
+    <Info class={sizeClass} />
+  {/if}
+{/snippet}
+
 <div class="col-span-12 space-y-4">
   <!-- Page Header -->
   <Card className="bg-[var(--color-base-100)] shadow-sm">
-    <div class="flex flex-col items-center text-center pt-2">
+    <div class="flex flex-col items-center text-center">
       <div
         class="w-20 h-20 rounded-full bg-gradient-to-b from-[var(--surface-200)] to-[var(--color-base-100)] flex items-center justify-center border border-[var(--border-100)]"
       >
@@ -237,13 +292,19 @@
   {#if report}
     <!-- Summary Bar -->
     <Card className="bg-[var(--color-base-100)] shadow-sm">
-      <div class="flex flex-wrap items-center gap-4 pt-6">
+      <div class="flex flex-wrap items-center gap-4">
         <div class="flex items-center gap-2">
           <StatusPill
             variant={statusToVariant(report.status)}
             label={t(`health.status.${report.status}`)}
             size="md"
-          />
+          >
+            {#snippet leadingIcon()}
+              {#if report}
+                {@render statusIcon(report.status, 'size-4')}
+              {/if}
+            {/snippet}
+          </StatusPill>
         </div>
 
         <div class="flex items-center gap-3 text-sm text-[var(--color-base-content)] opacity-70">
@@ -317,23 +378,102 @@
       >
         <div class="space-y-2">
           {#each results as result (result.name)}
-            <div
-              class="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-[var(--color-base-200)]/50"
-            >
-              <StatusPill
-                variant={statusToVariant(result.status)}
-                label={t(`health.status.${result.status}`)}
-                size="xs"
-              />
-              <div class="flex-1 min-w-0">
-                <span class="text-sm font-medium">{formatCheckName(result.name)}</span>
-                <p class="text-xs text-[var(--color-base-content)] opacity-60 truncate">
-                  {result.message}
-                </p>
-              </div>
-              <span class="text-xs text-[var(--color-base-content)] opacity-40 shrink-0">
-                {result.duration_ms.toFixed(1)}ms
-              </span>
+            {@const topErrors = getTopErrors(result)}
+            {@const isExpandable =
+              topErrors !== null && (result.status === 'warning' || result.status === 'critical')}
+            {@const isExpanded = expandedChecks.has(result.name)}
+            <div>
+              <button
+                type="button"
+                class="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg bg-[var(--color-base-200)]/50 text-left {isExpandable
+                  ? 'cursor-pointer hover:bg-[var(--color-base-200)]'
+                  : 'cursor-default'}"
+                onclick={() => isExpandable && toggleExpand(result.name)}
+                disabled={!isExpandable}
+                aria-expanded={isExpandable ? isExpanded : undefined}
+              >
+                <StatusPill
+                  variant={statusToVariant(result.status)}
+                  label={t(`health.status.${result.status}`)}
+                  size="sm"
+                >
+                  {#snippet leadingIcon()}
+                    {@render statusIcon(result.status, 'size-3.5')}
+                  {/snippet}
+                </StatusPill>
+                <div class="flex-1 min-w-0">
+                  <span class="text-sm font-medium">{formatCheckName(result.name)}</span>
+                  <p class="text-xs text-[var(--color-base-content)] opacity-60 truncate">
+                    {result.message}
+                  </p>
+                </div>
+                <span class="text-xs text-[var(--color-base-content)] opacity-40 shrink-0">
+                  {result.duration_ms.toFixed(1)}ms
+                </span>
+                {#if isExpandable}
+                  <ChevronDown
+                    class="size-4 shrink-0 opacity-40 transition-transform {isExpanded
+                      ? 'rotate-180'
+                      : ''}"
+                  />
+                {/if}
+              </button>
+
+              {#if isExpanded && topErrors}
+                <div
+                  class="mt-1 ml-3 mr-3 mb-2 rounded-lg bg-[var(--color-base-200)]/30 overflow-hidden"
+                >
+                  <p
+                    class="px-3 py-1.5 text-xs font-medium text-[var(--color-base-content)] opacity-60"
+                  >
+                    {t('health.logs.topErrors')}
+                  </p>
+                  <table class="w-full text-xs">
+                    <thead>
+                      <tr
+                        class="text-left text-[var(--color-base-content)] opacity-50 border-b border-[var(--color-base-200)]"
+                      >
+                        <th class="px-3 py-1.5 font-medium">{t('health.logs.errorComponent')}</th>
+                        <th class="px-3 py-1.5 font-medium">{t('health.logs.errorMessage')}</th>
+                        <th class="px-3 py-1.5 font-medium text-right"
+                          >{t('health.logs.errorCount')}</th
+                        >
+                        <th class="px-3 py-1.5 font-medium">{t('health.logs.errorLevel')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {#each topErrors as group (group.component + ':' + group.message)}
+                        <tr class="border-b border-[var(--color-base-200)]/50 last:border-0">
+                          <td class="px-3 py-1.5">
+                            {#if group.component}
+                              <span
+                                class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-[var(--color-base-300)] text-[var(--color-base-content)]"
+                              >
+                                {group.component}
+                              </span>
+                            {:else}
+                              <span class="opacity-30">-</span>
+                            {/if}
+                          </td>
+                          <td class="px-3 py-1.5 max-w-[300px] truncate" title={group.message}>
+                            {group.message}
+                          </td>
+                          <td class="px-3 py-1.5 text-right font-mono">{group.count}</td>
+                          <td class="px-3 py-1.5">
+                            <span
+                              class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium"
+                              style:color={levelColor(group.level)}
+                              style:background="color-mix(in srgb, {levelColor(group.level)} 10%, transparent)"
+                            >
+                              {group.level}
+                            </span>
+                          </td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                </div>
+              {/if}
             </div>
           {/each}
         </div>

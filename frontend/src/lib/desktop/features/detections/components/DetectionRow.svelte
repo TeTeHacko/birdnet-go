@@ -27,7 +27,7 @@
 -->
 <script lang="ts">
   import ConfidenceCircle from '$lib/desktop/components/data/ConfidenceCircle.svelte';
-  import StatusBadges from '$lib/desktop/components/data/StatusBadges.svelte';
+  import VerificationBadges from '$lib/desktop/components/ui/VerificationBadges.svelte';
   import WeatherMetrics from '$lib/desktop/components/data/WeatherMetrics.svelte';
   import SourceBadge from '$lib/desktop/features/dashboard/components/SourceBadge.svelte';
   import Checkbox from '$lib/desktop/components/forms/Checkbox.svelte';
@@ -414,8 +414,8 @@
 
 <!-- Status — clickable shortcut to the detection detail page. Same
      anchor pattern as the date/time cell above so the entire badge
-     area acts as a deep link. The StatusBadges component itself stays
-     a pure presentation component; the link wraps it. -->
+     area acts as a deep link. The VerificationBadges component itself
+     stays a pure presentation component; the link wraps it. -->
 <td>
   <a
     href={buildAppUrl(`/ui/detections/${detection.id}`)}
@@ -425,7 +425,7 @@
       species: detection.commonName,
     })}
   >
-    <StatusBadges {detection} />
+    <VerificationBadges {detection} />
   </a>
 </td>
 
