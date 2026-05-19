@@ -435,6 +435,10 @@
         "overloadTitle": "Analýza zvuku preťažená",
         "overloadMessage": "Váš systém zahadzuje {dropRate} % zvukových vzoriek zo zdroja ''{sourceName}'', pretože nestíha analýzu. Znížte hodnotu prekrytia BirdNET v nastaveniach detekcie alebo zvážte rýchlejší procesor."
       },
+      "ort": {
+        "unavailableTitle": "ONNX Runtime nie je k dispozícii",
+        "unavailableMessage": "ONNX Runtime {requiredVersion} je vyžadovaný pre {modelName}, ale nebol nájdený. Skontrolujte, či je libonnxruntime.so nainštalovaný na očakávanej ceste."
+      },
       "alert": {
         "firedTitle": "{rule_name}",
         "metricExceeded": "Aktuálna hodnota: {value}% (prahová hodnota: {threshold}%)",
@@ -4709,7 +4713,10 @@
       "reinstall": "Preinštalovať",
       "reinstalling": "Preinštalovanie...",
       "reinstallComplete": "Súbory úspešne overené",
-      "geomodelBadge": "Obsahuje BirdNET v3.0 geomodel"
+      "geomodelBadge": "Obsahuje BirdNET v3.0 geomodel",
+      "onnxRuntimeRequired": "Vyžaduje ONNX Runtime, ktorý nie je v tomto systéme k dispozícii.",
+      "onnxRuntimeMissing": "ONNX Runtime nie je k dispozícii. Tento model nie je možné spustiť.",
+      "unavailable": "Nedostupné"
     },
     "bird": {
       "title": "Detekcia vtákov",
@@ -4739,7 +4746,7 @@
     "title": "Pomoc a podpora",
     "subtitle": "Získajte pomoc, nahláste problémy a spojte sa s komunitou",
     "reportBug": {
-      "description": "Ak narazíte na problém, najprv vygenerujte diagnostický balíček na zachytenie systémových informácií a záznamov, potom otvorte hlásenie chyby na GitHube."
+      "description": "Ak narazíte na problém, otvorte najprv hlásenie chyby na GitHube na opísanie problému a potom vygenerujte diagnostický balíček s číslom hlásenia na uľahčenie riešenia."
     },
     "askQuestion": {
       "description": "Máte otázku ohľadom nastavenia, funkcií alebo používania? Fórum GitHub Discussions je najlepšie miesto na získanie pomoci od komunity."
@@ -4787,14 +4794,14 @@
         "description": "Vygenerujte a nahrajte diagnostický balíček nižšie. Zachytí záznamy a konfiguráciu, ktoré výrazne urýchlia riešenie problému."
       }
     },
-    "supportDump": {
-      "title": "Vygenerovať diagnostický balíček",
-      "description": "Nahranie diagnostického balíčka k hláseniu chyby výrazne pomáha pri riešení problémov. Zachytí vašu konfiguráciu a nedávne záznamy s odstránenými citlivými údajmi."
-    },
     "openIssue": {
       "title": "Otvoriť hlásenie na GitHube",
-      "description": "Keď zhromaždíte vyššie uvedené informácie a vygenerujete diagnostický balíček, otvorte hlásenie na GitHube a opíšte problém.",
+      "description": "Otvorte hlásenie na GitHube a opíšte problém. Číslo hlásenia budete potrebovať v ďalšom kroku.",
       "button": "Otvoriť hlásenie na GitHube"
+    },
+    "supportDump": {
+      "title": "Vygenerovať diagnostický balíček",
+      "description": "Po vytvorení hlásenia vygenerujte diagnostický balíček a zadajte číslo GitHub hlásenia. Tým prepojíte diagnostiku s hlásením chyby a uľahčíte riešenie."
     }
   },
   "health": {

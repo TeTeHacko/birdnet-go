@@ -435,6 +435,10 @@
         "overloadTitle": "Analyse audio surchargée",
         "overloadMessage": "Votre système perd {dropRate} % des échantillons audio de la source '{sourceName}' car il ne peut pas suivre le rythme de l'analyse. Réduisez la valeur de chevauchement BirdNET dans les paramètres de détection ou envisagez de passer à un processeur plus rapide."
       },
+      "ort": {
+        "unavailableTitle": "ONNX Runtime non disponible",
+        "unavailableMessage": "ONNX Runtime {requiredVersion} est requis pour {modelName} mais n'a pas été trouvé. Vérifiez que libonnxruntime.so est installé à l'emplacement attendu."
+      },
       "alert": {
         "firedTitle": "{rule_name}",
         "metricExceeded": "Valeur actuelle : {value}% (seuil : {threshold}%)",
@@ -4709,7 +4713,10 @@
       "reinstall": "Réinstaller",
       "reinstalling": "Réinstallation...",
       "reinstallComplete": "Fichiers vérifiés avec succès",
-      "geomodelBadge": "Inclut le BirdNET v3.0 geomodel"
+      "geomodelBadge": "Inclut le BirdNET v3.0 geomodel",
+      "onnxRuntimeRequired": "Nécessite ONNX Runtime qui n'est pas disponible sur ce système.",
+      "onnxRuntimeMissing": "ONNX Runtime n'est pas disponible. Ce modèle ne peut pas fonctionner.",
+      "unavailable": "Indisponible"
     },
     "bird": {
       "title": "Bird Detection",
@@ -4739,7 +4746,7 @@
     "title": "Aide et support",
     "subtitle": "Obtenez de l'aide, signalez des problèmes et connectez-vous avec la communauté",
     "reportBug": {
-      "description": "Si vous rencontrez un problème, générez d'abord un rapport de support pour capturer les informations système et les journaux, puis ouvrez un rapport de bug sur GitHub."
+      "description": "Si vous rencontrez un problème, ouvrez d'abord un rapport de bug sur GitHub pour décrire le problème, puis générez un rapport de support avec le numéro du ticket pour faciliter le diagnostic."
     },
     "askQuestion": {
       "description": "Vous avez une question sur la configuration, les fonctionnalités ou l'utilisation ? Le forum GitHub Discussions est le meilleur endroit pour obtenir de l'aide de la communauté."
@@ -4787,14 +4794,14 @@
         "description": "Générez et téléchargez un rapport de support ci-dessous. Il capture les journaux et la configuration qui accélèrent considérablement le diagnostic."
       }
     },
-    "supportDump": {
-      "title": "Générer un rapport de support",
-      "description": "Télécharger un rapport de support avec votre signalement aide considérablement au diagnostic. Il capture votre configuration et les journaux récents avec les données sensibles supprimées."
-    },
     "openIssue": {
       "title": "Ouvrir un ticket sur GitHub",
-      "description": "Une fois les informations ci-dessus rassemblées et le rapport de support généré, ouvrez un ticket sur GitHub pour décrire le problème.",
+      "description": "Ouvrez un ticket sur GitHub pour décrire le problème. Vous aurez besoin du numéro de ticket pour l'étape suivante.",
       "button": "Ouvrir un ticket sur GitHub"
+    },
+    "supportDump": {
+      "title": "Générer un rapport de support",
+      "description": "Après avoir créé votre ticket, générez un rapport de support et entrez le numéro du ticket GitHub. Cela lie vos diagnostics au rapport de bug et facilite le dépannage."
     }
   },
   "health": {

@@ -435,6 +435,10 @@
         "overloadTitle": "Lydanalyse overbelastet",
         "overloadMessage": "Dit system dropper {dropRate}% af lydprøverne for kilden ''{sourceName}'', fordi det ikke kan følge med analysen. Reducer BirdNET-overlapværdien i detektionsindstillingerne eller overvej at opgradere til en hurtigere CPU."
       },
+      "ort": {
+        "unavailableTitle": "ONNX Runtime ikke tilgængelig",
+        "unavailableMessage": "ONNX Runtime {requiredVersion} er påkrævet til {modelName}, men blev ikke fundet. Kontrollér, at libonnxruntime.so er installeret på den forventede sti."
+      },
       "alert": {
         "firedTitle": "{rule_name}",
         "metricExceeded": "Aktuel værdi: {value}% (grænse: {threshold}%)",
@@ -4709,7 +4713,10 @@
       "reinstall": "Geninstaller",
       "reinstalling": "Geninstallerer...",
       "reinstallComplete": "Filer verificeret succesfuldt",
-      "geomodelBadge": "Inkluderer BirdNET v3.0 geomodel"
+      "geomodelBadge": "Inkluderer BirdNET v3.0 geomodel",
+      "onnxRuntimeRequired": "Kræver ONNX Runtime, som ikke er tilgængelig på dette system.",
+      "onnxRuntimeMissing": "ONNX Runtime er ikke tilgængelig. Denne model kan ikke køre.",
+      "unavailable": "Ikke tilgængelig"
     },
     "bird": {
       "title": "Fugleregistrering",
@@ -4739,7 +4746,7 @@
     "title": "Hjælp og support",
     "subtitle": "Få hjælp, rapportér problemer og forbind med fællesskabet",
     "reportBug": {
-      "description": "Hvis du støder på et problem, skal du først generere en supportpakke for at indfange systeminfo og logfiler, og derefter åbne en fejlrapport på GitHub."
+      "description": "Hvis du støder på et problem, åbn en fejlrapport på GitHub for at beskrive problemet, og generer derefter en supportpakke med sagsnummeret for at hjælpe med fejlfinding."
     },
     "askQuestion": {
       "description": "Har du et spørgsmål om opsætning, funktioner eller brug? GitHub Discussions er det bedste sted at få hjælp fra fællesskabet."
@@ -4787,14 +4794,14 @@
         "description": "Generér og upload en supportpakke nedenfor. Den indfanger logfiler og konfiguration, der markant fremskynder fejlfinding."
       }
     },
-    "supportDump": {
-      "title": "Generér supportpakke",
-      "description": "Upload af en supportpakke med din fejlrapport hjælper markant med fejlfinding. Den indfanger din konfiguration og seneste logfiler med følsomme data fjernet."
-    },
     "openIssue": {
       "title": "Åbn en GitHub-sag",
-      "description": "Når du har samlet ovenstående oplysninger og genereret en supportpakke, åbn en sag på GitHub for at beskrive problemet.",
+      "description": "Åbn en sag på GitHub for at beskrive problemet. Du skal bruge sagsnummeret i næste trin.",
       "button": "Åbn sag på GitHub"
+    },
+    "supportDump": {
+      "title": "Generér supportpakke",
+      "description": "Efter oprettelse af din sag, generer en supportpakke og indtast GitHub-sagsnummeret. Dette kobler din diagnostik til fejlrapporten og hjælper med fejlfinding."
     }
   },
   "health": {

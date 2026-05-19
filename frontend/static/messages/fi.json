@@ -435,6 +435,10 @@
         "overloadTitle": "Äänianalyysi ylikuormitettu",
         "overloadMessage": "Järjestelmäsi hylkää {dropRate} % lähteen '{sourceName}' ääninäytteistä, koska se ei pysy analyysin tahdissa. Pienennä BirdNET-päällekkäisyysarvoa tunnistusasetuksista tai harkitse nopeamman suorittimen hankkimista."
       },
+      "ort": {
+        "unavailableTitle": "ONNX Runtime ei ole käytettävissä",
+        "unavailableMessage": "ONNX Runtime {requiredVersion} vaaditaan mallille {modelName}, mutta sitä ei löytynyt. Varmista, että libonnxruntime.so on asennettu odotettuun sijaintiin."
+      },
       "alert": {
         "firedTitle": "{rule_name}",
         "metricExceeded": "Nykyinen arvo: {value}% (raja-arvo: {threshold}%)",
@@ -4709,7 +4713,10 @@
       "reinstall": "Asenna uudelleen",
       "reinstalling": "Asennetaan uudelleen...",
       "reinstallComplete": "Tiedostot tarkistettu onnistuneesti",
-      "geomodelBadge": "Sisältää BirdNET v3.0 -geomallin"
+      "geomodelBadge": "Sisältää BirdNET v3.0 -geomallin",
+      "onnxRuntimeRequired": "Vaatii ONNX Runtimen, joka ei ole käytettävissä tässä järjestelmässä.",
+      "onnxRuntimeMissing": "ONNX Runtime ei ole käytettävissä. Tätä mallia ei voi suorittaa.",
+      "unavailable": "Ei käytettävissä"
     },
     "bird": {
       "title": "Bird Detection",
@@ -4739,7 +4746,7 @@
     "title": "Ohje ja tuki",
     "subtitle": "Saa apua, ilmoita ongelmista ja ota yhteyttä yhteisöön",
     "reportBug": {
-      "description": "Jos kohtaat ongelman, luo ensin tukipaketti järjestelmätietojen ja lokien tallentamiseksi ja avaa sitten virheraportti GitHubissa."
+      "description": "Jos kohtaat ongelman, avaa ensin virheraportti GitHubissa ongelman kuvaamiseksi ja luo sitten tukipaketti raportin numerolla vianmäärityksen helpottamiseksi."
     },
     "askQuestion": {
       "description": "Onko sinulla kysyttävää asennuksesta, ominaisuuksista tai käytöstä? GitHub Discussions -foorumi on paras paikka saada apua yhteisöltä."
@@ -4787,14 +4794,14 @@
         "description": "Luo ja lataa tukipaketti alla. Se tallentaa lokit ja asetukset, jotka nopeuttavat merkittävästi vianmääritystä."
       }
     },
-    "supportDump": {
-      "title": "Luo tukipaketti",
-      "description": "Tukipaketin lataaminen virheraportin yhteydessä auttaa merkittävästi vianmäärityksessä. Se tallentaa asetuksesi ja viimeisimmät lokit arkaluontoiset tiedot poistettuna."
-    },
     "openIssue": {
       "title": "Avaa GitHub-raportti",
-      "description": "Kun olet kerännyt yllä olevat tiedot ja luonut tukipaketin, avaa raportti GitHubissa ongelman kuvaamiseksi.",
+      "description": "Avaa raportti GitHubissa ongelman kuvaamiseksi. Tarvitset raportin numeron seuraavassa vaiheessa.",
       "button": "Avaa raportti GitHubissa"
+    },
+    "supportDump": {
+      "title": "Luo tukipaketti",
+      "description": "Raportin luomisen jälkeen luo tukipaketti ja syötä GitHub-raportin numero. Tämä yhdistää diagnostiikkatiedot virheraporttiin ja auttaa vianmäärityksessä."
     }
   },
   "health": {
