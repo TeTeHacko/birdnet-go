@@ -122,3 +122,58 @@ jobs:
             echo "Health check failed or degraded"
             exit 1
           fi
+
+      - name: Cleanup old container images
+        # Keeps the N most recent sha-* tags plus `latest` and the currently
+        # deployed tag, deletes the rest from the Gitea Packages registry to
+        # stop the registry disk filling up. Runs after a successful deploy so
+        # we never delete an image we just promoted.
+        env:
+          # AUTO_SYNC_TOKEN is a Gitea PAT with admin/write:package scope.
+          # REGISTRY_TOKEN works for docker login but is not guaranteed to
+          # carry the API scope needed for DELETE /api/v1/packages/...
+          GITEA_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
+          GITEA_URL: ${{ env.REGISTRY }}
+          KEEP_COUNT: '10'
+          CURRENT_TAG: ${{ steps.build.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+
+          # List all birdnet-go container package versions, sorted newest-first
+          ALL_VERSIONS=$(curl -sk -H "Authorization: token ${GITEA_TOKEN}" \
+            "https://${GITEA_URL}/api/v1/packages/tth?type=container&q=birdnet-go&limit=100")
+
+          # Build the keep-set: `latest`, the just-deployed tag, plus KEEP_COUNT
+          # most-recent sha-* tags. Anything else with name=birdnet-go is deleted.
+          KEEP_LIST=$(echo "${ALL_VERSIONS}" | python3 -c "
+          import sys, json, os
+          pkgs = [p for p in json.load(sys.stdin) if p.get('name') == 'birdnet-go']
+          # newest first
+          pkgs.sort(key=lambda p: p.get('created_at',''), reverse=True)
+          keep = {'latest', os.environ['CURRENT_TAG']}
+          sha_kept = 0
+          for p in pkgs:
+              v = p.get('version','')
+              if v.startswith('sha-') and sha_kept < int(os.environ['KEEP_COUNT']):
+                  keep.add(v); sha_kept += 1
+          # delete = everything not in keep
+          delete = [p['version'] for p in pkgs if p.get('version') not in keep]
+          print('\n'.join(delete))
+          " | tr '\n' ' ')
+
+          if [ -z "${KEEP_LIST}" ]; then
+            echo "Nothing to delete (≤${KEEP_COUNT} sha-* versions in registry)"
+            exit 0
+          fi
+
+          echo "Will delete: ${KEEP_LIST}"
+          for VERSION in ${KEEP_LIST}; do
+            HTTP=$(curl -sk -o /dev/null -w '%{http_code}' \
+              -X DELETE -H "Authorization: token ${GITEA_TOKEN}" \
+              "https://${GITEA_URL}/api/v1/packages/tth/container/birdnet-go/${VERSION}")
+            if [ "${HTTP}" = "204" ] || [ "${HTTP}" = "200" ]; then
+              echo "  ✓ deleted ${VERSION}"
+            else
+              echo "  ⚠ failed to delete ${VERSION} (HTTP ${HTTP})"
+            fi
+          done
