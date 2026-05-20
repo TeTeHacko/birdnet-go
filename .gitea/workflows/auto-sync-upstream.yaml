@@ -1,0 +1,111 @@
+name: Auto-sync upstream
+
+on:
+  schedule:
+    # Every 15 minutes
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+# Prevent concurrent runs so we never push half-merged state
+concurrency:
+  group: auto-sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          # Use PAT so the subsequent push to main triggers Build & Deploy.
+          # GITHUB_TOKEN-authenticated pushes do not retrigger workflows.
+          token: ${{ secrets.AUTO_SYNC_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "Auto-sync bot"
+          git config user.email "autosync@rfa.cz"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Add upstream remote + fetch
+        run: |
+          git remote add upstream https://github.com/tphakala/birdnet-go.git
+          git fetch upstream main
+
+      - name: Detect new commits
+        id: check
+        run: |
+          BEHIND=$(git rev-list --count main..upstream/main)
+          echo "behind=$BEHIND" >> $GITHUB_OUTPUT
+          if [ "$BEHIND" = "0" ]; then
+            echo "::notice::Already up to date with upstream/main"
+          else
+            echo "$BEHIND new upstream commits to merge"
+            git log main..upstream/main --oneline | head -10
+          fi
+
+      - name: Attempt merge
+        if: steps.check.outputs.behind != '0'
+        id: merge
+        run: |
+          if ! git merge upstream/main --no-ff --no-edit \
+              -m "Merge upstream/main (auto-sync, ${{ steps.check.outputs.behind }} commits)"; then
+            CONFLICTS=$(git diff --name-only --diff-filter=U | tr '\n' ',' | sed 's/,$//')
+            git merge --abort
+            echo "::error title=Auto-sync conflict::Merge conflict in: $CONFLICTS"
+            exit 1
+          fi
+          echo "Merged ${{ steps.check.outputs.behind }} upstream commits"
+
+      - name: Install frontend deps
+        if: steps.check.outputs.behind != '0'
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: i18n sync + validate
+        if: steps.check.outputs.behind != '0'
+        working-directory: frontend
+        run: |
+          # Auto-fill English fallback for any keys upstream added but our
+          # locales (mainly cs.json) don't have yet.
+          npm run i18n:sync
+
+          # Strict structural + parameter-mismatch validation.
+          # Translation drift (English text in non-English files) is only a
+          # warning, so this passes on auto-fill but blocks on real errors
+          # like {placeholder} mismatches.
+          npx tsx src/lib/i18n/validateTranslations.ts --json > /tmp/validation.json
+          ERRORS=$(jq '.summary.totalErrors' /tmp/validation.json)
+          if [ "$ERRORS" != "0" ]; then
+            echo "::error title=i18n validation failed::$ERRORS structural errors"
+            jq '.errors[] | "\(.locale) \(.key): \(.message)"' /tmp/validation.json
+            exit 1
+          fi
+
+      - name: TypeScript check
+        if: steps.check.outputs.behind != '0'
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Stage i18n auto-fills (if any)
+        if: steps.check.outputs.behind != '0'
+        run: |
+          if ! git diff --quiet frontend/static/messages/; then
+            git add frontend/static/messages/
+            git commit --amend --no-edit
+          fi
+
+      - name: Push to gitea main
+        if: steps.check.outputs.behind != '0'
+        run: |
+          git push origin main
+          echo "::notice title=Pushed::Merged ${{ steps.check.outputs.behind }} upstream commits to main"
