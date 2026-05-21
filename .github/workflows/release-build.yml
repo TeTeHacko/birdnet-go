@@ -1,0 +1,11 @@
+# This workflow is kept from upstream to avoid merge conflicts.
+# It is disabled on this fork (Gitea Actions used instead).
+name: BirdNET-Go Release Build
+
+on: workflow_dispatch
+
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'echo "This workflow is disabled on this fork"'

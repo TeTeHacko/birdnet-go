@@ -41,6 +41,7 @@ func setupAppConfigTest(t *testing.T, securityConfig *conf.Security) (*echo.Echo
 
 	e := echo.New()
 	mockDS := mocks.NewMockInterface(t)
+	mockDS.EXPECT().PruneAppEvents(mock.Anything, mock.Anything).Return(int64(0), nil).Maybe()
 
 	// Use empty security config if nil
 	secCfg := conf.Security{}
@@ -90,6 +91,7 @@ func setupAppConfigTestWithAuth(t *testing.T, securityConfig *conf.Security) (*e
 
 	e := echo.New()
 	mockDS := mocks.NewMockInterface(t)
+	mockDS.EXPECT().PruneAppEvents(mock.Anything, mock.Anything).Return(int64(0), nil).Maybe()
 
 	// Use empty security config if nil
 	secCfg := conf.Security{}
@@ -522,6 +524,7 @@ func TestGetAppConfig_Concurrent(t *testing.T) {
 func TestGetAppConfig_EmptyVersion(t *testing.T) {
 	e := echo.New()
 	mockDS := mocks.NewMockInterface(t)
+	mockDS.EXPECT().PruneAppEvents(mock.Anything, mock.Anything).Return(int64(0), nil).Maybe()
 
 	settings := &conf.Settings{
 		Version: "", // Empty version
@@ -581,6 +584,7 @@ func TestGetAppConfig_VersionWithSpecialChars(t *testing.T) {
 		t.Run(version, func(t *testing.T) {
 			e := echo.New()
 			mockDS := mocks.NewMockInterface(t)
+			mockDS.EXPECT().PruneAppEvents(mock.Anything, mock.Anything).Return(int64(0), nil).Maybe()
 
 			settings := &conf.Settings{
 				Version: version,
@@ -936,6 +940,7 @@ func FuzzGetAppConfig_Headers(f *testing.F) {
 	f.Fuzz(func(t *testing.T, accept, customHeader, csrfToken string) {
 		e := echo.New()
 		mockDS := mocks.NewMockInterface(t)
+		mockDS.EXPECT().PruneAppEvents(mock.Anything, mock.Anything).Return(int64(0), nil).Maybe()
 		settings := &conf.Settings{
 			Version: "1.0.0-fuzz",
 		}
@@ -997,6 +1002,7 @@ func FuzzGetAppConfig_QueryParams(f *testing.F) {
 	f.Fuzz(func(t *testing.T, queryString string) {
 		e := echo.New()
 		mockDS := mocks.NewMockInterface(t)
+		mockDS.EXPECT().PruneAppEvents(mock.Anything, mock.Anything).Return(int64(0), nil).Maybe()
 		settings := &conf.Settings{
 			Version: "1.0.0-fuzz",
 		}
@@ -1061,6 +1067,7 @@ func FuzzGetAppConfig_CSRFToken(f *testing.F) {
 	f.Fuzz(func(t *testing.T, csrfToken string) {
 		e := echo.New()
 		mockDS := mocks.NewMockInterface(t)
+		mockDS.EXPECT().PruneAppEvents(mock.Anything, mock.Anything).Return(int64(0), nil).Maybe()
 		settings := &conf.Settings{
 			Version: "1.0.0-fuzz",
 		}
@@ -1125,6 +1132,7 @@ func FuzzGetAppConfig_Version(f *testing.F) {
 	f.Fuzz(func(t *testing.T, version string) {
 		e := echo.New()
 		mockDS := mocks.NewMockInterface(t)
+		mockDS.EXPECT().PruneAppEvents(mock.Anything, mock.Anything).Return(int64(0), nil).Maybe()
 		settings := &conf.Settings{
 			Version: version,
 		}
@@ -1271,6 +1279,7 @@ func FuzzGetAppConfig_SecurityConfig(f *testing.F) {
 
 		e := echo.New()
 		mockDS := mocks.NewMockInterface(t)
+		mockDS.EXPECT().PruneAppEvents(mock.Anything, mock.Anything).Return(int64(0), nil).Maybe()
 
 		settings := &conf.Settings{
 			Version: "1.0.0-fuzz",
