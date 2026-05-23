@@ -3020,6 +3020,7 @@
         "unknown": "neznámy",
         "refresh": "Obnoviť",
         "addStream": "Pridať stream",
+        "testRequired": "Pred uložením vykonajte úspešný test streamu",
         "deleteConfirm": "Odstrániť tento stream?",
         "restartCount": "Reštartované {count}-krát",
         "healthLoadError": "Nepodarilo sa načítať stav zdravia streamu",
@@ -3073,10 +3074,10 @@
           "failed": "Zlyhalo",
           "unknown": "Neznáme"
         },
-        "probe": {
+        "test": {
           "button": "Testovať stream",
           "probing": "Testovanie...",
-          "result": "Výsledok prieskumu",
+          "result": "Výsledok testu",
           "error": "Test zlyhal",
           "batCompatible": "Kompatibilný s netopiermi",
           "batIncompatible": "Nekompatibilný s netopiermi"
@@ -4491,6 +4492,16 @@
       "hostRequired": "Parameter hostiteľa je povinný",
       "invalidHost": "Neplatný parameter hostiteľa",
       "rateLimit": "Príliš veľa pokusov o pripojenie k prúdu oznámení, počkajte chvíľu pred ďalším pokusom"
+    },
+    "streams": {
+      "test": {
+        "invalidBody": "Neplatné telo požiadavky",
+        "urlRequired": "URL streamu je povinné",
+        "invalidUrl": "Neplatný formát URL. Zadajte úplnú URL, napr. rtsp://host:port/cesta",
+        "unsupportedScheme": "Nepodporovaná schéma URL \"{scheme}\". Použite rtsp, rtsps, http, https, rtmp alebo udp",
+        "blockedDestination": "Tento cieľ je z bezpečnostných dôvodov zablokovaný",
+        "connectionFailed": "Nepodarilo sa pripojiť k streamu. Skontrolujte, či je URL správna a stream je dostupný"
+      }
     },
     "debug": {
       "notEnabled": "Režim ladenia nie je povolený"
