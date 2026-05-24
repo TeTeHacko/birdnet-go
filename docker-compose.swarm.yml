@@ -7,7 +7,7 @@
 # CI/CD pushes this compose to Portainer on every deploy.
 #
 # Secrets are stored in Portainer stack environment variables:
-#   IMAGE_TAG, BIRDNET_WEBHOOK_PASS
+#   IMAGE_TAG, BIRDNET_WEBHOOK_PASS, SENTRY_DSN
 #
 # No audio devices — uses RTSP streams from remote microphones.
 # Host bind mounts under /mnt/docker/birdnet-go/ (CephFS) for persistence.
@@ -26,6 +26,8 @@ services:
       BIRDNET_UID: "1000"
       BIRDNET_GID: "1000"
       BIRDNET_STARTUP_FAIL_DELAY: "15"
+      BIRDNET_SENTRY_ENABLED: "true"
+      SENTRY_DSN: ${SENTRY_DSN:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]

@@ -42,6 +42,9 @@ const (
 
 	// Security Configuration
 	ConfigKeyBaseURL = "security.baseurl"
+
+	// Sentry Configuration
+	ConfigKeySentryEnabled = "sentry.enabled"
 )
 
 // Environment variable names that map to configuration keys.
@@ -71,6 +74,9 @@ const (
 
 	// Security Configuration
 	EnvVarBaseURL = "BIRDNET_URL"
+
+	// Sentry Configuration
+	EnvVarSentryEnabled = "BIRDNET_SENTRY_ENABLED"
 )
 
 // Validation constraint constants for environment variable ranges.
@@ -132,6 +138,9 @@ func getEnvBindings() []envBinding {
 
 		// Security Configuration
 		{ConfigKeyBaseURL, EnvVarBaseURL, validateEnvBaseURL},
+
+		// Sentry Configuration
+		{ConfigKeySentryEnabled, EnvVarSentryEnabled, validateEnvBool},
 	}
 }
 

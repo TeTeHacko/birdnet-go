@@ -683,8 +683,9 @@ type DiskMonitorConfig struct {
 
 // SentrySettings contains settings for Sentry error tracking
 type SentrySettings struct {
-	Enabled bool `yaml:"enabled" json:"enabled"` // true to enable Sentry error tracking (opt-in)
-	Debug   bool `yaml:"debug" json:"debug"`     // true to enable transparent telemetry logging
+	Enabled bool   `yaml:"enabled" json:"enabled"` // true to enable Sentry error tracking (opt-in)
+	Debug   bool   `yaml:"debug" json:"debug"`     // true to enable transparent telemetry logging
+	DSN     string `yaml:"dsn" json:"dsn"`         // custom Sentry/GlitchTip DSN (overrides built-in; env SENTRY_DSN takes precedence)
 }
 
 // FalsePositiveFilterSettings contains settings for false positive filtering aggressivity levels.

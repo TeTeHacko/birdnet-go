@@ -3,6 +3,7 @@ package telemetry
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -134,6 +135,20 @@ const sentryDSN = "https://b9269b6c0f8fae154df65be5a97e0435@o4509553065525248.in
 // create a new Sentry project and update this constant.
 const sentryFrontendDSN = sentryDSN
 
+// resolveSentryDSN returns the effective Sentry DSN using the following precedence:
+// 1. SENTRY_DSN environment variable (highest priority)
+// 2. settings.Telemetry.Sentry.DSN config field
+// 3. Built-in sentryDSN constant (default upstream project)
+func resolveSentryDSN(settings *conf.Settings) string {
+	if envDSN := os.Getenv("SENTRY_DSN"); envDSN != "" {
+		return envDSN
+	}
+	if settings.Sentry.DSN != "" {
+		return settings.Sentry.DSN
+	}
+	return sentryDSN
+}
+
 // GetFrontendDSN returns the Sentry DSN for frontend error tracking.
 func GetFrontendDSN() string {
 	return sentryFrontendDSN
@@ -256,9 +271,12 @@ func enableDebugLogging() {
 
 // initializeSentrySDK initializes the Sentry SDK with privacy-compliant options
 func initializeSentrySDK(settings *conf.Settings) error {
+	// Resolve DSN: env var > config > built-in default
+	dsn := resolveSentryDSN(settings)
+
 	// Initialize Sentry with privacy-compliant options
 	err := sentry.Init(sentry.ClientOptions{
-		Dsn:        sentryDSN,
+		Dsn:        dsn,
 		SampleRate: 1.0,   // Capture all errors by default
 		Debug:      false, // Keep debug off for production
 
