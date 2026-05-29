@@ -86,6 +86,15 @@ var (
 		"wikipedia api returned status 429",  // direct HTTP 429 from the API
 		"wikipedia api circuit breaker open", // repeated rejection while breaker is open
 		"wikipedia rate limit exceeded",      // diagnostic rate-limit error
+
+		// RTSP/FFmpeg stream noise. Circuit breaker activations, quick exits,
+		// and early errors are expected operational behavior when cameras or
+		// microphone streams are intermittently unavailable (network flaps,
+		// device reboots, mediamtx restarts). The stream state machine handles
+		// recovery automatically; these are not code bugs.
+		"stream circuit breaker activated",        // circuit breaker tripped after consecutive failures
+		"ffmpeg process failed to start properly", // quick exit — stream unavailable (404/400/timeout)
+		"early ffmpeg error",                      // early error detection before full startup
 	}
 )
 
