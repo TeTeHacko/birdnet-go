@@ -50,7 +50,7 @@ jobs:
             echo "::notice::Already up to date with upstream/main"
           else
             echo "$BEHIND new upstream commits to merge"
-            git log main..upstream/main --oneline | head -10
+            git log main..upstream/main --oneline | head -10 || true
           fi
 
       - name: Attempt merge
