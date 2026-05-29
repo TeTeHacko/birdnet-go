@@ -90,6 +90,40 @@ ast-grep --pattern "export let $PROP" --rewrite "let { $PROP } = \$props()" --la
 | `task clean`          | Clean artifacts                     |
 | `task linux_amd64`    | Cross-platform builds               |
 
+## Docker-Based Verification
+
+Go code requires TensorFlow Lite C headers. Install them once locally:
+
+```bash
+# One-time setup (already done on this machine):
+git clone --branch v2.17.1 --filter=blob:none --no-checkout --depth 1 \
+  https://github.com/tensorflow/tensorflow.git ~/src/tensorflow
+cd ~/src/tensorflow && git checkout HEAD -- tensorflow/lite/c/ tensorflow/lite/builtin_ops.h tensorflow/lite/core/c/
+```
+
+Then use `CGO_CFLAGS` for all Go commands:
+
+```bash
+# go vet:
+CGO_ENABLED=1 CGO_CFLAGS="-I$HOME/src/tensorflow" go vet -tags noembed,skipfrontend ./...
+
+# go test:
+CGO_ENABLED=1 CGO_CFLAGS="-I$HOME/src/tensorflow" go test -tags noembed,skipfrontend -race ./...
+
+# golangci-lint:
+CGO_ENABLED=1 CGO_CFLAGS="-I$HOME/src/tensorflow" golangci-lint run --build-tags=noembed,skipfrontend
+```
+
+Alternatively use Docker with the `buildenv` stage:
+
+```bash
+docker build --target buildenv -t birdnet-buildenv .
+docker run --rm -v "$PWD":/app -w /app birdnet-buildenv task lint
+```
+
+**Why?** The import chain `imageprovider → observability → classifier →
+go-tflite` requires TensorFlow C headers. `CGO_ENABLED=0` won't work.
+
 ## Pre-Commit Checklist
 
 0. Run preflight quality gate: `/preflight` (or follow `.agents/skills/preflight/SKILL.md`)

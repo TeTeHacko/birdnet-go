@@ -105,10 +105,19 @@ func (b *BirdImage) IsNegativeEntry() bool {
 	return b.URL == negativeEntryMarker
 }
 
+// IsTempFailureEntry checks if this is a temporary failure cache entry
+// (provider was unavailable due to rate-limiting, network error, etc.)
+func (b *BirdImage) IsTempFailureEntry() bool {
+	return b.URL == tempFailureMarker
+}
+
 // GetTTL returns the appropriate TTL for this cache entry.
 // Non-avian species (Siren, Dog, etc.) get an effectively permanent TTL
 // since they will never have images from bird image providers.
 func (b *BirdImage) GetTTL() time.Duration {
+	if b.IsTempFailureEntry() {
+		return tempFailureCacheTTL
+	}
 	if b.IsNegativeEntry() {
 		if isNonAvianClass(b.ScientificName) {
 			return 10 * 365 * 24 * time.Hour // ~10 years: effectively permanent
@@ -210,10 +219,12 @@ func (c *BirdImageCache) SetImageProvider(provider ImageProvider) {
 const (
 	defaultCacheTTL     = 30 * 24 * time.Hour // 30 days for positive entries
 	negativeCacheTTL    = 15 * time.Minute    // 15 minutes for negative entries
+	tempFailureCacheTTL = 5 * time.Minute     // 5 minutes for temporary provider failures (rate-limit, network)
 	refreshInterval     = 1 * time.Hour       // Check for stale entries every hour in production
 	refreshBatchSize    = 10                  // Number of entries to refresh in one batch
 	refreshDelay        = 2 * time.Second     // Delay between refreshing individual entries
 	negativeEntryMarker = "__NOT_FOUND__"     // Special URL marker for negative cache entries
+	tempFailureMarker   = "__TEMP_FAILURE__"  // Special URL marker for temporary provider failures
 
 	// Configuration constants
 	fallbackPolicyAll = "all" // Fallback policy to allow all providers
@@ -1193,17 +1204,29 @@ func (c *BirdImageCache) checkCachedEntryAfterLock(scientificName string, log lo
 		return BirdImage{}, false, false, nil
 	}
 
-	if !imgPtr.IsNegativeEntry() {
+	if !imgPtr.IsNegativeEntry() && !imgPtr.IsTempFailureEntry() {
 		log.Debug("Initialization check: found in memory cache after acquiring lock")
 		return *imgPtr, true, false, nil
 	}
 
-	// Handle negative entry
+	// Handle negative or temp failure entry
 	cutoff := time.Now().Add(-imgPtr.GetTTL())
 	if imgPtr.CachedAt.Before(cutoff) {
-		log.Debug("Negative cache entry expired, removing from memory")
+		log.Debug("Cache entry expired, removing from memory",
+			logger.String("entry_type", imgPtr.URL))
 		c.dataMap.Delete(scientificName)
 		return BirdImage{}, false, false, nil
+	}
+
+	if imgPtr.IsTempFailureEntry() {
+		log.Debug("Returning valid temp failure cache entry after lock")
+		return BirdImage{}, true, true, errors.Newf("provider temporarily unavailable (cached backoff)").
+			Component("imageprovider").
+			Category(errors.CategoryNetwork).
+			Context("provider", c.providerName).
+			Context("scientific_name", scientificName).
+			Context("operation", "temp_failure_cache_hit").
+			Build()
 	}
 
 	log.Debug("Returning valid negative cache entry after lock")
@@ -1488,9 +1511,16 @@ func (c *BirdImageCache) handleProviderFetchError(scientificName string, fetchEr
 		return c.storeNegativeCacheEntry(scientificName, fetchErr)
 	}
 
-	// Actual provider errors — log at error level
+	// Network/rate-limit errors: store a temporary failure entry to prevent
+	// repeated requests to an unavailable provider. Without this, every
+	// request for the same species re-hits the circuit breaker or API,
+	// generating hundreds of duplicate error events per hour.
 	enhancedErr := c.enhanceFetchError(fetchErr, scientificName)
-	log.Error("Failed to fetch image from provider", logger.Error(enhancedErr))
+	log.Warn("Provider temporarily unavailable, caching failure for backoff",
+		logger.Error(enhancedErr),
+		logger.Duration("backoff_ttl", tempFailureCacheTTL))
+
+	c.storeTempFailureEntry(scientificName)
 
 	if c.metrics != nil {
 		c.metrics.IncrementDownloadErrorsWithCategory("image-fetch", c.providerName, "provider_error")
@@ -1554,6 +1584,20 @@ func (c *BirdImageCache) storeNegativeCacheEntry(scientificName string, fetchErr
 	}
 
 	return BirdImage{}, fetchErr
+}
+
+// storeTempFailureEntry stores a temporary failure entry in memory cache only.
+// This prevents repeated requests to an unavailable provider (e.g., Wikipedia
+// returning 429 or circuit breaker open). The entry is stored only in memory
+// (not DB) because it is short-lived and should not persist across restarts.
+func (c *BirdImageCache) storeTempFailureEntry(scientificName string) {
+	tempEntry := BirdImage{
+		URL:            tempFailureMarker,
+		ScientificName: scientificName,
+		CachedAt:       time.Now(),
+		SourceProvider: c.providerName,
+	}
+	c.dataMap.Store(scientificName, &tempEntry)
 }
 
 // storeSuccessfulFetch stores a successfully fetched image in both caches.
