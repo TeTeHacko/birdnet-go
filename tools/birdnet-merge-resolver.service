@@ -1,0 +1,11 @@
+[Unit]
+Description=BirdNET-Go merge conflict resolver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/birdnet-merge-resolver
+Environment=PATH=%h/.local/bin:%h/go/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
+Environment=GOPATH=%h/go
+TimeoutStartSec=600

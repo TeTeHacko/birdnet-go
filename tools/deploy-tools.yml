@@ -1,0 +1,90 @@
+---
+- name: Deploy BirdNET-Go local tooling
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    birdnet_repo: "{{ lookup('env', 'HOME') }}/projects/birdnet-go"
+    birdnet_resolver_enabled: true
+
+  tasks:
+    # --- Merge conflict resolver ---
+    - name: Verify birdnet-go repo exists
+      ansible.builtin.stat:
+        path: "{{ birdnet_repo }}/.git"
+      register: birdnet_repo_stat
+      tags: [resolver]
+
+    - name: Fail when birdnet-go repo is missing
+      ansible.builtin.fail:
+        msg: "BirdNET-Go repo not found at {{ birdnet_repo }}"
+      when: not birdnet_repo_stat.stat.exists
+      tags: [resolver]
+
+    - name: Ensure local bin directory exists
+      ansible.builtin.file:
+        path: "{{ lookup('env', 'HOME') }}/.local/bin"
+        state: directory
+        mode: "0755"
+      tags: [resolver]
+
+    - name: Symlink merge-conflict-resolver to local bin
+      ansible.builtin.file:
+        src: "{{ birdnet_repo }}/tools/merge-conflict-resolver.sh"
+        dest: "{{ lookup('env', 'HOME') }}/.local/bin/birdnet-merge-resolver"
+        state: link
+        force: true
+      tags: [resolver]
+
+    - name: Ensure user systemd directory exists
+      ansible.builtin.file:
+        path: "{{ lookup('env', 'HOME') }}/.config/systemd/user"
+        state: directory
+        mode: "0755"
+      tags: [resolver]
+
+    - name: Install resolver service unit
+      ansible.builtin.copy:
+        src: "{{ birdnet_repo }}/tools/birdnet-merge-resolver.service"
+        dest: "{{ lookup('env', 'HOME') }}/.config/systemd/user/birdnet-merge-resolver.service"
+        mode: "0644"
+      tags: [resolver]
+
+    - name: Install resolver timer unit
+      ansible.builtin.copy:
+        src: "{{ birdnet_repo }}/tools/birdnet-merge-resolver.timer"
+        dest: "{{ lookup('env', 'HOME') }}/.config/systemd/user/birdnet-merge-resolver.timer"
+        mode: "0644"
+      tags: [resolver]
+
+    - name: Enable resolver timer
+      ansible.builtin.systemd_service:
+        name: birdnet-merge-resolver.timer
+        scope: user
+        daemon_reload: true
+        enabled: true
+        state: started
+      when:
+        - not ansible_check_mode
+        - birdnet_resolver_enabled | bool
+      tags: [resolver]
+
+    # --- GlitchTip CLI (use `cargo install --path ~/projects/glitchtip-cli`) ---
+    - name: Remove legacy glitchtip.sh symlink
+      ansible.builtin.file:
+        path: "{{ lookup('env', 'HOME') }}/.local/bin/birdnet-glitchtip"
+        state: absent
+      tags: [tools]
+
+    - name: Verify resolver timer is active
+      ansible.builtin.command:
+        cmd: systemctl --user is-active birdnet-merge-resolver.timer
+      register: resolver_timer_status
+      changed_when: false
+      failed_when: false
+      tags: [resolver, audit]
+
+    - name: Report timer status
+      ansible.builtin.debug:
+        msg: "birdnet-merge-resolver.timer: {{ resolver_timer_status.stdout }}"
+      tags: [resolver, audit]

@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for birdnet-go merge conflicts every 20 minutes
+
+[Timer]
+OnCalendar=*:5/20
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target
