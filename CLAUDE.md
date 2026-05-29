@@ -109,6 +109,29 @@ CGO_ENABLED=1 CGO_CFLAGS="-I$HOME/src/tensorflow" go vet -tags noembed,skipfront
 
 # go test:
 CGO_ENABLED=1 CGO_CFLAGS="-I$HOME/src/tensorflow" go test -tags noembed,skipfrontend -race ./...
+```
+
+## Error Tracking (GlitchTip)
+
+Use `glitchtip-cli` (fork: git.rfa.cz/tth/glitchtip-cli). Project auto-detected from `.glitchtip-cli.rc`.
+
+```bash
+glitchtip-cli issues check              # CI gate: exit 1 if unresolved
+glitchtip-cli issues list --status unresolved
+glitchtip-cli issues detail BIRDNET-GO-7
+glitchtip-cli issues resolve --id 99
+```
+
+Credentials: `~/.config/glitchtip-cli/config` (INI, auto-loaded). Never read credential files.
+
+Then use `CGO_CFLAGS` for all Go commands:
+
+```bash
+# go vet:
+CGO_ENABLED=1 CGO_CFLAGS="-I$HOME/src/tensorflow" go vet -tags noembed,skipfrontend ./...
+
+# go test:
+CGO_ENABLED=1 CGO_CFLAGS="-I$HOME/src/tensorflow" go test -tags noembed,skipfrontend -race ./...
 
 # golangci-lint:
 CGO_ENABLED=1 CGO_CFLAGS="-I$HOME/src/tensorflow" golangci-lint run --build-tags=noembed,skipfrontend
