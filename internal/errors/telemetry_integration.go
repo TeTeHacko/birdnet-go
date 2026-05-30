@@ -259,6 +259,20 @@ func shouldReportToSentry(ee *EnhancedError) bool {
 		}
 	}
 
+	// Filter out optional model "not installed" errors. These are expected when
+	// supplemental models (Bat, Perch v2) are configured but their files haven't
+	// been downloaded yet. The orchestrator retries after gallery scan.
+	if ee.Category == CategoryModelInit && strings.Contains(errorMsg, "not installed or configured") {
+		return false
+	}
+
+	// Filter out disabled notification provider config errors. Secrets for
+	// disabled providers are never resolved, so missing env vars are expected.
+	if ee.Category == CategoryConfiguration &&
+		strings.Contains(errorMsg, "missing required environment variable") {
+		return false
+	}
+
 	// Filter out network infrastructure errors (user's network/DNS issues).
 	// Filter network infrastructure noise. CategoryIntegration is deliberately excluded
 	// to avoid suppressing legitimate non-transient integration errors; transient network

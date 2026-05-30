@@ -780,6 +780,15 @@ func buildProvider(pc *conf.PushProviderConfig, log logger.Logger) Provider {
 	case "shoutrrr":
 		return NewShoutrrrProvider(orDefault(pc.Name, "shoutrrr"), pc.Enabled, pc.URLs, types, pc.Timeout.Std())
 	case "webhook":
+		// Skip secret resolution for disabled providers to avoid errors
+		// from placeholder env vars that are never intended to be set.
+		if !pc.Enabled {
+			provider, err := NewWebhookProvider(orDefault(pc.Name, "webhook"), pc.Enabled, nil, types, pc.Template)
+			if err != nil {
+				return nil
+			}
+			return provider
+		}
 		endpoints, err := convertWebhookEndpoints(pc.Endpoints, log)
 		if err != nil {
 			log.Error("failed to resolve webhook secrets",
