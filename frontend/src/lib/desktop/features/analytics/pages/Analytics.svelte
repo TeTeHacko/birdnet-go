@@ -574,6 +574,37 @@
   }
 
   // Initialize on mount
+  async function fetchAudioSources() {
+    try {
+      const resp = await api.get<AnalyticsSourceListResponse>('/api/v2/analytics/sources');
+      const raw = Array.isArray(resp?.sources) ? resp.sources : [];
+      const aggregated = new Map<string, AudioSourceOption>();
+      for (const entry of raw) {
+        const name = entry.displayName || t('analytics.filters.audioSourceUnknown');
+        const existing = aggregated.get(name);
+        if (existing) {
+          existing.ids.push(entry.id);
+          existing.count += entry.detectionCount ?? 0;
+        } else {
+          aggregated.set(name, {
+            displayName: name,
+            ids: [entry.id],
+            count: entry.detectionCount ?? 0,
+          });
+        }
+      }
+      // Sort by total detection count descending so most-used sources are at the top.
+      audioSources = Array.from(aggregated.values()).sort((a, b) => b.count - a.count);
+      logger.debug('Loaded analytics audio sources', {
+        groupCount: audioSources.length,
+        rowCount: raw.length,
+      });
+    } catch (err) {
+      logger.error('Error fetching analytics audio sources:', err);
+      audioSources = [];
+    }
+  }
+
   onMount(() => {
     // Set default dates
     const today = new Date();
@@ -582,6 +613,9 @@
 
     filters.endDate = formatDateForInput(today);
     filters.startDate = formatDateForInput(lastMonth);
+
+    // Load source list in parallel with the initial data fetch
+    void fetchAudioSources();
 
     // Fetch initial data. The D3 chart components render reactively from the
     // derived inputs, so no imperative chart lifecycle is needed.
