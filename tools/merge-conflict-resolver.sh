@@ -23,6 +23,11 @@ readonly SMTP_HOST="${RESOLVER_SMTP_HOST:-192.168.33.200}"
 readonly SMTP_PORT="${RESOLVER_SMTP_PORT:-10025}"
 readonly MAIL_TO="${RESOLVER_MAIL_TO:-tth@rfa.cz}"
 readonly MAIL_FROM="${RESOLVER_MAIL_FROM:-birdnet-resolver@rfa.cz}"
+# go-tflite (CGO) needs the TensorFlow Lite C headers to compile. The Taskfile
+# clones them here; `go vet ./...` fails with "tensorflow/lite/c/c_api.h: No such
+# file" without this include path, which previously made try_verify fail for
+# EVERY model regardless of whether the AI resolved the conflict correctly.
+readonly TF_HEADERS="${BIRDNET_TF_HEADERS:-$HOME/src/tensorflow}"
 
 # Tracks resolved files across the script
 RESOLVED_FILES=""
@@ -177,7 +182,15 @@ try_verify() {
 	fi
 
 	log "  Running Go vet..."
-	if ! (cd "$REPO_DIR" && go vet ./...) 2>&1 | tee -a "$LOG_FILE"; then
+	# go-tflite requires CGO + the TF Lite C headers; without CGO_CFLAGS the vet
+	# step fails on missing tensorflow headers (not a real resolution failure).
+	local go_cgo_cflags=""
+	if [ -f "$TF_HEADERS/tensorflow/lite/c/c_api.h" ]; then
+		go_cgo_cflags="-I$TF_HEADERS"
+	else
+		log "  ⚠ TF headers not found at $TF_HEADERS — go vet may fail on CGO deps"
+	fi
+	if ! (cd "$REPO_DIR" && CGO_ENABLED=1 CGO_CFLAGS="$go_cgo_cflags" go vet ./...) 2>&1 | tee -a "$LOG_FILE"; then
 		MODEL_ERRORS+="  $model_short: go vet failed\n"
 		log "  ✗ $model_short: go vet failed"
 		return 1
