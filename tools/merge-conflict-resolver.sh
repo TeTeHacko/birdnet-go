@@ -325,12 +325,17 @@ Repo: $REPO_DIR"
 		git clean -fd 2>/dev/null || true
 
 		# Fetch latest
+		# gitea/main is the authoritative deploy line: the gitea Actions
+		# auto-sync advances gitea on clean syncs, so github (origin) can lag
+		# behind it. We MUST base on gitea/main; otherwise a merge built on the
+		# stale github base cannot fast-forward onto gitea and the push fails.
+		git fetch gitea main 2>&1 | tail -3 || die "Failed to fetch gitea"
 		git fetch origin main 2>&1 | tail -3 || die "Failed to fetch origin"
 		git fetch upstream main 2>&1 | tail -3 || die "Failed to fetch upstream"
 
-		# Reset to origin/main
-		git checkout main 2>/dev/null || git checkout -b main origin/main
-		git reset --hard origin/main
+		# Reset to gitea/main (deploy line)
+		git checkout main 2>/dev/null || git checkout -b main gitea/main
+		git reset --hard gitea/main
 
 		# Attempt merge
 		if git merge upstream/main --no-ff --no-edit \
@@ -360,7 +365,7 @@ Repo: $REPO_DIR"
 
 		# Verify the resolution
 		if ! try_verify "$model_short"; then
-			git reset --hard origin/main
+			git reset --hard gitea/main
 			continue
 		fi
 
@@ -392,9 +397,17 @@ Check logs: $LOG_FILE"
 	fi
 
 	# --- Push result ---
-	log "All checks passed! Pushing to origin/main..."
+	# Push the deploy line (gitea) first — this is what triggers build/deploy
+	# and MUST succeed. Then mirror to github (origin) best-effort: github is
+	# always an ancestor of gitea here, so it fast-forwards; a github failure
+	# must not block the deploy, so it is non-fatal.
+	log "All checks passed! Pushing to gitea/main (deploy line)..."
+	if ! git push gitea main 2>&1 | tee -a "$LOG_FILE"; then
+		die "git push to gitea/main failed!"
+	fi
+	log "Mirroring to github (origin/main)..."
 	if ! git push origin main 2>&1 | tee -a "$LOG_FILE"; then
-		die "git push to origin/main failed!"
+		log "WARNING: mirror push to github failed (non-fatal); github will catch up next run"
 	fi
 
 	# --- Success ---
