@@ -597,6 +597,18 @@
       "empty": "Kaikki hiljaista — lintuja ei havaittu juuri nyt"
     },
     "rejected": "Hylätty",
+    "newSpeciesHighlights": {
+      "title": "Uudet ja palaavat lajit",
+      "subtitle": "Ensihavainnot ja äskettäin palanneet",
+      "trackingDisabled": "Ota käyttöön \"Ota lajiseuranta käyttöön\" käyttääksesi tätä ominaisuutta.",
+      "categoryLifetime": "Uusi laji",
+      "categoryYear": "Uusi tänä vuonna",
+      "categorySeason": "Uusi tällä kaudella",
+      "categorySeasonNamed": "Uusi tällä {season}",
+      "maxConfidenceShort": "Maks {confidence} %",
+      "detections": "{count, plural, one {# havainto} other {# havaintoa}}",
+      "lastSeen": "Viimeksi: {days, plural, =0 {tänään} one {# päivä sitten} other {# päivää sitten}}"
+    },
     "dailySummary": {
       "title": "Päivän aktiivisuus",
       "subtitle": "Havaintoja tunneittain",
@@ -763,6 +775,7 @@
     "elements": {
       "banner": "Kojelaudan banneri",
       "dailySummary": "Päivittäinen yhteenveto",
+      "newSpeciesHighlights": "Uudet lajihavainnot",
       "currentlyHearing": "Juuri nyt kuuluu",
       "detectionsGrid": "Viimeisimmät havainnot",
       "liveSpectrogram": "Reaaliaikainen spektrogrammi",
@@ -2180,12 +2193,15 @@
         },
         "githubRequired": {
           "title": "Vaaditaan: GitHub-ongelmaraportti tukilähetyksille",
-          "description": "<strong>Tukilähetykset vaativat GitHub-ongelman numeron.</strong> Ole hyvä ja <a href=\"https://github.com/tphakala/birdnet-go/issues/new\" target=\"_blank\" class=\"underline font-semibold\">luo GitHub-ongelma</a> kuvaten ongelmasi <strong>ennen</strong> tukiraportin luomista. Ilman linkitettyä ongelmaa kehittäjät eivät voi käsitellä tukitietojasi."
+          "description": "<strong>Tukilähetykset vaativat GitHub-ongelman numeron.</strong> Ole hyvä ja {createIssueLink} kuvaten ongelmasi <strong>ennen</strong> tukiraportin luomista. Ilman linkitettyä ongelmaa kehittäjät eivät voi käsitellä tukitietojasi.",
+          "createGithubIssue": "luo GitHub-ongelma"
         },
         "githubIssue": {
           "label": "GitHub-ongelman numero",
           "placeholder": "#123",
-          "helper": "<a href=\"https://github.com/tphakala/birdnet-go/issues\" target=\"_blank\" class=\"link link-primary\">Näytä olemassa olevat ongelmat</a> tai <a href=\"https://github.com/tphakala/birdnet-go/issues/new\" target=\"_blank\" class=\"link link-primary\">luo uusi ongelma</a> ensin"
+          "helper": "{viewIssuesLink} tai {createIssueLink} ensin",
+          "viewExistingIssues": "Näytä olemassa olevat ongelmat",
+          "createNewIssue": "luo uusi ongelma"
         },
         "whatsIncluded": {
           "title": "Mitä raportti sisältää:",
@@ -4554,7 +4570,8 @@
         "invalidUrl": "Virheellinen URL-muoto. Syötä täydellinen URL, esim. rtsp://host:portti/polku",
         "unsupportedScheme": "URL-skeemaa \"{scheme}\" ei tueta. Käytä rtsp, rtsps, http, https, rtmp tai udp",
         "blockedDestination": "Tämä kohde on estetty turvallisuussyistä",
-        "connectionFailed": "Striimiin ei saatu yhteyttä. Tarkista, että URL on oikein ja striimi on saavutettavissa"
+        "connectionFailed": "Striimiin ei saatu yhteyttä. Tarkista, että URL on oikein ja striimi on saavutettavissa",
+        "noAudioTrack": "Striimissä ei ole ääniraitaa. Vain ääntä sisältäviä striimejä voidaan käyttää"
       }
     },
     "debug": {

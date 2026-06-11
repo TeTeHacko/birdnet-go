@@ -597,6 +597,18 @@
       "empty": "Alt er stille — ingen fugle registreret lige nu"
     },
     "rejected": "Afvist",
+    "newSpeciesHighlights": {
+      "title": "Nye & tilbagevendende arter",
+      "subtitle": "Førstegangsobservationer og nyligt tilbagevendte",
+      "trackingDisabled": "Aktivér \"Aktivér artssporing\" for at bruge denne funktion.",
+      "categoryLifetime": "Ny art",
+      "categoryYear": "Ny i år",
+      "categorySeason": "Ny denne sæson",
+      "categorySeasonNamed": "Ny denne {season}",
+      "maxConfidenceShort": "Maks {confidence} %",
+      "detections": "{count, plural, one {# registrering} other {# registreringer}}",
+      "lastSeen": "Senest: {days, plural, =0 {i dag} one {for # dag siden} other {for # dage siden}}"
+    },
     "dailySummary": {
       "title": "Daglig aktivitet",
       "subtitle": "Artsregistreringer pr. time",
@@ -763,6 +775,7 @@
     "elements": {
       "banner": "Instrumentpanelbanner",
       "dailySummary": "Daglig oversigt",
+      "newSpeciesHighlights": "Nye artsrekorder",
       "currentlyHearing": "Hører lige nu",
       "detectionsGrid": "Seneste registreringer",
       "liveSpectrogram": "Live spektrogram",
@@ -2180,12 +2193,15 @@
         },
         "githubRequired": {
           "title": "Påkrævet: GitHub-issue til supportuploads",
-          "description": "<strong>Supportuploads kræver et GitHub-issuenummer.</strong> <a href=\"https://github.com/tphakala/birdnet-go/issues/new\" target=\"_blank\" class=\"underline font-semibold\">Opret venligst et GitHub-issue</a>, der beskriver dit problem, <strong>før</strong> du genererer en supportrapport. Uden et tilknyttet issue kan udviklere ikke handle på dine supportdata."
+          "description": "<strong>Supportuploads kræver et GitHub-issuenummer.</strong> {createIssueLink}, der beskriver dit problem, <strong>før</strong> du genererer en supportrapport. Uden et tilknyttet issue kan udviklere ikke handle på dine supportdata.",
+          "createGithubIssue": "Opret venligst et GitHub-issue"
         },
         "githubIssue": {
           "label": "GitHub-issuenummer",
           "placeholder": "f.eks. 123 eller #123",
-          "helper": "<a href=\"https://github.com/tphakala/birdnet-go/issues\" target=\"_blank\" class=\"link link-primary\">Se eksisterende issues</a> eller <a href=\"https://github.com/tphakala/birdnet-go/issues/new\" target=\"_blank\" class=\"link link-primary\">opret et nyt issue</a> først"
+          "helper": "{viewIssuesLink} eller {createIssueLink} først",
+          "viewExistingIssues": "Se eksisterende issues",
+          "createNewIssue": "opret et nyt issue"
         },
         "whatsIncluded": {
           "title": "Hvad er inkluderet i rapporten:",
@@ -4554,7 +4570,8 @@
         "invalidUrl": "Ugyldigt URL-format. Indtast en fuld URL som rtsp://host:port/sti",
         "unsupportedScheme": "Ikke-understøttet URL-skema \"{scheme}\". Brug rtsp, rtsps, http, https, rtmp eller udp",
         "blockedDestination": "Denne destination er blokeret af sikkerhedsmæssige årsager",
-        "connectionFailed": "Kunne ikke oprette forbindelse til streamen. Kontrollér, at URL'en er korrekt, og at streamen er tilgængelig"
+        "connectionFailed": "Kunne ikke oprette forbindelse til streamen. Kontrollér, at URL'en er korrekt, og at streamen er tilgængelig",
+        "noAudioTrack": "Streamen har ikke noget lydspor. Kun streams, der indeholder lyd, kan bruges"
       }
     },
     "debug": {

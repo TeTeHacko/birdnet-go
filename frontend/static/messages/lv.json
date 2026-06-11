@@ -597,6 +597,18 @@
       "empty": "Viss kluss — pašlaik nav atklāts neviens putns"
     },
     "rejected": "Noraidīts",
+    "newSpeciesHighlights": {
+      "title": "Jaunās un atgriezušās sugas",
+      "subtitle": "Pirmie novērojumi un nesenās atgriešanās",
+      "trackingDisabled": "Lai izmantotu šo funkciju, aktivizējiet \"Iespējot sugu izsekošanu\".",
+      "categoryLifetime": "Jauna suga",
+      "categoryYear": "Jauna šogad",
+      "categorySeason": "Jauna šosezon",
+      "categorySeasonNamed": "Jauna šajā {season}",
+      "maxConfidenceShort": "Maks {confidence} %",
+      "detections": "{count, plural, zero {# noteikšanu} one {# noteikšana} other {# noteikšanas}}",
+      "lastSeen": "Pēdējoreiz: {days, plural, =0 {šodien} one {pirms # dienas} other {pirms # dienām}}"
+    },
     "dailySummary": {
       "title": "Dienas aktivitāte",
       "subtitle": "Sugu atklāšanas pa stundām",
@@ -763,6 +775,7 @@
     "elements": {
       "banner": "Informācijas paneļa baneris",
       "dailySummary": "Dienas kopsavilkums",
+      "newSpeciesHighlights": "Jaunu sugu apskats",
       "currentlyHearing": "Pašlaik dzirdams",
       "detectionsGrid": "Nesenās atklāšanas",
       "liveSpectrogram": "Tiešraides spektrogramma",
@@ -2180,12 +2193,15 @@
         },
         "githubRequired": {
           "title": "Nepieciešams: GitHub problēma atbalsta augšupielādēm",
-          "description": "<strong>Atbalsta augšupielādēm nepieciešams GitHub problēmas numurs.</strong> Lūdzu, <a href=\"https://github.com/tphakala/birdnet-go/issues/new\" target=\"_blank\" class=\"underline font-semibold\">izveidojiet GitHub problēmu</a>, aprakstot savu problēmu, <strong>pirms</strong> ģenerējat atbalsta ziņojumu. Bez saistītās problēmas izstrādātāji nevar rīkoties ar jūsu atbalsta datiem."
+          "description": "<strong>Atbalsta augšupielādēm nepieciešams GitHub problēmas numurs.</strong> Lūdzu, {createIssueLink}, aprakstot savu problēmu, <strong>pirms</strong> ģenerējat atbalsta ziņojumu. Bez saistītās problēmas izstrādātāji nevar rīkoties ar jūsu atbalsta datiem.",
+          "createGithubIssue": "izveidojiet GitHub problēmu"
         },
         "githubIssue": {
           "label": "GitHub problēmas numurs",
           "placeholder": "piem., 123 vai #123",
-          "helper": "<a href=\"https://github.com/tphakala/birdnet-go/issues\" target=\"_blank\" class=\"link link-primary\">Skatīt esošās problēmas</a> vai <a href=\"https://github.com/tphakala/birdnet-go/issues/new\" target=\"_blank\" class=\"link link-primary\">vispirms izveidojiet jaunu problēmu</a>"
+          "helper": "{viewIssuesLink} vai {createIssueLink}",
+          "viewExistingIssues": "Skatīt esošās problēmas",
+          "createNewIssue": "vispirms izveidojiet jaunu problēmu"
         },
         "whatsIncluded": {
           "title": "Kas ir iekļauts ziņojumā:",
@@ -4554,7 +4570,8 @@
         "invalidUrl": "Nederīgs URL formāts. Ievadiet pilnu URL, piem., rtsp://resursdators:ports/ceļš",
         "unsupportedScheme": "Neatbalstīta URL shēma \"{scheme}\". Izmantojiet rtsp, rtsps, http, https, rtmp vai udp",
         "blockedDestination": "Šis galamērķis ir bloķēts drošības apsvērumu dēļ",
-        "connectionFailed": "Nevarēja izveidot savienojumu ar straumi. Pārbaudiet, vai URL ir pareizs un straume ir pieejama"
+        "connectionFailed": "Nevarēja izveidot savienojumu ar straumi. Pārbaudiet, vai URL ir pareizs un straume ir pieejama",
+        "noAudioTrack": "Straumē nav audio celiņa. Var izmantot tikai straumes, kas satur audio"
       }
     },
     "debug": {

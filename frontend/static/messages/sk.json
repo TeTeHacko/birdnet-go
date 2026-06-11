@@ -597,6 +597,18 @@
       "empty": "Všetko ticho — momentálne žiadne vtáky nezistené"
     },
     "rejected": "Zamietnuté",
+    "newSpeciesHighlights": {
+      "title": "Nové a vracajúce sa druhy",
+      "subtitle": "Prvé pozorovania a nedávne návraty",
+      "trackingDisabled": "Ak chcete túto funkciu používať, aktivujte „Povoliť sledovanie druhov“.",
+      "categoryLifetime": "Nový druh",
+      "categoryYear": "Nový tento rok",
+      "categorySeason": "Nový túto sezónu",
+      "categorySeasonNamed": "Nový túto {season}",
+      "maxConfidenceShort": "Max {confidence} %",
+      "detections": "{count, plural, one {# detekcia} few {# detekcie} other {# detekcií}}",
+      "lastSeen": "Naposledy: {days, plural, =0 {dnes} one {pred # dňom} few {pred # dňami} other {pred # dňami}}"
+    },
     "dailySummary": {
       "title": "Denná aktivita",
       "subtitle": "Detekcie druhov podľa hodín",
@@ -763,6 +775,7 @@
     "elements": {
       "banner": "Banner panela",
       "dailySummary": "Denný prehľad",
+      "newSpeciesHighlights": "Nové druhy – prehľad",
       "currentlyHearing": "Práve počuté",
       "detectionsGrid": "Nedávne detekcie",
       "liveSpectrogram": "Živý spektrogram",
@@ -2180,12 +2193,15 @@
         },
         "githubRequired": {
           "title": "Vyžaduje sa: GitHub Issue pre nahranie podpory",
-          "description": "<strong>Nahranie podpory vyžaduje číslo GitHub issue.</strong> Pred vygenerovaním správy o podpore prosím <a href=\"https://github.com/tphakala/birdnet-go/issues/new\" target=\"_blank\" class=\"underline font-semibold\">vytvorte GitHub issue</a> popisujúce váš problém. Bez prepojenej issue nemôžu vývojári s vašimi údajmi o podpore pracovať."
+          "description": "<strong>Nahranie podpory vyžaduje číslo GitHub issue.</strong> Pred vygenerovaním správy o podpore prosím {createIssueLink} popisujúce váš problém. Bez prepojenej issue nemôžu vývojári s vašimi údajmi o podpore pracovať.",
+          "createGithubIssue": "vytvorte GitHub issue"
         },
         "githubIssue": {
           "label": "Číslo GitHub Issue",
           "placeholder": "napr. 123 alebo #123",
-          "helper": "<a href=\"https://github.com/tphakala/birdnet-go/issues\" target=\"_blank\" class=\"link link-primary\">Zobraziť existujúce issue</a> alebo <a href=\"https://github.com/tphakala/birdnet-go/issues/new\" target=\"_blank\" class=\"link link-primary\">vytvoriť novú issue</a>"
+          "helper": "{viewIssuesLink} alebo {createIssueLink}",
+          "viewExistingIssues": "Zobraziť existujúce issue",
+          "createNewIssue": "vytvoriť novú issue"
         },
         "whatsIncluded": {
           "title": "Čo je zahrnuté v správe:",
@@ -4554,7 +4570,8 @@
         "invalidUrl": "Neplatný formát URL. Zadajte úplnú URL, napr. rtsp://host:port/cesta",
         "unsupportedScheme": "Nepodporovaná schéma URL \"{scheme}\". Použite rtsp, rtsps, http, https, rtmp alebo udp",
         "blockedDestination": "Tento cieľ je z bezpečnostných dôvodov zablokovaný",
-        "connectionFailed": "Nepodarilo sa pripojiť k streamu. Skontrolujte, či je URL správna a stream je dostupný"
+        "connectionFailed": "Nepodarilo sa pripojiť k streamu. Skontrolujte, či je URL správna a stream je dostupný",
+        "noAudioTrack": "Stream neobsahuje žiadnu zvukovú stopu. Použiť možno iba streamy obsahujúce zvuk"
       }
     },
     "debug": {

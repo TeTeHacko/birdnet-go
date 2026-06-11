@@ -597,6 +597,18 @@
       "empty": "All quiet — no birds detected right now"
     },
     "rejected": "Rejected",
+    "newSpeciesHighlights": {
+      "title": "New & Returning Species",
+      "subtitle": "First-time and recently returned detections",
+      "trackingDisabled": "Please activate \"Enable Species Tracking\" to use this feature.",
+      "categoryLifetime": "New species",
+      "categoryYear": "New this year",
+      "categorySeason": "New this season",
+      "categorySeasonNamed": "New this {season}",
+      "maxConfidenceShort": "Max {confidence}%",
+      "detections": "{count, plural, one {# detection} other {# detections}}",
+      "lastSeen": "Last: {days, plural, =0 {today} one {# day ago} other {# days ago}}"
+    },
     "dailySummary": {
       "title": "Daily Activity",
       "subtitle": "Species detections by hour",
@@ -763,6 +775,7 @@
     "elements": {
       "banner": "Dashboard Banner",
       "dailySummary": "Daily Summary",
+      "newSpeciesHighlights": "New Species Highlights",
       "currentlyHearing": "Currently Hearing",
       "detectionsGrid": "Recent Detections",
       "liveSpectrogram": "Live Spectrogram",
@@ -2180,12 +2193,15 @@
         },
         "githubRequired": {
           "title": "Required: GitHub Issue for Support Uploads",
-          "description": "<strong>Support uploads require a GitHub issue number.</strong> Please <a href=\"https://github.com/tphakala/birdnet-go/issues/new\" target=\"_blank\" class=\"underline font-semibold\">create a GitHub issue</a> describing your problem <strong>before</strong> generating a support report. Without a linked issue, developers cannot act on your support data."
+          "description": "<strong>Support uploads require a GitHub issue number.</strong> Please {createIssueLink} describing your problem <strong>before</strong> generating a support report. Without a linked issue, developers cannot act on your support data.",
+          "createGithubIssue": "create a GitHub issue"
         },
         "githubIssue": {
           "label": "GitHub Issue Number",
           "placeholder": "e.g., 123 or #123",
-          "helper": "<a href=\"https://github.com/tphakala/birdnet-go/issues\" target=\"_blank\" class=\"link link-primary\">View existing issues</a> or <a href=\"https://github.com/tphakala/birdnet-go/issues/new\" target=\"_blank\" class=\"link link-primary\">create a new issue</a> first"
+          "helper": "{viewIssuesLink} or {createIssueLink} first",
+          "viewExistingIssues": "View existing issues",
+          "createNewIssue": "create a new issue"
         },
         "whatsIncluded": {
           "title": "What's included in the report:",
@@ -4554,7 +4570,8 @@
         "invalidUrl": "Invalid URL format. Enter a full URL like rtsp://host:port/path",
         "unsupportedScheme": "Unsupported URL scheme \"{scheme}\". Use rtsp, rtsps, http, https, rtmp, or udp",
         "blockedDestination": "This destination is blocked for security reasons",
-        "connectionFailed": "Could not connect to the stream. Check that the URL is correct and the stream is accessible"
+        "connectionFailed": "Could not connect to the stream. Check that the URL is correct and the stream is accessible",
+        "noAudioTrack": "The stream has no audio track. Only streams that contain audio can be used"
       }
     },
     "debug": {

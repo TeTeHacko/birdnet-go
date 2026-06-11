@@ -595,6 +595,7 @@ func (c *Controller) GetDetections(ctx echo.Context) error {
 
 	// Convert notes to response format
 	detections := c.convertNotesToDetectionResponses(notes, params.IncludeWeather)
+	c.stripSourceForUnauthenticated(ctx, detections)
 
 	// Create paginated response
 	response := c.createPaginatedResponse(detections, totalResults, params.NumResults, params.Offset)
@@ -681,6 +682,20 @@ func (c *Controller) getDetectionsByQueryType(params *detectionQueryParams) ([]d
 			return c.getSearchDetectionsAdvanced(params)
 		}
 		return c.getAllDetections(params.NumResults, params.Offset)
+	}
+}
+
+// stripSourceForUnauthenticated removes audio source metadata from detection
+// responses for unauthenticated clients. Source ids and display names are
+// private data: they can reveal internal hostnames, IPs, stream paths, and
+// user-chosen labels. This matches the anonymization done by the audio source
+// listing endpoints and the search endpoint.
+func (c *Controller) stripSourceForUnauthenticated(ctx echo.Context, detections []DetectionResponse) {
+	if c.isClientAuthenticated(ctx) {
+		return
+	}
+	for i := range detections {
+		detections[i].Source = nil
 	}
 }
 
@@ -1214,6 +1229,9 @@ func (c *Controller) GetDetection(ctx echo.Context) error {
 	// For single detection, include weather data by default
 	weatherCache := make(map[string][]datastore.HourlyWeather)
 	detection := c.noteToDetectionResponse(&note, true, weatherCache)
+	if !c.isClientAuthenticated(ctx) {
+		detection.Source = nil
+	}
 	return ctx.JSON(http.StatusOK, detection)
 }
 
@@ -1236,6 +1254,7 @@ func (c *Controller) GetRecentDetections(ctx echo.Context) error {
 	}
 
 	detections := c.convertNotesToDetectionResponses(notes, includeWeather)
+	c.stripSourceForUnauthenticated(ctx, detections)
 	return ctx.JSON(http.StatusOK, detections)
 }
 

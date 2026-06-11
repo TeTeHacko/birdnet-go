@@ -39,7 +39,8 @@ func TestParseOptionalSourceIDs(t *testing.T) {
 		{name: "value with only whitespace returns nil", query: "?source_id=%20%20%20", want: nil},
 	}
 
-	c := &Controller{Settings: newValidTestSettings()}
+	c := &Controller{}
+	c.Settings.Store(newValidTestSettings())
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -76,7 +77,8 @@ func TestParseOptionalSourceIDs_Truncation(t *testing.T) {
 	rec := httptest.NewRecorder()
 	ctx := e.NewContext(req, rec)
 
-	c := &Controller{Settings: newValidTestSettings()}
+	c := &Controller{}
+	c.Settings.Store(newValidTestSettings())
 	got := c.parseOptionalSourceIDs(ctx, "source_id")
 	require.Len(t, got, maxSourceIDsPerRequest)
 	assert.Equal(t, uint(1), got[0], "leading IDs are preserved")

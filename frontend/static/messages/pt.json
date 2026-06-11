@@ -597,6 +597,18 @@
       "empty": "Tudo calmo — nenhuma ave detectada no momento"
     },
     "rejected": "Rejeitado",
+    "newSpeciesHighlights": {
+      "title": "Espécies novas e de regresso",
+      "subtitle": "Primeiras observações e regressos recentes",
+      "trackingDisabled": "Ative \"Ativar rastreamento de espécies\" para usar esta funcionalidade.",
+      "categoryLifetime": "Espécie nova",
+      "categoryYear": "Nova este ano",
+      "categorySeason": "Nova nesta temporada",
+      "categorySeasonNamed": "Nova nesta {season}",
+      "maxConfidenceShort": "Máx {confidence}%",
+      "detections": "{count, plural, one {# deteção} other {# deteções}}",
+      "lastSeen": "Último: {days, plural, =0 {hoje} one {há # dia} other {há # dias}}"
+    },
     "dailySummary": {
       "title": "Atividade Diária",
       "subtitle": "Detecções por hora",
@@ -763,6 +775,7 @@
     "elements": {
       "banner": "Banner do painel",
       "dailySummary": "Resumo diário",
+      "newSpeciesHighlights": "Novas espécies em destaque",
       "currentlyHearing": "Ouvindo atualmente",
       "detectionsGrid": "Detecções recentes",
       "liveSpectrogram": "Espectrograma ao vivo",
@@ -2180,12 +2193,15 @@
         },
         "githubRequired": {
           "title": "Obrigatório: Issue do GitHub para envios de suporte",
-          "description": "<strong>Envios de suporte requerem um número de issue do GitHub.</strong> Por favor <a href=\"https://github.com/tphakala/birdnet-go/issues/new\" target=\"_blank\" class=\"underline font-semibold\">crie um issue no GitHub</a> descrevendo seu problema <strong>antes</strong> de gerar um relatório de suporte. Sem um issue vinculado, os desenvolvedores não podem agir sobre seus dados de suporte."
+          "description": "<strong>Envios de suporte requerem um número de issue do GitHub.</strong> Por favor {createIssueLink} descrevendo seu problema <strong>antes</strong> de gerar um relatório de suporte. Sem um issue vinculado, os desenvolvedores não podem agir sobre seus dados de suporte.",
+          "createGithubIssue": "crie um issue no GitHub"
         },
         "githubIssue": {
           "label": "Número do issue do GitHub",
           "placeholder": "#123",
-          "helper": "<a href=\"https://github.com/tphakala/birdnet-go/issues\" target=\"_blank\" class=\"link link-primary\">Ver issues existentes</a> ou <a href=\"https://github.com/tphakala/birdnet-go/issues/new\" target=\"_blank\" class=\"link link-primary\">criar um novo issue</a> primeiro"
+          "helper": "{viewIssuesLink} ou {createIssueLink} primeiro",
+          "viewExistingIssues": "Ver issues existentes",
+          "createNewIssue": "criar um novo issue"
         },
         "whatsIncluded": {
           "title": "O que está incluído no relatório:",
@@ -4554,7 +4570,8 @@
         "invalidUrl": "Formato de URL inválido. Introduza um URL completo, por ex. rtsp://host:porta/caminho",
         "unsupportedScheme": "Esquema de URL não suportado \"{scheme}\". Use rtsp, rtsps, http, https, rtmp ou udp",
         "blockedDestination": "Este destino está bloqueado por razões de segurança",
-        "connectionFailed": "Não foi possível ligar ao stream. Verifique se o URL está correto e se o stream está acessível"
+        "connectionFailed": "Não foi possível ligar ao stream. Verifique se o URL está correto e se o stream está acessível",
+        "noAudioTrack": "O stream não tem faixa de áudio. Apenas streams que contenham áudio podem ser usados"
       }
     },
     "debug": {

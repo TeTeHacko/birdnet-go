@@ -20,6 +20,7 @@ import (
 	"github.com/tphakala/birdnet-go/internal/errors"
 	"github.com/tphakala/birdnet-go/internal/inference"
 	"github.com/tphakala/birdnet-go/internal/logger"
+	"github.com/tphakala/birdnet-go/internal/openfauna"
 	"github.com/tphakala/birdnet-go/internal/suncalc"
 )
 
@@ -27,6 +28,13 @@ import (
 type modelEntry struct {
 	instance ModelInstance
 	mu       sync.Mutex // per-model lock; prevents inference on one model from blocking another
+}
+
+// entryRef pairs a registry ID with its model entry for the snapshot-then-iterate
+// pattern used when walking o.models outside the o.mu critical section.
+type entryRef struct {
+	id    string
+	entry *modelEntry
 }
 
 // Orchestrator manages classifier model instances and provides the primary
@@ -50,6 +58,11 @@ type Orchestrator struct {
 
 	// Name resolution chain. Resolvers are tried in order; first non-empty wins.
 	nameResolvers []NameResolver
+
+	// openfauna is the authoritative species-name resolver (chain[0]). Held as a
+	// typed handle so refresh triggers can Rebuild its sparse index on
+	// range-filter/model/locale change. Always also present in nameResolvers.
+	openfauna *openfauna.Resolver
 
 	// Model management.
 	// NOTE: models map is keyed by ModelInfo.ID at construction time. If ReloadModel
@@ -109,6 +122,7 @@ func NewOrchestrator(settings *conf.Settings) (*Orchestrator, error) {
 	}
 
 	resolver := NewBirdNETLabelResolver(bn.Labels())
+	ofResolver := openfauna.NewResolver()
 
 	o := &Orchestrator{
 		Settings:        settings,
@@ -116,7 +130,10 @@ func NewOrchestrator(settings *conf.Settings) (*Orchestrator, error) {
 		TaxonomyMap:     bn.TaxonomyMap,
 		TaxonomyPath:    bn.TaxonomyPath,
 		ScientificIndex: bn.ScientificIndex,
-		nameResolvers:   []NameResolver{resolver},
+		// OpenFauna first so it overrides label/taxonomy names everywhere
+		// ResolveName is consulted (display + inference).
+		nameResolvers: []NameResolver{ofResolver, resolver},
+		openfauna:     ofResolver,
 		models: map[string]*modelEntry{
 			bn.ModelInfo.ID: {instance: bn},
 		},
@@ -146,9 +163,19 @@ func NewOrchestrator(settings *conf.Settings) (*Orchestrator, error) {
 // geomodel auto-selection, and registers the taxonomy resolver if
 // taxonomy.csv is available on disk.
 func (o *Orchestrator) SetModelsDir(dir string) {
+	// Guard the o.modelsDir write and the o.primary read under o.mu: o.modelsDir
+	// is read by resolveInstalledPaths (always under o.mu via the model loaders),
+	// and o.primary is cleared by Delete() under o.mu.Lock(). Release before the
+	// downstream calls, which take their own locks. registerTaxonomyResolver in
+	// particular acquires o.mu.RLock() internally, so holding o.mu here would
+	// self-deadlock (the RWMutex is not reentrant).
+	o.mu.Lock()
 	o.modelsDir = dir
-	if o.primary != nil {
-		o.primary.SetModelsDir(dir)
+	primary := o.primary
+	o.mu.Unlock()
+
+	if primary != nil {
+		primary.SetModelsDir(dir)
 	}
 	o.registerTaxonomyResolver(dir)
 }
@@ -418,16 +445,74 @@ func (o *Orchestrator) ResolveName(scientificName, locale string) string {
 	return ""
 }
 
+// OpenFaunaResolver returns the orchestrator's authoritative name resolver so
+// display surfaces that cannot import the classifier package (the datastore) and
+// the api/v2 controller can share the same instance. Never nil after construction.
+func (o *Orchestrator) OpenFaunaResolver() *openfauna.Resolver {
+	return o.openfauna
+}
+
+// RebuildNameResolver rebuilds the OpenFauna sparse index for the given working
+// set (range-filtered label strings) at the active BirdNET.Locale. Label strings
+// in "Scientific_Common" form are reduced to their scientific name; an empty
+// working set falls back to all model labels so a disabled range filter still
+// pre-indexes the current model's species. Out-of-working-set (historic) species
+// still resolve via the resolver's on-demand Lookup, so the working set is a
+// performance optimization, not a correctness boundary.
+func (o *Orchestrator) RebuildNameResolver(includedSpecies []string) error {
+	if o == nil || o.openfauna == nil {
+		return nil
+	}
+	sciNames := scientificNamesFromLabels(includedSpecies)
+	if len(sciNames) == 0 {
+		// Snapshot primary under the read lock so a concurrent Delete (which sets
+		// o.primary = nil) cannot race the Labels() read.
+		o.mu.RLock()
+		primary := o.primary
+		o.mu.RUnlock()
+		if primary != nil {
+			sciNames = scientificNamesFromLabels(primary.Labels())
+		}
+	}
+	locale := o.CurrentSettings().BirdNET.Locale
+	return o.openfauna.Rebuild(sciNames, locale)
+}
+
+// scientificNamesFromLabels extracts the scientific-name portion of each
+// "Scientific_Common" label (Perch labels are scientific-only and pass through).
+func scientificNamesFromLabels(labels []string) []string {
+	out := make([]string, 0, len(labels))
+	for _, label := range labels {
+		sci, _ := SplitSpeciesName(label)
+		if sci != "" {
+			out = append(out, sci)
+		}
+	}
+	return out
+}
+
 // GetProbableSpecies returns species scores from the range filter.
 func (o *Orchestrator) GetProbableSpecies(date time.Time, week float32) ([]SpeciesScore, error) {
-	return o.primary.GetProbableSpecies(date, week)
+	o.mu.RLock()
+	primary := o.primary
+	o.mu.RUnlock()
+	if primary == nil {
+		return nil, nil
+	}
+	return primary.GetProbableSpecies(date, week)
 }
 
 // GetProbableSpeciesWithSettings filters species using the supplied settings
 // snapshot, allowing callers to test arbitrary coordinates and thresholds
 // without modifying global state.
 func (o *Orchestrator) GetProbableSpeciesWithSettings(date time.Time, week float32, settings *conf.Settings) ([]SpeciesScore, error) {
-	return o.primary.GetProbableSpeciesWithSettings(date, week, settings)
+	o.mu.RLock()
+	primary := o.primary
+	o.mu.RUnlock()
+	if primary == nil {
+		return nil, nil
+	}
+	return primary.GetProbableSpeciesWithSettings(date, week, settings)
 }
 
 // GetAllProbableSpeciesWithSettings returns species from all active classifiers.
@@ -486,11 +571,6 @@ func (o *Orchestrator) GetAllProbableSpeciesWithSettings(date time.Time, week fl
 	geoCovered := make(map[string]bool, len(geoLabels))
 	for _, label := range geoLabels {
 		geoCovered[strings.ToLower(detection.ExtractScientificName(label))] = true
-	}
-
-	type entryRef struct {
-		id    string
-		entry *modelEntry
 	}
 
 	o.mu.RLock()
@@ -566,27 +646,57 @@ func (o *Orchestrator) GetAllProbableSpeciesWithSettings(date time.Time, week fl
 
 // GetSpeciesOccurrence returns the occurrence probability for a species at the current time.
 func (o *Orchestrator) GetSpeciesOccurrence(species string) float64 {
-	return o.primary.GetSpeciesOccurrence(species)
+	o.mu.RLock()
+	primary := o.primary
+	o.mu.RUnlock()
+	if primary == nil {
+		return 0
+	}
+	return primary.GetSpeciesOccurrence(species)
 }
 
 // GetSpeciesOccurrenceAtTime returns the occurrence probability for a species at a specific time.
 func (o *Orchestrator) GetSpeciesOccurrenceAtTime(species string, detectionTime time.Time) float64 {
-	return o.primary.GetSpeciesOccurrenceAtTime(species, detectionTime)
+	o.mu.RLock()
+	primary := o.primary
+	o.mu.RUnlock()
+	if primary == nil {
+		return 0
+	}
+	return primary.GetSpeciesOccurrenceAtTime(species, detectionTime)
 }
 
 // NumSpecies returns the number of species labels of the primary model.
 func (o *Orchestrator) NumSpecies() int {
-	return o.primary.NumSpecies()
+	o.mu.RLock()
+	primary := o.primary
+	o.mu.RUnlock()
+	if primary == nil {
+		return 0
+	}
+	return primary.NumSpecies()
 }
 
 // Labels returns a copy of the species labels of the primary model.
 func (o *Orchestrator) Labels() []string {
-	return o.primary.Labels()
+	o.mu.RLock()
+	primary := o.primary
+	o.mu.RUnlock()
+	if primary == nil {
+		return nil
+	}
+	return primary.Labels()
 }
 
 // GetSpeciesCode returns the eBird species code for a given label.
 func (o *Orchestrator) GetSpeciesCode(label string) (string, bool) {
-	return o.primary.GetSpeciesCode(label)
+	o.mu.RLock()
+	primary := o.primary
+	o.mu.RUnlock()
+	if primary == nil {
+		return "", false
+	}
+	return primary.GetSpeciesCode(label)
 }
 
 // GetSpeciesNameFromCode returns the species name for a given eBird species code.
@@ -599,20 +709,41 @@ func (o *Orchestrator) GetSpeciesNameFromCode(code string) (string, bool) {
 }
 
 // GetSpeciesWithScientificAndCommonName returns the scientific and common name for a label.
+// OpenFauna (chain[0]) is authoritative: its localized name overrides the
+// primary's label-derived common name whenever the resolver chain has one.
 func (o *Orchestrator) GetSpeciesWithScientificAndCommonName(label string) (scientific, common string) {
-	return o.primary.GetSpeciesWithScientificAndCommonName(label)
+	// Snapshot primary under read lock to avoid racing with Delete().
+	o.mu.RLock()
+	primary := o.primary
+	o.mu.RUnlock()
+	if primary == nil {
+		return "", ""
+	}
+	scientific, common = primary.GetSpeciesWithScientificAndCommonName(label)
+	if scientific != "" {
+		if resolved := o.ResolveName(scientific, ""); resolved != "" {
+			common = resolved
+		}
+	}
+	return scientific, common
 }
 
 // EnrichResultWithTaxonomy adds taxonomy information to a detection result.
-// If the primary model cannot resolve a common name (e.g., Perch labels
-// contain only scientific names), the name resolver chain is consulted
-// to find a common name (BirdNET labels, then taxonomy.csv).
+// OpenFauna (chain[0]) is authoritative: the resolver chain overrides the
+// label-derived common name whenever it has a name, even if the primary already
+// produced one. This localizes names and fixes scientific-only/bat labels. Only
+// the primary's name is kept when the chain returns nothing.
 func (o *Orchestrator) EnrichResultWithTaxonomy(speciesLabel string) (scientific, common, code string) {
-	scientific, common, code = o.primary.EnrichResultWithTaxonomy(speciesLabel)
+	// Snapshot primary under read lock to avoid racing with Delete().
+	o.mu.RLock()
+	primary := o.primary
+	o.mu.RUnlock()
+	if primary == nil {
+		return "", "", ""
+	}
+	scientific, common, code = primary.EnrichResultWithTaxonomy(speciesLabel)
 
-	// Perch v2 labels are scientific-name-only. Try the resolver chain
-	// to look up a common name.
-	if common == "" && scientific != "" {
+	if scientific != "" {
 		if resolved := o.ResolveName(scientific, ""); resolved != "" {
 			common = resolved
 		}
@@ -658,11 +789,6 @@ func (o *Orchestrator) RangeFilterStatus() RangeFilterStatusResponse {
 		id     string
 		name   string
 		labels []string
-	}
-
-	type entryRef struct {
-		id    string
-		entry *modelEntry
 	}
 
 	var refs []entryRef
@@ -766,7 +892,13 @@ func (o *Orchestrator) notifyRangeFilterReload() {
 
 // RunFilterProcess executes the filter process on demand and prints results.
 func (o *Orchestrator) RunFilterProcess(dateStr string, week float32) {
-	o.primary.RunFilterProcess(dateStr, week)
+	o.mu.RLock()
+	primary := o.primary
+	o.mu.RUnlock()
+	if primary == nil {
+		return
+	}
+	primary.RunFilterProcess(dateStr, week)
 }
 
 // ReloadModel reloads the primary model and re-syncs shared state.
@@ -844,10 +976,25 @@ func (o *Orchestrator) ReloadModel() error {
 // Delete releases all resources held by the Orchestrator and its models.
 // After calling Delete, the Orchestrator must not be used.
 func (o *Orchestrator) Delete() {
+	// Snapshot the models, stop the scheduler, and clear o.primary/o.models under
+	// o.mu so the accessors (which snapshot o.primary under o.mu) observe the
+	// deleted state immediately and fail fast. Then release o.mu before the
+	// per-model Close() calls: Close does native teardown that can be slow, and
+	// holding o.mu across it would block every accessor for the duration of
+	// teardown. UnloadModel uses the same drop-lock-before-close shape.
 	o.mu.Lock()
-	defer o.mu.Unlock()
+	models := o.models
+	// Swap(nil) both retrieves the scheduler to stop and clears the pointer, so a
+	// re-used orchestrator does not see a stale stopped scheduler (SetSunCalc skips
+	// creating a new one when o.scheduler is already non-nil).
+	if s := o.scheduler.Swap(nil); s != nil {
+		s.stop()
+	}
+	o.primary = nil
+	o.models = nil
+	o.mu.Unlock()
 
-	for _, entry := range o.models {
+	for id, entry := range models {
 		entry.mu.Lock()
 		if entry.instance != nil {
 			if err := entry.instance.Close(); err != nil {
@@ -857,17 +1004,15 @@ func (o *Orchestrator) Delete() {
 			}
 			entry.instance = nil // nil out to signal closed state to PredictModel
 		}
+		// Drop the model's global inference counters while still holding entry.mu,
+		// mirroring UnloadModel: this prevents an in-flight RecordInvoke from
+		// re-creating the entry after deletion, and stops a teardown-then-recreate
+		// cycle from leaking counter entries.
+		globalInferenceCounters.Delete(id)
 		entry.mu.Unlock()
-	}
-	if s := o.scheduler.Load(); s != nil {
-		s.stop()
 	}
 
 	CloseHeatmapService()
-
-	// Nil out references to fail fast on use-after-delete.
-	o.primary = nil
-	o.models = nil
 }
 
 // IsModelLoaded returns true if a model with the given registry ID is
@@ -1101,7 +1246,14 @@ func (o *Orchestrator) BatchRangeFilterInference(inputs []float32, batchSize int
 			Category(errors.CategoryValidation).
 			Build()
 	}
-	if len(inputs) != batchSize*inputWidth {
+	// Check batchSize against len(inputs)/inputWidth before computing
+	// batchSize*inputWidth: a near-math.MaxInt batchSize would otherwise overflow
+	// the multiplication to a small positive value that could spuriously equal
+	// len(inputs), bypass validation, and push an oversized batch into the ONNX
+	// backend (out-of-bounds read). inputWidth is a positive constant, so the
+	// division is safe; batchSize > 0 is guaranteed above, so len(inputs)==0 is
+	// rejected cleanly.
+	if batchSize > len(inputs)/inputWidth || len(inputs) != batchSize*inputWidth {
 		return nil, errors.Newf("inputs length %d does not match batchSize %d * %d", len(inputs), batchSize, inputWidth).
 			Component("classifier.orchestrator").
 			Category(errors.CategoryValidation).
@@ -1146,17 +1298,18 @@ func (o *Orchestrator) GeomodelSpeciesInfo(label string) (speciesIdx, numGeoSpec
 
 // Debug prints debug messages if debug mode is enabled.
 func (o *Orchestrator) Debug(format string, v ...any) {
-	o.primary.Debug(format, v...)
+	o.mu.RLock()
+	primary := o.primary
+	o.mu.RUnlock()
+	if primary == nil {
+		return
+	}
+	primary.Debug(format, v...)
 }
 
 // ModelInfos returns ModelInfo for all registered models. Thread-safe.
 // Used by the pipeline to build ModelTarget lists for buffer fan-out.
 func (o *Orchestrator) ModelInfos() []ModelInfo {
-	type entryRef struct {
-		id    string
-		entry *modelEntry
-	}
-
 	o.mu.RLock()
 	if o.models == nil {
 		o.mu.RUnlock()
