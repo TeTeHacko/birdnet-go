@@ -16,6 +16,7 @@ import (
 	"github.com/tphakala/birdnet-go/internal/conf"
 	"github.com/tphakala/birdnet-go/internal/errors"
 	"github.com/tphakala/birdnet-go/internal/logger"
+	"github.com/tphakala/birdnet-go/internal/privacy"
 )
 
 const (
@@ -270,6 +271,9 @@ func buildWundergroundURL(cfg *wundergroundConfig) (string, error) {
 			errors.CategoryConfiguration, "parse_endpoint", wundergroundProviderName,
 		)
 	}
+	if err := validateEndpointScheme(u, wundergroundProviderName); err != nil {
+		return "", err
+	}
 	q := u.Query()
 	q.Set("stationId", cfg.stationID)
 	q.Set("format", "json")
@@ -317,7 +321,9 @@ func (p *WundergroundProvider) executeRequest(apiURL string, cfg *wundergroundCo
 
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, http.NoBody)
 	if err != nil {
-		return nil, newWeatherError(err, errors.CategoryNetwork, "create_http_request", wundergroundProviderName)
+		// Scrub before wrapping: http.NewRequest can return a *url.Error that
+		// embeds apiURL, which carries the apiKey query parameter.
+		return nil, newWeatherError(privacy.WrapError(err), errors.CategoryNetwork, "create_http_request", wundergroundProviderName)
 	}
 	req.Header.Set("User-Agent", UserAgent())
 	req.Header.Set("Accept", "application/json")
@@ -357,7 +363,10 @@ func (p *WundergroundProvider) executeRequest(apiURL string, cfg *wundergroundCo
 	return io.ReadAll(resp.Body)
 }
 
-// handleWundergroundRequestError categorizes HTTP request errors
+// handleWundergroundRequestError categorizes HTTP request errors. The raw
+// transport error is a *url.Error that embeds the request URL, including the
+// apiKey query parameter, so it is scrubbed before wrapping to prevent an
+// upstream logger.Error in weather.go from leaking the key.
 func handleWundergroundRequestError(ctx context.Context, err error) error {
 	var category errors.ErrorCategory
 	switch ctx.Err() {
@@ -368,7 +377,7 @@ func handleWundergroundRequestError(ctx context.Context, err error) error {
 	default:
 		category = errors.CategoryNetwork
 	}
-	return newWeatherError(err, category, "weather_api_request", wundergroundProviderName)
+	return newWeatherError(privacy.WrapError(err), category, "weather_api_request", wundergroundProviderName)
 }
 
 // parseWundergroundResponse parses and validates the JSON response

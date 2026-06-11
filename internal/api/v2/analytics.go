@@ -172,7 +172,7 @@ func (c *Controller) GetDailySpeciesSummary(ctx echo.Context) error {
 	}
 
 	// 3. Aggregate Data (including fetching hourly counts)
-	aggregatedData, err := c.aggregateDailySpeciesData(notes, selectedDate, minConfidence)
+	aggregatedData, err := c.aggregateDailySpeciesData(ctx.Request().Context(), notes, selectedDate, minConfidence)
 	if err != nil {
 		// Errors during hourly fetch are logged within the helper, but we need to handle the overall failure
 		c.logErrorIfEnabled("Failed to aggregate daily species data",
@@ -234,7 +234,7 @@ func (c *Controller) GetBatchDailySpeciesSummary(ctx echo.Context) error {
 	)
 
 	// Process each date and collect results
-	batchResults, processingErrors := c.processBatchDates(dates, minConfidence, limit, ip, path)
+	batchResults, processingErrors := c.processBatchDates(ctx.Request().Context(), dates, minConfidence, limit, ip, path)
 
 	// Handle results and errors
 	return c.handleBatchResults(ctx, batchResults, processingErrors, len(dates), ip, path)
@@ -260,12 +260,18 @@ func (c *Controller) parseBatchDailySummaryParams(ctx echo.Context) (dates []str
 }
 
 // processBatchDates processes multiple dates and returns results and errors
-func (c *Controller) processBatchDates(dates []string, minConfidence float64, limit int, ip, path string) (batchResults map[string][]SpeciesDailySummary, processingErrors []string) {
+func (c *Controller) processBatchDates(ctx context.Context, dates []string, minConfidence float64, limit int, ip, path string) (batchResults map[string][]SpeciesDailySummary, processingErrors []string) {
 	batchResults = make(map[string][]SpeciesDailySummary)
 	processingErrors = make([]string, 0)
 
 	for _, selectedDate := range dates {
-		result, err := c.processSingleDateForBatch(selectedDate, minConfidence, limit, ip, path)
+		// Abort early if the request was cancelled or timed out: the remaining
+		// per-date queries would only fail fast against the cancelled context.
+		if err := ctx.Err(); err != nil {
+			processingErrors = append(processingErrors, fmt.Sprintf("request cancelled before processing %s: %v", selectedDate, err))
+			break
+		}
+		result, err := c.processSingleDateForBatch(ctx, selectedDate, minConfidence, limit, ip, path)
 		if err != nil {
 			errorMsg := fmt.Sprintf("Failed to process date %s: %v", selectedDate, err)
 			processingErrors = append(processingErrors, errorMsg)
@@ -278,7 +284,7 @@ func (c *Controller) processBatchDates(dates []string, minConfidence float64, li
 }
 
 // processSingleDateForBatch processes a single date using the same logic as the regular endpoint
-func (c *Controller) processSingleDateForBatch(selectedDate string, minConfidence float64, limit int, ip, path string) ([]SpeciesDailySummary, error) {
+func (c *Controller) processSingleDateForBatch(ctx context.Context, selectedDate string, minConfidence float64, limit int, ip, path string) ([]SpeciesDailySummary, error) {
 	// Get data for the date (limit applied at database level)
 	notes, err := c.DS.GetTopBirdsData(selectedDate, minConfidence, limit)
 	if err != nil {
@@ -292,7 +298,7 @@ func (c *Controller) processSingleDateForBatch(selectedDate string, minConfidenc
 	}
 
 	// Aggregate data
-	aggregatedData, err := c.aggregateDailySpeciesData(notes, selectedDate, minConfidence)
+	aggregatedData, err := c.aggregateDailySpeciesData(ctx, notes, selectedDate, minConfidence)
 	if err != nil {
 		c.logErrorIfEnabled("Failed to aggregate data for date in batch request",
 			logger.String("date", selectedDate),
@@ -345,25 +351,31 @@ func (c *Controller) parseDailySpeciesSummaryParams(ctx echo.Context) (selectedD
 }
 
 // aggregateDailySpeciesData processes raw notes, fetches hourly counts, and aggregates results.
-func (c *Controller) aggregateDailySpeciesData(notes []datastore.Note, selectedDate string, minConfidence float64) (map[string]aggregatedBirdInfo, error) {
+func (c *Controller) aggregateDailySpeciesData(ctx context.Context, notes []datastore.Note, selectedDate string, minConfidence float64) (map[string]aggregatedBirdInfo, error) {
 	aggregatedData := make(map[string]aggregatedBirdInfo)
 
 	if len(notes) == 0 {
 		return aggregatedData, nil
 	}
 
-	// Collect all unique species names that meet confidence threshold
+	// Collect all unique species that meet the confidence threshold, keyed by
+	// scientific name. Keying on scientific name (not the localized common name)
+	// keeps the hourly aggregation robust across models and locales: a localized
+	// common name has no reliable reverse mapping back to a scientific name for
+	// non-primary-model species (e.g. bats), which silently dropped them from the
+	// summary. Scientific names resolve directly to label IDs for
+	// every model, so no lossy round-trip is needed.
 	uniqueSpecies := make(map[string]struct{})
 	for i := range notes {
 		if notes[i].Confidence >= minConfidence {
-			uniqueSpecies[notes[i].CommonName] = struct{}{}
+			uniqueSpecies[notes[i].ScientificName] = struct{}{}
 		}
 	}
 
 	// Batch fetch hourly counts for all species in single query
 	speciesList := slices.Collect(maps.Keys(uniqueSpecies))
 
-	hourlyCounts, err := c.DS.GetBatchHourlyOccurrences(selectedDate, speciesList, minConfidence)
+	hourlyCounts, err := c.DS.GetBatchHourlyOccurrences(ctx, selectedDate, speciesList, minConfidence)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get batch hourly occurrences: %w", err)
 	}
@@ -375,7 +387,7 @@ func (c *Controller) aggregateDailySpeciesData(notes []datastore.Note, selectedD
 			continue
 		}
 
-		counts, ok := hourlyCounts[note.CommonName]
+		counts, ok := hourlyCounts[note.ScientificName]
 		if !ok {
 			// Species not in batch result, skip
 			continue
