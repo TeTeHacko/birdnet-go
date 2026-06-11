@@ -14,7 +14,14 @@ readonly REPO_DIR="${BIRDNET_RESOLVER_REPO:-$HOME/projects/birdnet-go}"
 readonly STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/birdnet-merge-resolver"
 readonly LOCK_FILE="$STATE_DIR/resolver.lock"
 readonly LOG_FILE="$STATE_DIR/resolver.log"
+# Captures just the latest verification (typecheck + go vet) output so a failed
+# verify can be fed back to the model for repair, instead of being discarded.
+readonly VERIFY_LOG="$STATE_DIR/verify-output.txt"
 readonly MAX_FAILURES=3
+# How many times to feed verification errors back to the model to repair a
+# merge that resolved textually but doesn't compile/typecheck. Auto-merged
+# (non-conflict) files broken by upstream API changes only surface here.
+readonly MAX_REPAIRS=2
 readonly GITEA_REPO="tth/birdnet-go"
 # Tiered model escalation: fast/cheap first, then powerful for complex conflicts
 readonly MODELS=("github-copilot/claude-sonnet-4.6" "github-copilot/claude-opus-4.6")
@@ -158,8 +165,12 @@ try_resolve_with_model() {
 }
 
 # Run verification (typecheck + go vet). Returns 0 if all pass.
+# Mirrors the failing check's output into VERIFY_LOG so build_repair_prompt can
+# hand the exact errors back to the model.
 try_verify() {
 	local model_short="$1"
+
+	: >"$VERIFY_LOG"
 
 	# Install frontend deps (skip if already installed)
 	if [ ! -d "$REPO_DIR/frontend/node_modules" ]; then
@@ -175,7 +186,7 @@ try_verify() {
 	fi
 
 	log "  Running TypeScript check..."
-	if ! (cd "$REPO_DIR/frontend" && npm run typecheck) 2>&1 | tee -a "$LOG_FILE"; then
+	if ! (cd "$REPO_DIR/frontend" && npm run typecheck) 2>&1 | tee -a "$LOG_FILE" "$VERIFY_LOG"; then
 		MODEL_ERRORS+="  $model_short: typecheck failed\n"
 		log "  ✗ $model_short: typecheck failed"
 		return 1
@@ -190,7 +201,7 @@ try_verify() {
 	else
 		log "  ⚠ TF headers not found at $TF_HEADERS — go vet may fail on CGO deps"
 	fi
-	if ! (cd "$REPO_DIR" && CGO_ENABLED=1 CGO_CFLAGS="$go_cgo_cflags" go vet ./...) 2>&1 | tee -a "$LOG_FILE"; then
+	if ! (cd "$REPO_DIR" && CGO_ENABLED=1 CGO_CFLAGS="$go_cgo_cflags" go vet ./...) 2>&1 | tee -a "$LOG_FILE" "$VERIFY_LOG"; then
 		MODEL_ERRORS+="  $model_short: go vet failed\n"
 		log "  ✗ $model_short: go vet failed"
 		return 1
@@ -200,9 +211,92 @@ try_verify() {
 	return 0
 }
 
+# Build a repair prompt from the captured verification output. Used when the
+# merge resolved textually but typecheck/go vet fails — typically because an
+# upstream API change met our local code in an AUTO-MERGED (non-conflict) file,
+# which git merges cleanly but breaks compilation. The model never saw those
+# files in the original conflict set, so we point it straight at the errors.
+build_repair_prompt() {
+	local errors
+	errors="$(tail -n 150 "$VERIFY_LOG" 2>/dev/null || echo "(no captured output)")"
+	cat <<-PROMPT
+		The merge conflicts were resolved and committed, but verification
+		(TypeScript typecheck and/or 'go vet ./...') is now FAILING.
+
+		CRITICAL: these failures are usually in files that were NOT part of the
+		original conflict set. When upstream changes a function signature, a
+		struct field's type, or an interface method, and our local code or tests
+		still use the old form, git auto-merges both sides cleanly but the result
+		does not compile. Fix ALL reported errors wherever they live — do not
+		limit yourself to files that had conflict markers.
+
+		VERIFICATION OUTPUT (the errors you must fix):
+		$errors
+
+		INSTRUCTIONS:
+		1. Read every error above and open each file it references.
+		2. Fix each one. Common causes: changed function/method signatures (e.g.
+		   a new variadic or parameter), a struct field that became an
+		   atomic.Pointer now accessed via .Load(), duplicate imports introduced
+		   by the merge, or removed/renamed symbols.
+		3. Find how other, already-correct call sites use the new API and mirror
+		   that convention exactly.
+		4. git add every fixed file. Do NOT create a new commit and do NOT amend
+		   — leave the fixes staged; the harness folds them into the merge commit.
+		5. Do not revert the conflict resolution; only fix the build/typecheck.
+	PROMPT
+}
+
+# Verify the committed merge and, on failure, feed the errors back to the model
+# to repair, up to MAX_REPAIRS times. Returns 0 once verification passes, 1 if
+# it still fails after exhausting repair attempts.
+verify_with_repair() {
+	local model="$1"
+	local model_short="${model##*/}"
+	local attempt=0
+
+	while true; do
+		if try_verify "$model_short"; then
+			return 0
+		fi
+
+		if [ "$attempt" -ge "$MAX_REPAIRS" ]; then
+			MODEL_ERRORS+="  $model_short: verification still failing after $MAX_REPAIRS repair attempt(s)\n"
+			log "  ✗ $model_short: still failing after $MAX_REPAIRS repair attempt(s)"
+			return 1
+		fi
+
+		attempt=$((attempt + 1))
+		log "  ⟳ $model_short: verification failed — repair attempt $attempt/$MAX_REPAIRS"
+
+		local repair_prompt
+		repair_prompt="$(build_repair_prompt)"
+		if ! opencode run "$repair_prompt" \
+			--dir "$REPO_DIR" \
+			--model "$model" \
+			--dangerously-skip-permissions \
+			--title "merge-repair-$(date +%Y%m%d-%H%M%S)" 2>&1 | tee -a "$LOG_FILE"; then
+			log "  ✗ $model_short: repair run failed to execute"
+			return 1
+		fi
+
+		# Fold the model's repair edits into the merge commit. The repair prompt
+		# asks it to leave changes staged/unstaged but not commit; amend keeps a
+		# single merge commit so the downstream fast-forward push still works.
+		if [ -n "$(cd "$REPO_DIR" && git status --porcelain)" ]; then
+			log "  folding repair changes into merge commit..."
+			(cd "$REPO_DIR" && git add -A && git commit --amend --no-edit) >/dev/null 2>&1 || true
+		fi
+	done
+}
+
 resolve_sync() {
 	local state_file="$STATE_DIR/last-resolved-run"
 	local fail_count_file="$STATE_DIR/consecutive-failures"
+	# Sentinel: set once the manual-intervention email has been sent so we stop
+	# re-emailing on every subsequent failed auto-sync run. Cleared whenever the
+	# failure streak resets (clean upstream sync or a successful resolution).
+	local notified_file="$STATE_DIR/manual-intervention-notified"
 
 	log "=== Checking auto-sync-upstream workflow ==="
 
@@ -238,7 +332,7 @@ resolve_sync() {
 		;;
 	OK)
 		log "Latest is success, nothing to do"
-		rm -f "$fail_count_file"
+		rm -f "$fail_count_file" "$notified_file"
 		return 0
 		;;
 	RUNNING)
@@ -286,12 +380,24 @@ resolve_sync() {
 	local failures
 	failures="$(cat "$fail_count_file" 2>/dev/null || echo 0)"
 	if [ "$failures" -ge "$MAX_FAILURES" ]; then
+		# Give up after MAX_FAILURES attempts and notify exactly once. The
+		# auto-sync workflow keeps producing new failed runs every 15 min, so
+		# without this sentinel we'd re-email on each one (spam). Stay quiet
+		# until the streak resets (OK branch or a successful resolution).
+		if [ -f "$notified_file" ]; then
+			log "Already gave up after $MAX_FAILURES failures and notified — staying quiet (manual merge still required)"
+			return 0
+		fi
 		notify "birdnet-merge-resolver: $MAX_FAILURES consecutive failures, needs manual intervention (run #$failed_run_id)"
 		send_email "[birdnet-resolver] ⚠️ Manual intervention needed — run #$failed_run_id" \
 			"$MAX_FAILURES consecutive resolution failures. Manual merge required.
 
 Run: #$failed_run_id
-Repo: $REPO_DIR"
+Repo: $REPO_DIR
+
+No further automatic attempts or emails will be sent until the next clean
+upstream sync or a successful resolution resets the failure counter."
+		touch "$notified_file"
 		return 1
 	fi
 
@@ -340,7 +446,14 @@ Repo: $REPO_DIR"
 		# Attempt merge
 		if git merge upstream/main --no-ff --no-edit \
 			-m "Merge upstream/main (auto-resolved by $model_short)" 2>&1 | tee -a "$LOG_FILE"; then
-			log "Merge succeeded without conflicts — no resolution needed"
+			# A conflict-free merge can still break the build: upstream API
+			# changes meeting our local code in auto-merged files compile-fail
+			# even with zero conflict markers. So verify (and repair) it too.
+			log "Merge succeeded without conflicts — verifying build..."
+			if ! verify_with_repair "$model"; then
+				git reset --hard gitea/main
+				continue
+			fi
 			RESOLVED_BY="clean-merge"
 			resolved=true
 			break
@@ -363,8 +476,9 @@ Repo: $REPO_DIR"
 			continue
 		fi
 
-		# Verify the resolution
-		if ! try_verify "$model_short"; then
+		# Verify the resolution, repairing build/typecheck breakage (including
+		# in auto-merged files outside the conflict set) before giving up.
+		if ! verify_with_repair "$model"; then
 			git reset --hard gitea/main
 			continue
 		fi
@@ -411,7 +525,7 @@ Check logs: $LOG_FILE"
 	fi
 
 	# --- Success ---
-	rm -f "$fail_count_file"
+	rm -f "$fail_count_file" "$notified_file"
 	printf '%s\n' "$failed_run_id" >"$state_file"
 	local new_head
 	new_head="$(git rev-parse --short HEAD)"
