@@ -145,6 +145,7 @@ export type TranslationKey =
   | 'common.review.status.falsePositive'
   | 'common.review.status.notReviewed'
   | 'common.review.status.locked'
+  | 'common.review.status.unlikely'
   | 'common.review.form.correctDetection'
   | 'common.review.form.falsePositiveLabel'
   | 'common.review.form.reviewDetectionTitle'
@@ -206,6 +207,15 @@ export type TranslationKey =
   | 'navigation.settingsSubmenu'
   | 'navigation.systemSubmenu'
   | 'navigation.systemTerminal'
+  | 'navigation.help'
+  | 'navigation.helpSubmenu'
+  | 'navigation.helpAndSupport'
+  | 'navigation.reportBug'
+  | 'navigation.askQuestion'
+  | 'navigation.reportBugAriaLabel'
+  | 'navigation.askQuestionAriaLabel'
+  | 'navigation.viewOnGithubAriaLabel'
+  | 'navigation.health'
   | 'about.title'
   | 'about.subtitle'
   | 'about.logoAlt'
@@ -362,6 +372,8 @@ export type TranslationKey =
   | 'notifications.content.cleanup.failedMessage'
   | 'notifications.content.buffer.overloadTitle'
   | 'notifications.content.buffer.overloadMessage' // params: dropRate, sourceName
+  | 'notifications.content.ort.unavailableTitle'
+  | 'notifications.content.ort.unavailableMessage' // params: requiredVersion, modelName, installGuideURL
   | 'notifications.content.alert.firedTitle' // params: rule_name
   | 'notifications.content.alert.metricExceeded' // params: value, threshold
   | 'notifications.content.alert.detectionOccurred' // params: species_name, confidence
@@ -434,6 +446,7 @@ export type TranslationKey =
   | 'search.statusBadges.unverified'
   | 'search.statusBadges.locked'
   | 'search.statusBadges.unlocked'
+  | 'search.statusBadges.unlikely'
   | 'search.review.review'
   | 'search.review.reviewDetection' // params: species
   | 'search.review.markCorrect'
@@ -474,6 +487,16 @@ export type TranslationKey =
   | 'dashboard.currentlyHearing.subtitle'
   | 'dashboard.currentlyHearing.empty'
   | 'dashboard.rejected'
+  | 'dashboard.newSpeciesHighlights.title'
+  | 'dashboard.newSpeciesHighlights.subtitle'
+  | 'dashboard.newSpeciesHighlights.trackingDisabled'
+  | 'dashboard.newSpeciesHighlights.categoryLifetime'
+  | 'dashboard.newSpeciesHighlights.categoryYear'
+  | 'dashboard.newSpeciesHighlights.categorySeason'
+  | 'dashboard.newSpeciesHighlights.categorySeasonNamed' // params: season
+  | 'dashboard.newSpeciesHighlights.maxConfidenceShort' // params: confidence
+  | 'dashboard.newSpeciesHighlights.detections' // params: count
+  | 'dashboard.newSpeciesHighlights.lastSeen' // params: days
   | 'dashboard.dailySummary.title'
   | 'dashboard.dailySummary.subtitle'
   | 'dashboard.dailySummary.columns.species'
@@ -517,6 +540,7 @@ export type TranslationKey =
   | 'dashboard.recentDetections.status.false'
   | 'dashboard.recentDetections.status.unverified'
   | 'dashboard.recentDetections.status.locked'
+  | 'dashboard.recentDetections.status.unlikely'
   | 'dashboard.recentDetections.modals.showSpecies' // params: species
   | 'dashboard.recentDetections.modals.ignoreSpecies' // params: species
   | 'dashboard.recentDetections.modals.showSpeciesConfirm' // params: species
@@ -600,6 +624,7 @@ export type TranslationKey =
   | 'dashboard.editMode.resetting'
   | 'dashboard.elements.banner'
   | 'dashboard.elements.dailySummary'
+  | 'dashboard.elements.newSpeciesHighlights'
   | 'dashboard.elements.currentlyHearing'
   | 'dashboard.elements.detectionsGrid'
   | 'dashboard.elements.liveSpectrogram'
@@ -635,6 +660,23 @@ export type TranslationKey =
   | 'detections.empty.title'
   | 'detections.empty.description'
   | 'detections.pagination.showing' // params: from, to, total
+  | 'detections.selection.select'
+  | 'detections.selection.nSelected' // params: count
+  | 'detections.selection.selectAllMatching' // params: count
+  | 'detections.selection.allSelected' // params: count
+  | 'detections.selection.clear'
+  | 'detections.selection.toolbarLabel'
+  | 'detections.selection.confirmBulkDelete' // params: count
+  | 'detections.selection.confirmBulkMarkCorrect' // params: count
+  | 'detections.selection.confirmBulkMarkFalsePositive' // params: count
+  | 'detections.selection.confirmBulkLock' // params: count
+  | 'detections.selection.confirmBulkUnlock' // params: count
+  | 'detections.selection.bulkSuccess' // params: count
+  | 'detections.selection.bulkDeleteSuccess' // params: count
+  | 'detections.selection.bulkPartial' // params: processed, skipped
+  | 'detections.selection.tooManyDetections' // params: count
+  | 'detections.selection.bulkError'
+  | 'detections.selection.switchToTable'
   | 'detections.weather.title'
   | 'detections.weather.noData'
   | 'detections.weather.noDataAvailable'
@@ -651,23 +693,53 @@ export type TranslationKey =
   | 'detections.weather.units.windSpeedImperial'
   | 'detections.weather.units.humidity'
   | 'detections.weather.units.pressure'
-  | 'detections.weather.conditions.clearsky_day'
-  | 'detections.weather.conditions.clearsky_night'
-  | 'detections.weather.conditions.fair_day'
-  | 'detections.weather.conditions.fair_night'
-  | 'detections.weather.conditions.partlycloudy_day'
-  | 'detections.weather.conditions.partlycloudy_night'
+  | 'detections.weather.conditions.clearsky'
   | 'detections.weather.conditions.cloudy'
-  | 'detections.weather.conditions.rainshowers_day'
-  | 'detections.weather.conditions.rainshowers_night'
-  | 'detections.weather.conditions.rain'
-  | 'detections.weather.conditions.thunder'
-  | 'detections.weather.conditions.sleet'
-  | 'detections.weather.conditions.snow'
+  | 'detections.weather.conditions.fair'
   | 'detections.weather.conditions.fog'
+  | 'detections.weather.conditions.heavyrain'
+  | 'detections.weather.conditions.heavyrainandthunder'
+  | 'detections.weather.conditions.heavyrainshowers'
+  | 'detections.weather.conditions.heavyrainshowersandthunder'
+  | 'detections.weather.conditions.heavysleet'
+  | 'detections.weather.conditions.heavysleetandthunder'
+  | 'detections.weather.conditions.heavysleetshowers'
+  | 'detections.weather.conditions.heavysleetshowersandthunder'
+  | 'detections.weather.conditions.heavysnow'
+  | 'detections.weather.conditions.heavysnowandthunder'
+  | 'detections.weather.conditions.heavysnowshowers'
+  | 'detections.weather.conditions.heavysnowshowersandthunder'
+  | 'detections.weather.conditions.lightrain'
+  | 'detections.weather.conditions.lightrainandthunder'
+  | 'detections.weather.conditions.lightrainshowers'
+  | 'detections.weather.conditions.lightrainshowersandthunder'
+  | 'detections.weather.conditions.lightsleet'
+  | 'detections.weather.conditions.lightsleetandthunder'
+  | 'detections.weather.conditions.lightsleetshowers'
+  | 'detections.weather.conditions.lightsnow'
+  | 'detections.weather.conditions.lightsnowandthunder'
+  | 'detections.weather.conditions.lightsnowshowers'
+  | 'detections.weather.conditions.lightssleetshowersandthunder'
+  | 'detections.weather.conditions.lightssnowshowersandthunder'
+  | 'detections.weather.conditions.partlycloudy'
+  | 'detections.weather.conditions.rain'
+  | 'detections.weather.conditions.rainandthunder'
+  | 'detections.weather.conditions.rainshowers'
+  | 'detections.weather.conditions.rainshowersandthunder'
+  | 'detections.weather.conditions.sleet'
+  | 'detections.weather.conditions.sleetandthunder'
+  | 'detections.weather.conditions.sleetshowers'
+  | 'detections.weather.conditions.sleetshowersandthunder'
+  | 'detections.weather.conditions.snow'
+  | 'detections.weather.conditions.snowandthunder'
+  | 'detections.weather.conditions.snowshowers'
+  | 'detections.weather.conditions.snowshowersandthunder'
+  | 'detections.weather.conditions.thunder'
   | 'detections.weather.conditions.unknown'
   | 'detections.row.viewDetails' // params: species
   | 'detections.row.openDetailFromStatus' // params: species
+  | 'detections.row.play'
+  | 'detections.row.playAudio'
   | 'detections.media.title'
   | 'detections.media.clipHint'
   | 'detections.tabs.overview'
@@ -687,6 +759,9 @@ export type TranslationKey =
   | 'detections.aria.loading'
   | 'detections.aria.loaded' // params: species
   | 'detections.aria.error' // params: error
+  | 'detections.aria.loadingResults' // params: count
+  | 'detections.aria.thumbnailLoading' // params: species
+  | 'detections.aria.thumbnailLoaded' // params: species
   | 'detections.errors.notFound'
   | 'detections.errors.noPermission'
   | 'detections.errors.loginRequired'
@@ -1338,6 +1413,14 @@ export type TranslationKey =
   | 'settings.main.sections.falsePositiveFilter.hardwareNote'
   | 'settings.main.sections.falsePositiveFilter.overlapAdjusted' // params: overlap
   | 'settings.main.sections.falsePositiveFilter.overlapReduced' // params: overlap
+  | 'settings.main.sections.falsePositiveFilter.levelNames.off'
+  | 'settings.main.sections.falsePositiveFilter.levelNames.lenient'
+  | 'settings.main.sections.falsePositiveFilter.levelNames.moderate'
+  | 'settings.main.sections.falsePositiveFilter.levelNames.balanced'
+  | 'settings.main.sections.falsePositiveFilter.levelNames.strict'
+  | 'settings.main.sections.falsePositiveFilter.levelNames.maximum'
+  | 'settings.main.sections.falsePositiveFilter.levelNames.unknown'
+  | 'settings.main.sections.falsePositiveFilter.warningOff'
   | 'settings.main.sections.rangeFilter.title'
   | 'settings.main.sections.rangeFilter.description'
   | 'settings.main.sections.rangeFilter.stationLocation.label'
@@ -1515,10 +1598,13 @@ export type TranslationKey =
   | 'settings.support.supportReport.title'
   | 'settings.support.supportReport.description.intro'
   | 'settings.support.supportReport.githubRequired.title'
-  | 'settings.support.supportReport.githubRequired.description'
+  | 'settings.support.supportReport.githubRequired.description' // params: createIssueLink
+  | 'settings.support.supportReport.githubRequired.createGithubIssue'
   | 'settings.support.supportReport.githubIssue.label'
   | 'settings.support.supportReport.githubIssue.placeholder'
-  | 'settings.support.supportReport.githubIssue.helper'
+  | 'settings.support.supportReport.githubIssue.helper' // params: viewIssuesLink, createIssueLink
+  | 'settings.support.supportReport.githubIssue.viewExistingIssues'
+  | 'settings.support.supportReport.githubIssue.createNewIssue'
   | 'settings.support.supportReport.whatsIncluded.title'
   | 'settings.support.supportReport.whatsIncluded.applicationLogs'
   | 'settings.support.supportReport.whatsIncluded.configuration'
@@ -1731,6 +1817,7 @@ export type TranslationKey =
   | 'settings.notifications.push.services.gotify.server.label'
   | 'settings.notifications.push.services.gotify.server.placeholder'
   | 'settings.notifications.push.services.gotify.server.helpText'
+  | 'settings.notifications.push.services.gotify.protocol.label'
   | 'settings.notifications.push.services.gotify.token.label'
   | 'settings.notifications.push.services.gotify.token.placeholder'
   | 'settings.notifications.push.services.gotify.token.helpText'
@@ -2075,6 +2162,7 @@ export type TranslationKey =
   | 'settings.audio.streams.unknown'
   | 'settings.audio.streams.refresh'
   | 'settings.audio.streams.addStream'
+  | 'settings.audio.streams.testRequired'
   | 'settings.audio.streams.deleteConfirm'
   | 'settings.audio.streams.restartCount' // params: count
   | 'settings.audio.streams.healthLoadError'
@@ -2114,6 +2202,37 @@ export type TranslationKey =
   | 'settings.audio.streams.connectionStatus.degraded'
   | 'settings.audio.streams.connectionStatus.failed'
   | 'settings.audio.streams.connectionStatus.unknown'
+  | 'settings.audio.streams.test.button'
+  | 'settings.audio.streams.test.probing'
+  | 'settings.audio.streams.test.result'
+  | 'settings.audio.streams.test.error'
+  | 'settings.audio.streams.test.batCompatible'
+  | 'settings.audio.streams.test.batIncompatible'
+  | 'settings.audio.streams.batWarning'
+  | 'settings.audio.streams.codecWarning.lossy'
+  | 'settings.audio.streams.channelMode.analyzeError'
+  | 'settings.audio.streams.channelMode.analyzing'
+  | 'settings.audio.streams.channelMode.description'
+  | 'settings.audio.streams.channelMode.detectBest'
+  | 'settings.audio.streams.channelMode.downmix'
+  | 'settings.audio.streams.channelMode.downmixWarning'
+  | 'settings.audio.streams.channelMode.energyLeft'
+  | 'settings.audio.streams.channelMode.energyRight'
+  | 'settings.audio.streams.channelMode.label'
+  | 'settings.audio.streams.channelMode.left'
+  | 'settings.audio.streams.channelMode.monoNoSelection'
+  | 'settings.audio.streams.channelMode.recommended' // params: channel
+  | 'settings.audio.streams.channelMode.right'
+  | 'settings.audio.streams.channelMode.singleChannelGood'
+  | 'settings.audio.streams.format.label'
+  | 'settings.audio.streams.format.mono'
+  | 'settings.audio.streams.format.multi' // params: count
+  | 'settings.audio.streams.format.stereo'
+  | 'settings.audio.streams.format.untested'
+  | 'settings.audio.streams.format.withSampleRate' // params: rate, channels
+  | 'settings.audio.streams.stereoWarning.message'
+  | 'settings.audio.streams.stereoWarning.short'
+  | 'settings.audio.streams.stereoWarning.tooltip'
   | 'settings.audio.audioFilters.title'
   | 'settings.audio.audioFilters.description'
   | 'settings.audio.audioFilters.enableEqualizer'
@@ -2258,6 +2377,8 @@ export type TranslationKey =
   | 'settings.audio.errors.devicesLoadFailed'
   | 'settings.audio.errors.invalidBitrate'
   | 'settings.audio.errors.invalidRetentionPolicy'
+  | 'settings.audio.models.recommendBoth'
+  | 'settings.audio.models.perchOnlyWarning'
   | 'settings.security.pageLabel'
   | 'settings.security.baseUrlLabel'
   | 'settings.security.baseUrlHelp'
@@ -2315,6 +2436,8 @@ export type TranslationKey =
   | 'settings.security.oauth.clientSecretHelpText'
   | 'settings.security.oauth.userIdLabel'
   | 'settings.security.oauth.userIdHelpText'
+  | 'settings.security.oauth.allowedUsersEmptyWarning'
+  | 'settings.security.oauth.allowedUsersMissingBadge'
   | 'settings.security.oauth.google.title'
   | 'settings.security.oauth.google.enableLabel'
   | 'settings.security.oauth.google.redirectUriTitle'
@@ -2386,6 +2509,8 @@ export type TranslationKey =
   | 'settings.security.publicAccess.liveAudioLabel'
   | 'settings.security.publicAccess.liveAudioHelp'
   | 'settings.security.publicAccess.warningText'
+  | 'settings.security.privateMode.label'
+  | 'settings.security.privateMode.help'
   | 'settings.security.placeholders.baseUrl'
   | 'settings.security.placeholders.host'
   | 'settings.security.placeholders.allowedUsers'
@@ -2484,6 +2609,12 @@ export type TranslationKey =
   | 'settings.species.activeSpecies.locationNotConfigured.title'
   | 'settings.species.activeSpecies.locationNotConfigured.description'
   | 'settings.species.activeSpecies.locationNotConfigured.action'
+  | 'settings.species.activeSpecies.rangeFilterHealth.inactive.title'
+  | 'settings.species.activeSpecies.rangeFilterHealth.inactive.description'
+  | 'settings.species.activeSpecies.rangeFilterHealth.fellBack.title'
+  | 'settings.species.activeSpecies.rangeFilterHealth.fellBack.description'
+  | 'settings.species.activeSpecies.rangeFilterHealth.mappedZero.title'
+  | 'settings.species.activeSpecies.rangeFilterHealth.mappedZero.description'
   | 'settings.species.activeSpecies.columns.commonName'
   | 'settings.species.activeSpecies.columns.scientificName'
   | 'settings.species.activeSpecies.columns.score'
@@ -2986,6 +3117,30 @@ export type TranslationKey =
   | 'media.audio.speed'
   | 'media.audio.loop'
   | 'media.audio.player'
+  | 'media.audio.autoplayBlocked'
+  | 'media.audio.hlsNotSupported'
+  | 'media.audio.streamStarting'
+  | 'media.audio.levelFor' // params: source
+  | 'media.audio.levelForNoSource'
+  | 'media.audio.noSource'
+  | 'media.audio.levelAnnouncement' // params: level
+  | 'media.audio.levelAnnouncementClipping' // params: level
+  | 'media.audio.sourceSelection'
+  | 'media.audio.sources'
+  | 'media.audio.noSourcesAvailable'
+  | 'media.audio.silent'
+  | 'media.audio.stopPlayback'
+  | 'media.audio.startPlayback'
+  | 'media.audio.nowPlaying' // params: source
+  | 'media.audio.nowPlayingNoSource'
+  | 'media.audio.playbackStopped'
+  | 'media.audio.loginRequired'
+  | 'media.audio.streamError'
+  | 'media.audio.streamTitle' // params: source
+  | 'media.audio.streamTitleDefault'
+  | 'media.audio.streamArtist'
+  | 'media.audio.streamAlbum'
+  | 'media.audio.playbackError' // params: details
   | 'media.spectrogram.notGenerated'
   | 'media.spectrogram.generate'
   | 'media.spectrogram.generateButton'
@@ -3142,6 +3297,13 @@ export type TranslationKey =
   | 'errors.notification.hostRequired'
   | 'errors.notification.invalidHost'
   | 'errors.notification.rateLimit'
+  | 'errors.streams.test.invalidBody'
+  | 'errors.streams.test.urlRequired'
+  | 'errors.streams.test.invalidUrl'
+  | 'errors.streams.test.unsupportedScheme' // params: scheme
+  | 'errors.streams.test.blockedDestination'
+  | 'errors.streams.test.connectionFailed'
+  | 'errors.streams.test.noAudioTrack'
   | 'errors.debug.notEnabled'
   | 'errors.terminal.disabled'
   | 'errors.api.badRequest'
@@ -3253,6 +3415,19 @@ export type TranslationKey =
   | 'analysis.detection.confidenceThreshold.helpText'
   | 'analysis.detection.batThreshold.label'
   | 'analysis.detection.batThreshold.helpText'
+  | 'analysis.detection.batFilter.label'
+  | 'analysis.detection.batFilter.helpText'
+  | 'analysis.detection.batNighttimeOnly.label'
+  | 'analysis.detection.batNighttimeOnly.helpText'
+  | 'analysis.detection.batUltrasonicFilter.label'
+  | 'analysis.detection.batUltrasonicFilter.helpText'
+  | 'analysis.detection.batFalsePositiveFilter.label'
+  | 'analysis.detection.batFalsePositiveFilter.helpText'
+  | 'analysis.detection.batFalsePositiveFilter.levels.off'
+  | 'analysis.detection.batFalsePositiveFilter.levels.moderate'
+  | 'analysis.detection.batFalsePositiveFilter.levels.strict'
+  | 'analysis.detection.batFalsePositiveFilter.detectionCount' // params: count, description
+  | 'analysis.detection.batFalsePositiveFilter.warningOff'
   | 'analysis.detection.locale.label'
   | 'analysis.detection.locale.helpText'
   | 'analysis.rangeFilter.birdOnlyNote'
@@ -3261,10 +3436,18 @@ export type TranslationKey =
   | 'analysis.rangeFilter.status.autoSelected'
   | 'analysis.rangeFilter.status.manual'
   | 'analysis.rangeFilter.status.classifierModel'
+  | 'analysis.rangeFilter.status.classifier'
   | 'analysis.rangeFilter.status.mappedSpecies'
   | 'analysis.rangeFilter.status.unmappedSpecies'
   | 'analysis.rangeFilter.status.totalSpecies'
+  | 'analysis.rangeFilter.status.withRangeData'
+  | 'analysis.rangeFilter.status.withoutRangeData'
+  | 'analysis.rangeFilter.status.withRangeDataTooltip'
+  | 'analysis.rangeFilter.status.withoutRangeDataTooltip'
   | 'analysis.rangeFilter.status.noFilter'
+  | 'analysis.rangeFilter.status.geomodelInfo' // params: version, species
+  | 'analysis.rangeFilter.status.passUnmapped.label'
+  | 'analysis.rangeFilter.status.passUnmapped.helpText'
   | 'analysis.advanced.title'
   | 'analysis.advanced.description'
   | 'analysis.gallery.title'
@@ -3282,6 +3465,8 @@ export type TranslationKey =
   | 'analysis.gallery.removing'
   | 'analysis.gallery.noInstalledModels'
   | 'analysis.gallery.noAvailableModels'
+  | 'analysis.gallery.sections.acoustic'
+  | 'analysis.gallery.sections.geomodel'
   | 'analysis.gallery.categories.wildlife'
   | 'analysis.gallery.categories.bird'
   | 'analysis.gallery.categories.bat'
@@ -3313,6 +3498,14 @@ export type TranslationKey =
   | 'analysis.gallery.reinstalling'
   | 'analysis.gallery.reinstallComplete'
   | 'analysis.gallery.geomodelBadge'
+  | 'analysis.gallery.onnxRuntimeRequired'
+  | 'analysis.gallery.onnxRuntimeMissing'
+  | 'analysis.gallery.unavailable'
+  | 'analysis.bird.title'
+  | 'analysis.bird.description'
+  | 'analysis.bat.title'
+  | 'analysis.bat.description'
+  | 'analysis.dynamicThreshold.birdOnlyNote'
   | 'restart.applicationRestart'
   | 'restart.containerRestart'
   | 'restart.confirmTitle'
@@ -3322,7 +3515,111 @@ export type TranslationKey =
   | 'restart.bannerTitle'
   | 'restart.bannerMessage'
   | 'restart.bannerAction'
-  | 'restart.restartFailed';
+  | 'restart.restartFailed'
+  | 'help.title'
+  | 'help.subtitle'
+  | 'help.reportBug.description'
+  | 'help.askQuestion.description'
+  | 'help.diagnostics.description'
+  | 'help.quickLinks.title'
+  | 'help.quickLinks.releases'
+  | 'reportBug.title'
+  | 'reportBug.subtitle'
+  | 'reportBug.systemInfo.title'
+  | 'reportBug.systemInfo.description'
+  | 'reportBug.systemInfo.version'
+  | 'reportBug.systemInfo.buildDate'
+  | 'reportBug.systemInfo.os'
+  | 'reportBug.systemInfo.copy'
+  | 'reportBug.systemInfo.copied'
+  | 'reportBug.systemInfo.architecture'
+  | 'reportBug.systemInfo.hardware'
+  | 'reportBug.systemInfo.environment'
+  | 'reportBug.whatToInclude.title'
+  | 'reportBug.whatToInclude.description'
+  | 'reportBug.whatToInclude.step1.title'
+  | 'reportBug.whatToInclude.step1.description'
+  | 'reportBug.whatToInclude.step2.title'
+  | 'reportBug.whatToInclude.step2.description'
+  | 'reportBug.whatToInclude.step3.title'
+  | 'reportBug.whatToInclude.step3.description'
+  | 'reportBug.whatToInclude.step4.title'
+  | 'reportBug.whatToInclude.step4.description'
+  | 'reportBug.openIssue.title'
+  | 'reportBug.openIssue.description'
+  | 'reportBug.openIssue.button'
+  | 'reportBug.supportDump.title'
+  | 'reportBug.supportDump.description'
+  | 'health.title'
+  | 'health.running'
+  | 'health.lastRun'
+  | 'health.refresh'
+  | 'health.exportText'
+  | 'health.exportJSON'
+  | 'health.copied'
+  | 'health.duration'
+  | 'health.summary.healthy'
+  | 'health.summary.warnings'
+  | 'health.summary.critical'
+  | 'health.summary.skipped'
+  | 'health.summary.total'
+  | 'health.metricFooter.allPassing'
+  | 'health.metricFooter.needsAttention'
+  | 'health.metricFooter.failing'
+  | 'health.metricFooter.allClear'
+  | 'health.metricFooter.noData'
+  | 'health.metricFooter.none'
+  | 'health.diagnostics'
+  | 'health.categories.system'
+  | 'health.categories.audio'
+  | 'health.categories.analysis'
+  | 'health.categories.streams'
+  | 'health.categories.database'
+  | 'health.categories.network'
+  | 'health.categories.config'
+  | 'health.categories.logs'
+  | 'health.status.healthy'
+  | 'health.status.warning'
+  | 'health.status.critical'
+  | 'health.status.unknown'
+  | 'health.status.skipped'
+  | 'health.errors.title'
+  | 'health.errors.noErrors'
+  | 'health.errors.fetchFailed'
+  | 'health.export.reportTitle'
+  | 'health.export.statusLabel'
+  | 'health.export.timeLabel'
+  | 'health.export.durationLabel'
+  | 'health.export.checksLabel'
+  | 'health.logs.topErrors'
+  | 'health.logs.errorCount'
+  | 'health.logs.errorComponent'
+  | 'health.logs.errorLevel'
+  | 'health.logs.errorMessage'
+  | 'health.window.label'
+  | 'health.window.15m'
+  | 'health.window.30m'
+  | 'health.window.1h'
+  | 'health.window.6h'
+  | 'health.window.24h'
+  | 'health.window.7d'
+  | 'health.detail.lastEvent'
+  | 'health.detail.recentEvents'
+  | 'health.detail.time'
+  | 'health.detail.source'
+  | 'health.detail.count'
+  | 'health.detail.lifetime'
+  | 'health.detail.sparklineLabel'
+  | 'health.detail.activeHours'
+  | 'health.detail.windowTotal'
+  | 'health.detail.velocity'
+  | 'health.detail.velocityStable'
+  | 'health.detail.velocityIncreasing'
+  | 'health.detail.velocityDecreasing'
+  | 'health.detail.pattern'
+  | 'health.detail.patternNone'
+  | 'health.detail.patternTransient'
+  | 'health.detail.patternSustained';
 
 /**
  * Parameter types for translations that require parameters
@@ -3366,6 +3663,11 @@ export type TranslationParams = {
     dropRate: string | number;
     sourceName: string | number;
   };
+  'notifications.content.ort.unavailableMessage': {
+    requiredVersion: string | number;
+    modelName: string | number;
+    installGuideURL: string | number;
+  };
   'notifications.content.alert.firedTitle': { rule_name: string | number };
   'notifications.content.alert.metricExceeded': {
     value: string | number;
@@ -3385,6 +3687,10 @@ export type TranslationParams = {
   'search.detailsPanel.viewDetails': { species: string | number };
   'search.errors.searchFailed': { error: string | number };
   'search.pagination.page': { current: string | number; total: string | number };
+  'dashboard.newSpeciesHighlights.categorySeasonNamed': { season: string | number };
+  'dashboard.newSpeciesHighlights.maxConfidenceShort': { confidence: string | number };
+  'dashboard.newSpeciesHighlights.detections': { count: string | number };
+  'dashboard.newSpeciesHighlights.lastSeen': { days: string | number };
   'dashboard.dailySummary.daylight.sunrise': { time: string | number };
   'dashboard.dailySummary.daylight.sunset': { time: string | number };
   'dashboard.dailySummary.tooltips.viewHourly': { hour: string | number };
@@ -3437,10 +3743,25 @@ export type TranslationParams = {
     to: string | number;
     total: string | number;
   };
+  'detections.selection.nSelected': { count: string | number };
+  'detections.selection.selectAllMatching': { count: string | number };
+  'detections.selection.allSelected': { count: string | number };
+  'detections.selection.confirmBulkDelete': { count: string | number };
+  'detections.selection.confirmBulkMarkCorrect': { count: string | number };
+  'detections.selection.confirmBulkMarkFalsePositive': { count: string | number };
+  'detections.selection.confirmBulkLock': { count: string | number };
+  'detections.selection.confirmBulkUnlock': { count: string | number };
+  'detections.selection.bulkSuccess': { count: string | number };
+  'detections.selection.bulkDeleteSuccess': { count: string | number };
+  'detections.selection.bulkPartial': { processed: string | number; skipped: string | number };
+  'detections.selection.tooManyDetections': { count: string | number };
   'detections.row.viewDetails': { species: string | number };
   'detections.row.openDetailFromStatus': { species: string | number };
   'detections.aria.loaded': { species: string | number };
   'detections.aria.error': { error: string | number };
+  'detections.aria.loadingResults': { count: string | number };
+  'detections.aria.thumbnailLoading': { species: string | number };
+  'detections.aria.thumbnailLoaded': { species: string | number };
   'detections.errors.loadFailed': { status: string | number };
   'detections.reanalyze.buttonAriaLabel': { species: string | number };
   'detections.reanalyze.multiModelSummary': { models: string | number; duration: string | number };
@@ -3503,6 +3824,11 @@ export type TranslationParams = {
   };
   'settings.main.sections.falsePositiveFilter.overlapAdjusted': { overlap: string | number };
   'settings.main.sections.falsePositiveFilter.overlapReduced': { overlap: string | number };
+  'settings.support.supportReport.githubRequired.description': { createIssueLink: string | number };
+  'settings.support.supportReport.githubIssue.helper': {
+    viewIssuesLink: string | number;
+    createIssueLink: string | number;
+  };
   'settings.support.supportReport.userMessage.githubTip': { systemId: string | number };
   'settings.support.supportReport.userMessage.systemIdNote': { systemId: string | number };
   'settings.support.supportReport.statusMessages.uploadSuccessWithId': { dumpId: string | number };
@@ -3525,6 +3851,12 @@ export type TranslationParams = {
   'settings.audio.streams.summary': { count: string | number };
   'settings.audio.streams.restartCount': { count: string | number };
   'settings.audio.streams.timeline.eventAt': { time: string | number };
+  'settings.audio.streams.channelMode.recommended': { channel: string | number };
+  'settings.audio.streams.format.multi': { count: string | number };
+  'settings.audio.streams.format.withSampleRate': {
+    rate: string | number;
+    channels: string | number;
+  };
   'settings.audio.clipRecording.preCaptureHelp': { max: string | number };
   'settings.audio.clipRecording.bitrateHelp': { min: string | number; max: string | number };
   'settings.audio.fileSettings.bitrateHelp': { min: string | number; max: string | number };
@@ -3569,6 +3901,12 @@ export type TranslationParams = {
   'media.audio.volumeGain': { value: string | number };
   'media.audio.highPassFilter': { freq: string | number };
   'media.audio.seekProgress': { current: string | number; total: string | number };
+  'media.audio.levelFor': { source: string | number };
+  'media.audio.levelAnnouncement': { level: string | number };
+  'media.audio.levelAnnouncementClipping': { level: string | number };
+  'media.audio.nowPlaying': { source: string | number };
+  'media.audio.streamTitle': { source: string | number };
+  'media.audio.playbackError': { details: string | number };
   'components.audio.queuePosition': { position: string | number };
   'components.forms.numberField.adjustedToMinimum': { value: string | number };
   'components.forms.numberField.adjustedToMaximum': { value: string | number };
@@ -3587,8 +3925,17 @@ export type TranslationParams = {
   'quietHours.indicator.tooltip': { count: string | number };
   'errors.detection.invalidDate': { paramName: string | number };
   'errors.backup.insufficientSpace': { needed: string | number; available: string | number };
+  'errors.streams.test.unsupportedScheme': { scheme: string | number };
   'wizard.progress': { current: string | number; total: string | number };
   'wizard.whatsNew.title': { version: string | number };
+  'analysis.detection.batFalsePositiveFilter.detectionCount': {
+    count: string | number;
+    description: string | number;
+  };
+  'analysis.rangeFilter.status.geomodelInfo': {
+    version: string | number;
+    species: string | number;
+  };
   'analysis.gallery.species': { count: string | number };
   'analysis.gallery.removeDialog.title': { name: string | number };
 };
