@@ -456,7 +456,10 @@
             loading="eager"
           />
           {#if imageAttribution?.authorName}
-            <div class="thumbnail-credit" aria-label="Image credit: {imageAttribution.authorName}">
+            <div
+              class="thumbnail-credit"
+              aria-label={t('common.aria.imageCredit', { name: imageAttribution.authorName })}
+            >
               <Camera size={10} class="credit-icon" />
               <span class="credit-text">{imageAttribution.authorName}</span>
               {#if imageAttribution.licenseName}
@@ -613,7 +616,7 @@
             href={buildAppUrl(`/api/v2/media/audio/${det.clipName}`)}
             download
             class="meta-download"
-            aria-label="Download audio clip for {displayName} detection"
+            aria-label={t('detections.detail.aria.downloadAudioClip', { name: displayName })}
           >
             <Download class="w-4 h-4" />
             <span>{t('media.audio.download')}</span>
@@ -835,10 +838,9 @@
         {/if}
         <div
           role="region"
-          aria-label="Audio recording and spectrogram for {localizeSpeciesName(
-            detection.scientificName,
-            detection.commonName
-          )}"
+          aria-label={t('detections.detail.aria.audioRecordingFor', {
+            name: localizeSpeciesName(detection.scientificName, detection.commonName),
+          })}
         >
           <div class="detail-audio-container">
             <AudioPlayer
