@@ -70,6 +70,9 @@
     uniqueSpecies: number;
     avgConfidence: number;
     mostCommonSpecies: string;
+    // Canonical scientific name of the most-common species, so the displayed
+    // common name can localize per visitor while the lookup stays canonical.
+    mostCommonScientific: string;
     mostCommonCount: number;
   }
 
@@ -178,6 +181,7 @@
     uniqueSpecies: 0,
     avgConfidence: 0,
     mostCommonSpecies: '',
+    mostCommonScientific: '',
     mostCommonCount: 0,
   });
 
@@ -199,7 +203,7 @@
   const speciesBars = $derived(
     [...(chartData.species ?? [])]
       .sort((a, b) => b.count - a.count)
-      .map(s => ({ label: s.common_name, value: s.count }))
+      .map(s => ({ label: localizeSpeciesName(s.scientific_name, s.common_name), value: s.count }))
   );
 
   // Time of day: hourly counts bucketed into the six fixed periods.
@@ -391,6 +395,7 @@
       let totalDetections = 0;
       let totalConfidence = 0;
       let mostCommonSpecies = '';
+      let mostCommonScientific = '';
       let mostCommonCount = 0;
 
       speciesArray.forEach(species => {
@@ -403,6 +408,7 @@
         if (count > mostCommonCount) {
           mostCommonCount = count;
           mostCommonSpecies = species.common_name || t('analytics.recentDetections.unknown');
+          mostCommonScientific = species.scientific_name || '';
         }
       });
 
@@ -411,6 +417,7 @@
         uniqueSpecies: speciesArray.length,
         avgConfidence: totalDetections > 0 ? totalConfidence / totalDetections : 0,
         mostCommonSpecies,
+        mostCommonScientific,
         mostCommonCount,
       };
     } catch (err) {
@@ -723,7 +730,9 @@
     <!-- Most Common Species Card -->
     <StatCard
       title={t('analytics.stats.mostCommon')}
-      value={summary.mostCommonSpecies || t('analytics.stats.none')}
+      value={summary.mostCommonCount > 0
+        ? localizeSpeciesName(summary.mostCommonScientific, summary.mostCommonSpecies)
+        : t('analytics.stats.none')}
       subtitle={summary.mostCommonCount > 0
         ? formatNumber(summary.mostCommonCount) + ' ' + t('analytics.stats.detections')
         : ''}
