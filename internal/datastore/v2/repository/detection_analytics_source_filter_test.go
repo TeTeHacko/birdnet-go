@@ -159,7 +159,7 @@ func TestGetHourlyDistribution_SourceFilter(t *testing.T) {
 
 	// Without filter, all 7 seeded detections should be counted across hours.
 	t.Run("no filter aggregates all sources", func(t *testing.T) {
-		rows, err := repo.GetHourlyDistribution(ctx, 1000, 2000, nil, nil)
+		rows, err := repo.GetHourlyDistribution(ctx, 1000, 2000, 0, nil, nil)
 		require.NoError(t, err)
 		var total int64
 		for _, r := range rows {
@@ -170,7 +170,7 @@ func TestGetHourlyDistribution_SourceFilter(t *testing.T) {
 
 	// With a single source filter, only that source's 4 detections appear.
 	t.Run("single source restricts count", func(t *testing.T) {
-		rows, err := repo.GetHourlyDistribution(ctx, 1000, 2000, nil, nil, srcVoordeurID)
+		rows, err := repo.GetHourlyDistribution(ctx, 1000, 2000, 0, nil, nil, srcVoordeurID)
 		require.NoError(t, err)
 		var total int64
 		for _, r := range rows {
