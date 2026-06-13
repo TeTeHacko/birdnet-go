@@ -116,7 +116,9 @@ type DetectionRepository interface {
 	GetBatchHourlyOccurrences(ctx context.Context, labelIDs []uint, start, end int64, tzOffsetSeconds int, minConfidence float64) (map[uint][24]int, error)
 
 	// GetDailyOccurrences returns daily detection counts for a label.
-	GetDailyOccurrences(ctx context.Context, labelID uint, start, end int64) ([]DailyCount, error)
+	// tzOffsetSeconds is the configured timezone's UTC offset, applied so detections bucket by
+	// wall-clock date in that zone rather than the database/OS-local zone.
+	GetDailyOccurrences(ctx context.Context, labelID uint, start, end int64, tzOffsetSeconds int) ([]DailyCount, error)
 
 	// GetSpeciesFirstDetection returns the first-ever detection of a species.
 	// Returns ErrDetectionNotFound if the species has never been detected.
@@ -243,15 +245,19 @@ type DetectionRepository interface {
 	GetHourlyDistribution(ctx context.Context, start, end int64, tzOffsetSeconds int, labelID, modelID *uint, sourceIDs ...uint) ([]HourlyDistributionData, error)
 
 	// GetDailyAnalytics returns daily statistics.
+	// tzOffsetSeconds is the configured timezone's UTC offset, applied so detections bucket by
+	// wall-clock date in that zone rather than the database/OS-local zone.
 	// labelID and modelID are optional filters.
 	// sourceIDs is variadic; omit to include all audio sources.
-	GetDailyAnalytics(ctx context.Context, start, end int64, labelID, modelID *uint, sourceIDs ...uint) ([]DailyAnalyticsData, error)
+	GetDailyAnalytics(ctx context.Context, start, end int64, tzOffsetSeconds int, labelID, modelID *uint, sourceIDs ...uint) ([]DailyAnalyticsData, error)
 
 	// GetDetectionTrends returns detection trends over time.
 	// period is "day", "week", or "month".
+	// tzOffsetSeconds is the configured timezone's UTC offset, applied so detections bucket by
+	// wall-clock date in that zone rather than the database/OS-local zone.
 	// modelID is optional.
 	// sourceIDs is variadic; omit to include all audio sources.
-	GetDetectionTrends(ctx context.Context, period string, limit int, modelID *uint, sourceIDs ...uint) ([]DailyAnalyticsData, error)
+	GetDetectionTrends(ctx context.Context, period string, limit, tzOffsetSeconds int, modelID *uint, sourceIDs ...uint) ([]DailyAnalyticsData, error)
 
 	// GetNewSpecies returns species detected for the first time ever within the range.
 	// sourceIDs is variadic; omit to include all audio sources.

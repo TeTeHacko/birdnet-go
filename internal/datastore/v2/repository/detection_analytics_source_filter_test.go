@@ -186,14 +186,14 @@ func TestGetDailyAnalytics_SourceFilter(t *testing.T) {
 	_, repo := setupAnalyticsSourceFixture(t)
 	ctx := t.Context()
 
-	all, err := repo.GetDailyAnalytics(ctx, 1000, 2000, nil, nil)
+	all, err := repo.GetDailyAnalytics(ctx, 1000, 2000, 0, nil, nil)
 	require.NoError(t, err)
 	var allTotal int64
 	for _, r := range all {
 		allTotal += r.TotalDetections
 	}
 
-	filtered, err := repo.GetDailyAnalytics(ctx, 1000, 2000, nil, nil, srcPoortID)
+	filtered, err := repo.GetDailyAnalytics(ctx, 1000, 2000, 0, nil, nil, srcPoortID)
 	require.NoError(t, err)
 	var filteredTotal int64
 	for _, r := range filtered {
