@@ -3706,10 +3706,6 @@
         "configureActions": "Configure Actions",
         "actionsConfigured": "Configured",
         "list": {
-          "threshold": "Threshold:",
-          "interval": "Interval:",
-          "intervalNone": "None",
-          "actionBadge": "Action",
           "editTitle": "Modifier la configuration",
           "removeTitle": "Supprimer la configuration"
         },
