@@ -12,6 +12,7 @@ docs/superpowers/
 db/
 cache/
 spectrograms/
+.cache/
 .task/*
 .vscode/*
 .mcp.json
@@ -47,6 +48,7 @@ frontend/blob-report/
 frontend/tests/.auth/
 frontend/coverage/
 frontend/playwright-report*.zip
+frontend/report/
 REFACTOR_CHANGELOG.md
 .worktrees/
 .leann/

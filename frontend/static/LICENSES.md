@@ -189,7 +189,7 @@ Source: BSD-3-Clause
 
 ### github.com/labstack/echo/v4
 
-License: https://github.com/labstack/echo/blob/v4.15.2/LICENSE
+License: https://github.com/labstack/echo/blob/v4.15.4/LICENSE
 Source: MIT
 
 ### github.com/labstack/gommon
@@ -409,7 +409,7 @@ Source: LGPL-3.0
 
 ### github.com/tphakala/go-flac
 
-License: https://github.com/tphakala/go-flac/blob/v0.3.0/LICENSE
+License: https://github.com/tphakala/go-flac/blob/v0.3.1/LICENSE
 Source: MIT
 
 ### github.com/tphakala/go-tflite
@@ -479,7 +479,7 @@ Source: BSD-3-Clause
 
 ### golang.org/x/net
 
-License: https://cs.opensource.google/go/x/net/+/v0.55.0:LICENSE
+License: https://cs.opensource.google/go/x/net/+/v0.56.0:LICENSE
 Source: BSD-3-Clause
 
 ### golang.org/x/oauth2
