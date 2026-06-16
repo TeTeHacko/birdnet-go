@@ -405,6 +405,8 @@
         "recalculatingThresholds": "Beregner dynamiske terskler for ny basisverdi",
         "reconfiguringDynamicThresholds": "Konfigurerer dynamiske terskler på nytt...",
         "webserverRestartRequired": "Webserverinnstillinger endret. Omstart kreves.",
+        "databaseRestartRequired": "Database settings changed. Restart required.",
+        "loggingRestartRequired": "Logging settings changed. Restart required.",
         "reconfiguringSoundLevel": "Oppdaterer lydnivåovervåkning...",
         "reconfiguringAudioSources": "Konfigurerer lydkilder på nytt...",
         "rebuildingExtendedCapture": "Bygger om utvidet opptaksfilter...",
@@ -526,8 +528,7 @@
       "confidence": "Sikkerhet",
       "source": "Source",
       "status": "Status",
-      "actions": "Handlinger",
-      "source": "Source"
+      "actions": "Handlinger"
     },
     "statusBadges": {
       "verified": "Verifisert",
@@ -563,9 +564,6 @@
       "page": "Side {current} av {total}",
       "goToPrevious": "Gå til forrige side",
       "goToNext": "Gå til neste side"
-    },
-    "sourceOptions": {
-      "any": "All Sources"
     }
   },
   "error": {
@@ -1667,8 +1665,8 @@
         "dateTime": "Dato og tid",
         "species": "Art",
         "confidence": "Sikkerhet",
-        "timeOfDay": "Tidspunkt",
-        "source": "Source"
+        "source": "Source",
+        "timeOfDay": "Tidspunkt"
       },
       "noRecentDetections": "Ingen siste registreringer funnet",
       "unknownSpecies": "Ukjent",
@@ -4905,7 +4903,13 @@
     "bannerTitle": "Omstart kreves",
     "bannerMessage": "Konfigurasjonsendringer krever omstart for å tre i kraft:",
     "bannerAction": "Start på nytt nå",
-    "restartFailed": "Oppstart av omstart mislyktes"
+    "restartFailed": "Oppstart av omstart mislyktes",
+    "reasons": {
+      "webserver": "Web server / network settings",
+      "database": "Database settings",
+      "logging": "Logging settings",
+      "tlsCertificate": "TLS certificate"
+    }
   },
   "help": {
     "title": "Hjelp og støtte",
