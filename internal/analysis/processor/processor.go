@@ -41,11 +41,6 @@ import (
 var _ PreRendererSubmit = (*spectrogram.PreRenderer)(nil)
 
 // Species identification constants for filtering
-const (
-	speciesDog   = "dog"
-	speciesHuman = "human"
-)
-
 // DefaultFlushInterval is the interval for checking and flushing pending detections
 const DefaultFlushInterval = 1 * time.Second
 
@@ -134,6 +129,15 @@ type Processor struct {
 
 	// Periodic pipeline stats (inference activity per source/model)
 	pipelineStats *PipelineStats
+
+	// Per-model recent-detection cache: a fixed-capacity, most-recent-first feed of
+	// the last lastDetectionCap detections per model, throttled per species so a
+	// continuously singing bird does not flood it. lastDetectionMu guards
+	// lastDetectionCache and every feed it holds. The map and per-model feeds are
+	// lazily initialised in updateLastDetection so zero-value Processors are safe to
+	// use in unit tests without a constructor call.
+	lastDetectionCache map[string]*recentDetectionList
+	lastDetectionMu    sync.RWMutex
 
 	// Extended capture fields
 	extendedCaptureSpecies map[string]bool // Resolved set of scientific names eligible for extended capture
@@ -804,6 +808,14 @@ func (p *Processor) processResults(settings *conf.Settings, item classifier.Resu
 	// Sync species tracker if needed
 	p.syncSpeciesTrackerIfNeeded()
 
+	// Per-model "Last heard" feed parameters, computed once per chunk: the
+	// per-species throttle (from the model's segment length) and a single shared
+	// timestamp for every prediction in this chunk. ModelRegistry is read-only
+	// after init; an unknown model ID yields a zero clip length and the default
+	// throttle.
+	feedThrottle := detectionThrottle(classifier.ModelRegistry[item.ModelID].Spec.ClipLength)
+	feedTime := time.Now().Add(-detection.DetectionTimeOffset)
+
 	// Process each result in item.Results
 	for _, result := range item.Results {
 		// Parse and validate species information
@@ -825,14 +837,25 @@ func (p *Processor) processResults(settings *conf.Settings, item classifier.Resu
 
 		// Handle dog and human detection, this sets LastDogDetection and LastHumanDetection which is
 		// later used to discard detection if privacy filter or dog bark filters are enabled in settings.
-		p.handleDogDetection(settings, item, speciesLowercase, result)
-		p.handleHumanDetection(settings, item, speciesLowercase, result)
+		p.handleDogDetection(settings, item, result)
+		p.handleHumanDetection(settings, item, result)
 
 		// Determine confidence threshold and check filters
 		baseThreshold := p.getBaseConfidenceThreshold(settings, commonName, scientificName, item.ModelID)
 
 		// Check if detection should be filtered
 		shouldSkip, _ := p.shouldFilterDetection(settings, result, commonName, scientificName, speciesLowercase, baseThreshold, item.Source.ID, item.ModelID)
+
+		// Record every prediction above the base confidence threshold in the
+		// per-model "Last heard" diagnostic feed, including non-avian classes,
+		// human vocalizations, and out-of-range birds, tagged with whether the
+		// species passes the range filter. This is independent of whether the
+		// detection is saved below (saved detections also clear this bar).
+		if result.Confidence > baseThreshold {
+			inRange := !shouldApplyRangeFilter(item.ModelID, settings) || settings.IsSpeciesIncluded(result.Species)
+			p.updateLastDetection(item.ModelID, commonName, scientificName, float64(result.Confidence), feedTime, inRange, feedThrottle)
+		}
+
 		if shouldSkip {
 			continue
 		}
@@ -968,8 +991,9 @@ func shouldApplyRangeFilter(modelID string, settings *conf.Settings) bool {
 
 // shouldFilterDetection checks if a detection should be filtered out
 func (p *Processor) shouldFilterDetection(settings *conf.Settings, result datastore.Results, commonName, scientificName, speciesLowercase string, baseThreshold float32, source, modelID string) (shouldFilter bool, confidenceThreshold float32) {
-	// Check human detection privacy filter
-	if strings.Contains(strings.ToLower(commonName), speciesHuman) && result.Confidence > baseThreshold {
+	// Check human detection privacy filter. Match the raw label so Perch v2's
+	// FSD50K human classes are caught too, not just BirdNET's "Human *" classes.
+	if isHumanVocalization(result.Species) && result.Confidence > baseThreshold {
 		return true, 0 // Filter out human detections for privacy
 	}
 
@@ -1243,8 +1267,8 @@ func (p *Processor) syncSpeciesTrackerIfNeeded() {
 // handleDogDetection handles the detection of dog barks and updates the last detection timestamp.
 //
 //nolint:gocritic // hugeParam: Pass by value is intentional - avoids pointer dereferencing in hot path
-func (p *Processor) handleDogDetection(settings *conf.Settings, item classifier.Results, speciesLowercase string, result datastore.Results) {
-	if settings.Realtime.DogBarkFilter.Enabled && strings.Contains(speciesLowercase, speciesDog) &&
+func (p *Processor) handleDogDetection(settings *conf.Settings, item classifier.Results, result datastore.Results) {
+	if settings.Realtime.DogBarkFilter.Enabled && isDogDetection(result.Species) &&
 		result.Confidence > settings.Realtime.DogBarkFilter.Confidence {
 		GetLogger().Info("dog detection filtered",
 			logger.Float32("confidence", result.Confidence),
@@ -1260,9 +1284,9 @@ func (p *Processor) handleDogDetection(settings *conf.Settings, item classifier.
 // handleHumanDetection handles the detection of human vocalizations and updates the last detection timestamp.
 //
 //nolint:gocritic // hugeParam: Pass by value is intentional - avoids pointer dereferencing in hot path
-func (p *Processor) handleHumanDetection(settings *conf.Settings, item classifier.Results, speciesLowercase string, result datastore.Results) {
+func (p *Processor) handleHumanDetection(settings *conf.Settings, item classifier.Results, result datastore.Results) {
 	// only check this if privacy filter is enabled
-	if settings.Realtime.PrivacyFilter.Enabled && strings.Contains(speciesLowercase, "human ") &&
+	if settings.Realtime.PrivacyFilter.Enabled && isHumanVocalization(result.Species) &&
 		result.Confidence > settings.Realtime.PrivacyFilter.Confidence {
 		GetLogger().Info("human detection filtered",
 			logger.Float32("confidence", result.Confidence),

@@ -6,8 +6,17 @@ package openvino
 // reports ErrOpenVINOUnavailable so the classifier falls back to ORT and no
 // libopenvino_c symbol is referenced.
 
+// Supported reports whether the OpenVINO backend is compiled into this build.
+// False here (no "openvino" build tag); true in backend_openvino.go.
+const Supported = false
+
 // NewClassifier always fails without the openvino build tag.
 func NewClassifier(_ string, _ Options) (Classifier, error) {
+	return nil, ErrOpenVINOUnavailable
+}
+
+// AvailableDevices always fails without the openvino build tag.
+func AvailableDevices() ([]string, error) {
 	return nil, ErrOpenVINOUnavailable
 }
 
