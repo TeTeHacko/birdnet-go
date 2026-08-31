@@ -4,7 +4,7 @@ set -euo pipefail
 # birdnet-go merge-conflict-resolver: automatically resolve merge conflicts
 # when the Gitea auto-sync-upstream workflow fails.
 #
-# Monitors the auto-sync workflow for failures, uses opencode with tiered
+# Monitors the auto-sync workflow for failures, uses the claude CLI with tiered
 # model escalation (sonnet → opus → human) to resolve merge conflicts,
 # runs typecheck + go vet, and pushes the result.
 #
@@ -23,8 +23,11 @@ readonly MAX_FAILURES=3
 # (non-conflict) files broken by upstream API changes only surface here.
 readonly MAX_REPAIRS=2
 readonly GITEA_REPO="tth/birdnet-go"
-# Tiered model escalation: fast/cheap first, then powerful for complex conflicts
-readonly MODELS=("github-copilot/claude-sonnet-4.6" "github-copilot/claude-opus-4.6")
+# Resolution engine: the `claude` CLI (headless `-p`), running on the local
+# Claude subscription (flat fee) — same engine as opencode-rebase-resolver.
+# opencode stays reserved for local-model testing and is deliberately not used
+# here. Tiered escalation: fast/cheap first, then powerful for complex conflicts.
+readonly MODELS=("sonnet" "opus")
 readonly GITEA_API="${GITEA_URL:-https://git.rfa.cz}/api/v1/repos/$GITEA_REPO"
 readonly SMTP_HOST="${RESOLVER_SMTP_HOST:-192.168.33.200}"
 readonly SMTP_PORT="${RESOLVER_SMTP_PORT:-10025}"
@@ -102,7 +105,7 @@ gitea_get() {
 
 # --- Main resolution logic ---
 
-# Build the resolution prompt for opencode
+# Build the resolution prompt for the claude CLI
 build_prompt() {
 	local conflict_files="$1"
 	cat <<-PROMPT
@@ -143,20 +146,19 @@ try_resolve_with_model() {
 	local prompt
 	prompt="$(build_prompt "$conflict_files")"
 
-	if ! opencode run "$prompt" \
-		--dir "$REPO_DIR" \
+	# claude CLI has no --dir; it works in the current dir, hence the subshell.
+	if ! (cd "$REPO_DIR" && claude -p "$prompt" \
 		--model "$model" \
-		--dangerously-skip-permissions \
-		--title "merge-resolver-$(date +%Y%m%d-%H%M%S)" 2>&1 | tee -a "$LOG_FILE"; then
-		MODEL_ERRORS+="  $model_short: opencode exited with error\n"
-		log "  ✗ $model_short: opencode run failed"
+		--dangerously-skip-permissions) 2>&1 | tee -a "$LOG_FILE"; then
+		MODEL_ERRORS+="  $model_short: claude CLI exited with error\n"
+		log "  ✗ $model_short: claude run failed"
 		return 1
 	fi
 
 	# Verify merge completed (no MERGE_HEAD means it was committed)
 	if [ -f "$REPO_DIR/.git/MERGE_HEAD" ]; then
 		MODEL_ERRORS+="  $model_short: merge incomplete (MERGE_HEAD still present)\n"
-		log "  ✗ $model_short: merge still in progress after opencode"
+		log "  ✗ $model_short: merge still in progress after claude run"
 		return 1
 	fi
 
@@ -271,11 +273,9 @@ verify_with_repair() {
 
 		local repair_prompt
 		repair_prompt="$(build_repair_prompt)"
-		if ! opencode run "$repair_prompt" \
-			--dir "$REPO_DIR" \
+		if ! (cd "$REPO_DIR" && claude -p "$repair_prompt" \
 			--model "$model" \
-			--dangerously-skip-permissions \
-			--title "merge-repair-$(date +%Y%m%d-%H%M%S)" 2>&1 | tee -a "$LOG_FILE"; then
+			--dangerously-skip-permissions) 2>&1 | tee -a "$LOG_FILE"; then
 			log "  ✗ $model_short: repair run failed to execute"
 			return 1
 		fi
