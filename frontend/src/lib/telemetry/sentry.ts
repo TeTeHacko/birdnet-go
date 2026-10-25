@@ -18,6 +18,7 @@ export interface SentryConfig {
 /** HTTP status codes for expected-flow errors (not bugs). */
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_FORBIDDEN = 403;
+const HTTP_PRECONDITION_FAILED = 412;
 const HTTP_CONFLICT = 409;
 
 /** HTTP status codes for gateway/proxy errors (infrastructure, not app bugs). */
@@ -39,7 +40,12 @@ interface ApiErrorLike {
 function isExpectedApiError(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false;
   const status = (err as Record<string, unknown>).status;
-  return status === HTTP_UNAUTHORIZED || status === HTTP_FORBIDDEN || status === HTTP_CONFLICT;
+  return (
+    status === HTTP_UNAUTHORIZED ||
+    status === HTTP_FORBIDDEN ||
+    status === HTTP_CONFLICT ||
+    status === HTTP_PRECONDITION_FAILED
+  );
 }
 
 /** Check whether an error is a gateway/proxy error (502/503/504). */
@@ -106,6 +112,64 @@ function hasNoDiagnosticValue(hint: Sentry.EventHint): boolean {
 }
 
 /**
+ * URL scheme prefixes that identify a stack frame as injected browser-extension
+ * or otherwise cross-origin-masked code rather than our own app bundle. Safari
+ * rewrites extension and cross-origin script URLs to `webkit-masked-url://`;
+ * Chromium and Firefox expose their extension origins directly.
+ */
+const EXTENSION_FRAME_PREFIXES = [
+  'webkit-masked-url:',
+  'chrome-extension:',
+  'moz-extension:',
+  'safari-extension:',
+  'safari-web-extension:',
+];
+
+/** Does this stack-frame filename/path belong to injected extension code? */
+function isExtensionFrame(location: string | undefined): boolean {
+  if (!location) return false;
+  return EXTENSION_FRAME_PREFIXES.some(prefix => location.startsWith(prefix));
+}
+
+/**
+ * Check whether an error originates entirely from a browser extension. Safari
+ * extensions (and other injected content scripts) run in the page context, so
+ * their unhandled rejections are captured by our global handlers even though
+ * they are not our code. When every stack frame is extension-injected, the
+ * event carries no signal about BirdNET-Go and is dropped (Sentry
+ * BIRDNET-GO-2EM: `shouldBeEnabled` at `webkit-masked-url://hidden/`).
+ *
+ * This assumes the app bundle is served same-origin, which is the standard
+ * deployment: Safari's `webkit-masked-url:` masking then applies only to
+ * extension and cross-origin scripts, so real BirdNET-Go frames keep their
+ * `/ui/assets/...` paths and short-circuit the drop. A non-standard deployment
+ * serving assets cross-origin without `Timing-Allow-Origin` would let Safari
+ * mask app frames too, so a genuine error could be dropped; that is an accepted
+ * loss of telemetry visibility, not a user-facing regression. Requiring an
+ * explicit `*-extension:` frame instead would fail to drop the reported case,
+ * whose frames are all `webkit-masked-url:`.
+ */
+function isBrowserExtensionError(event: Sentry.ErrorEvent): boolean {
+  const values = event.exception?.values;
+  if (!values || values.length === 0) return false;
+
+  let sawFrame = false;
+  for (const value of values) {
+    const frames = value.stacktrace?.frames;
+    if (!frames) continue;
+    for (const frame of frames) {
+      sawFrame = true;
+      // Any frame from our own bundle means this is not pure extension noise.
+      if (!isExtensionFrame(frame.filename) && !isExtensionFrame(frame.abs_path)) {
+        return false;
+      }
+    }
+  }
+
+  return sawFrame;
+}
+
+/**
  * Initialize Sentry with privacy filtering.
  * Called once from appState.svelte.ts when telemetry is enabled.
  */
@@ -129,13 +193,13 @@ export function initSentry(config: SentryConfig): void {
 
 /**
  * Capture an API error with structured context.
- * Skips expected-flow errors (401/403/409) as they are not bugs.
+ * Skips expected-flow errors (401/403/409/412) as they are not bugs.
  */
 export function captureApiError(error: ApiErrorLike, context?: Record<string, string>): void {
-  // Skip expected-flow errors — auth (401/403) and conflict (409, e.g. v2 database not available)
+  // Skip expected-flow errors - auth (401/403), conflict (409, e.g. v2 database not available) and stale If-Match (412)
   if (isExpectedApiError(error)) return;
 
-  // Skip gateway errors — 502/503/504 are proxy/infrastructure issues, not app bugs
+  // Skip gateway errors - 502/503/504 are proxy/infrastructure issues, not app bugs
   if (isGatewayError(error)) return;
 
   // Skip network errors - connectivity issues are infrastructure noise, not app bugs
@@ -148,7 +212,7 @@ export function captureApiError(error: ApiErrorLike, context?: Record<string, st
     scope.setTag('error.type', 'api');
 
     if (context) {
-      // Scrub endpoint URL — strip query params; preserve domain for external APIs
+      // Scrub endpoint URL - strip query params; preserve domain for external APIs
       const scrubbed = { ...context };
       if (scrubbed.endpoint) {
         scrubbed.endpoint = scrubUrl(scrubbed.endpoint);
@@ -175,7 +239,7 @@ export function captureError(
   error: Error,
   context?: { category?: string; [key: string]: unknown }
 ): void {
-  // Skip expected-flow errors — 401/403/409 are not bugs
+  // Skip expected-flow errors - 401/403/409/412 are not bugs
   if (isExpectedApiError(error)) return;
 
   // Skip network TypeErrors - connectivity issues are infrastructure noise, not app bugs
@@ -245,10 +309,10 @@ function scrubUrl(raw: string): string {
  * Also drops auth errors (401/403) which are expected when users aren't logged in.
  */
 function beforeSend(event: Sentry.ErrorEvent, hint: Sentry.EventHint): Sentry.ErrorEvent | null {
-  // Drop expected-flow errors — 401/403/409 can arrive via unhandled rejections or logger.error().
+  // Drop expected-flow errors - 401/403/409/412 can arrive via unhandled rejections or logger.error().
   if (isExpectedApiError(hint.originalException)) return null;
 
-  // Drop gateway errors — 502/503/504 from reverse proxies during backend restarts
+  // Drop gateway errors - 502/503/504 from reverse proxies during backend restarts
   if (isGatewayError(hint.originalException)) return null;
 
   // Drop network TypeErrors (connectivity issues are infrastructure noise, not app bugs)
@@ -260,13 +324,17 @@ function beforeSend(event: Sentry.ErrorEvent, hint: Sentry.EventHint): Sentry.Er
   // Drop events with no diagnostic value (empty/generic messages, browser noise)
   if (hasNoDiagnosticValue(hint)) return null;
 
+  // Drop errors thrown entirely by injected browser-extension code (Safari
+  // masks these as webkit-masked-url); they are not BirdNET-Go bugs.
+  if (isBrowserExtensionError(event)) return null;
+
   // 1. Strip user data (Sentry auto-collects IP)
   delete event.user;
 
   // 2. Strip server name
   delete event.server_name;
 
-  // 3. Scrub main event request — remove query params, headers, cookies, body
+  // 3. Scrub main event request - remove query params, headers, cookies, body
   if (event.request) {
     if (event.request.url) {
       event.request.url = scrubUrl(event.request.url);

@@ -1,0 +1,843 @@
+// internal/api/v2/system/diagnostics.go
+package system
+
+import (
+	"cmp"
+	"context"
+	"fmt"
+	"maps"
+	"net/http"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/labstack/echo/v4"
+	"github.com/tphakala/birdnet-go/internal/api/v2/apicore"
+	"github.com/tphakala/birdnet-go/internal/audiocore"
+	"github.com/tphakala/birdnet-go/internal/classifier"
+	"github.com/tphakala/birdnet-go/internal/classifier/inferencestats"
+	"github.com/tphakala/birdnet-go/internal/conf"
+	"github.com/tphakala/birdnet-go/internal/datastore"
+	"github.com/tphakala/birdnet-go/internal/errors"
+	"github.com/tphakala/birdnet-go/internal/health"
+	"github.com/tphakala/birdnet-go/internal/health/checks"
+	"github.com/tphakala/birdnet-go/internal/inference"
+	"github.com/tphakala/birdnet-go/internal/logger"
+	"github.com/tphakala/birdnet-go/internal/notification"
+	"github.com/tphakala/birdnet-go/internal/observability"
+	"github.com/tphakala/birdnet-go/internal/privacy"
+	"github.com/tphakala/birdnet-go/internal/weather"
+)
+
+// diagnosticsStatusResponse is the quick health summary returned by GET /status.
+type diagnosticsStatusResponse struct {
+	Status     health.Status                     `json:"status"`
+	Categories map[health.Category]health.Status `json:"categories"`
+	LastRun    *time.Time                        `json:"last_run"`
+}
+
+// integrityResulter is implemented by any datastore that can report a cached
+// database integrity result (PRAGMA quick_check) for the Database Integrity
+// health check. Both the legacy *datastore.SQLiteStore and the v2 datastore
+// satisfy it, so the check reads through this interface instead of asserting a
+// concrete datastore type. The old concrete assertion failed on v2 installs,
+// leaving the check stuck at "Unknown" forever (#3939).
+type integrityResulter interface {
+	IntegrityResult() (string, bool)
+}
+
+// integrityCacheRefresher is implemented by a datastore whose integrity result is
+// cached with a TTL and can be refreshed on demand. An explicit diagnostics refresh
+// clears it (subject to a cooldown that coalesces rapid refreshes) so the run
+// reflects current database integrity rather than a result cached up to 24h earlier
+// (#3939 follow-up). Datastores without a TTL-expiring integrity cache (the legacy
+// SQLiteStore refreshes on a schedule and latches corruption via an atomic) do not
+// implement it, and the type assertion simply no-ops.
+type integrityCacheRefresher interface {
+	RefreshIntegrityCache() bool
+}
+
+// RegisterDiagnosticsRoutes initializes health check infrastructure and registers
+// the diagnostics API endpoints, preserving the exact routes and auth middleware
+// from the original initDiagnosticsRoutes.
+func (c *Handler) RegisterDiagnosticsRoutes(g *echo.Group) {
+	c.healthReports = health.NewReportStore(10)
+	if c.healthErrors == nil {
+		c.healthErrors = health.NewErrorRingBuffer(health.DefaultErrorBufferSize)
+	}
+	c.healthRegistry = health.NewRegistry()
+	c.healthMetricsStore = observability.NewHealthMetricsStore()
+	c.healthEvents = observability.NewHealthEventBuffer(observability.DefaultEventBufferCapacity)
+
+	c.registerHealthChecks()
+
+	diagnosticsGroup := g.Group("/system/diagnostics", c.AuthMiddleware)
+	diagnosticsGroup.GET("/status", c.GetDiagnosticsStatus)
+	diagnosticsGroup.POST("/run", c.RunDiagnostics)
+	diagnosticsGroup.GET("/report/:id", c.GetDiagnosticsReport)
+	diagnosticsGroup.GET("/errors", c.GetRecentErrors)
+}
+
+// HealthMetricsStore returns the diagnostics health metrics store, or nil if
+// the diagnostics subsystem has not been initialized. It lets other subsystems
+// (e.g. the analysis pipeline) record health counters into the same store the
+// health checks read, avoiding an import cycle on internal/api/v2.
+func (c *Handler) HealthMetricsStore() *observability.HealthMetricsStore {
+	return c.healthMetricsStore
+}
+
+// HealthEventBuffer returns the diagnostics health event buffer, or nil if the
+// diagnostics subsystem has not been initialized. Paired with HealthMetricsStore
+// so recorded counters can also surface as recent events on the System Health page.
+func (c *Handler) HealthEventBuffer() *observability.HealthEventBuffer {
+	return c.healthEvents
+}
+
+// registerHealthChecks registers all health checks with dependency injection closures.
+func (c *Handler) registerHealthChecks() {
+	snapshotProvider := func() []audiocore.SourceHealthSnapshot {
+		w := c.AudioWatchdog.Load()
+		if w == nil {
+			return nil
+		}
+		return w.Snapshot()
+	}
+
+	getStreamHealthInfos := c.buildStreamHealthProvider()
+
+	c.healthRegistry.RegisterAll(
+		// System checks
+		checks.NewDiskSpaceCheck(c.getDataPaths()),
+		checks.NewMemoryCheck(),
+		checks.NewCPULoadCheck(apicore.GetCachedCPUUsage),
+		checks.NewTemperatureCheck(
+			func() (float64, error) {
+				celsius, _, err := observability.ReadCPUTemperature(thermalBasePath)
+				if err != nil {
+					// Surface the real reason (no sensor, unreadable, or out of
+					// range) so the health check reports an accurate cause.
+					return 0, err
+				}
+				return celsius, nil
+			},
+			// Read the configured display unit per Run so a live settings
+			// change is reflected without a restart. Guard against a nil
+			// settings snapshot (possible only on a controller that never
+			// stored settings, e.g. standalone tests); "" displays Celsius.
+			func() string {
+				if s := c.CurrentSettings(); s != nil {
+					return s.Realtime.Dashboard.TemperatureUnit
+				}
+				return ""
+			},
+		),
+		checks.NewUptimeCheck(c.startTime),
+
+		// Audio checks
+		checks.NewSourceStatusCheck(snapshotProvider),
+		checks.NewPipelineLivenessCheck(snapshotProvider),
+		checks.NewBufferDropsCheck(c.healthMetricsStore, c.healthEvents.Recent),
+		checks.NewAudioLevelCheck(c.buildAudioLevelProvider()),
+		checks.NewBufferOverrunCheck(c.healthMetricsStore, c.healthEvents.Recent),
+		checks.NewCaptureBufferCheck(c.buildCaptureBufferHealthProvider()),
+
+		// Analysis checks (multi-model aware)
+		checks.NewAcousticModelsCheck(c.buildAcousticModelsProvider()),
+		checks.NewModelsLoadedCheck(c.buildModelLoadInfoProvider()),
+		checks.NewPerModelInferenceLatencyCheck(c.buildPerModelInferenceProvider()),
+		checks.NewInferenceFailuresCheck(c.buildInferenceFailuresProvider()),
+		checks.NewDetectionRateCheck(func(ctx context.Context, hours int) (int, error) {
+			ds := c.DS
+			if ds == nil {
+				return 0, errors.NewStd("datastore unavailable")
+			}
+			since := time.Now().Add(-time.Duration(hours) * time.Hour)
+			return ds.CountDetectionsSince(ctx, since)
+		}),
+		checks.NewQueueDepthCheck(func() (int, int) {
+			q := classifier.ResultsQueue
+			return len(q), cap(q)
+		}),
+		checks.NewResultsQueueDropCheck(c.healthMetricsStore, c.healthEvents.Recent),
+		checks.NewORTAvailabilityCheck(func() (available, initialized bool, version, libraryPath, errMsg string) {
+			status := inference.CheckORTAvailability(c.CurrentSettings().BirdNET.ONNXRuntimePath)
+			return status.Available, status.Initialized, status.Version, status.LibraryPath, status.Error
+		}),
+		checks.NewOpenVINOAvailabilityCheck(func() (supported, active bool) {
+			status := inference.CheckOpenVINOAvailability()
+			return status.Supported, status.Active
+		}),
+		checks.NewRangeFilterCheck(func() checks.RangeFilterStatusInfo {
+			orch, err := c.GetBirdNETInstance()
+			if err != nil || orch == nil {
+				return checks.RangeFilterStatusInfo{}
+			}
+			st := orch.RangeFilterStatus()
+			return checks.RangeFilterStatusInfo{
+				ParticipantsLoaded: st.ParticipantsLoaded,
+				LocationConfigured: st.LocationConfigured,
+				Active:             st.Active,
+				FellBack:           st.FellBack,
+				GeomodelActive:     st.Geomodel != nil,
+				MappedSpecies:      st.MappedSpecies,
+			}
+		}),
+
+		// Stream checks
+		checks.NewStreamConnectivityCheck(getStreamHealthInfos),
+		checks.NewStreamErrorRateCheck(c.healthMetricsStore, c.healthEvents.Recent),
+		checks.NewFFmpegHealthCheck(getStreamHealthInfos),
+
+		// Database checks
+		checks.NewDatabaseSizeCheck(func() string {
+			return c.CurrentSettings().Output.SQLite.Path
+		}),
+		checks.NewMigrationStatusCheck(func() (bool, string, error) {
+			if c.DS == nil {
+				return false, "", errors.NewStd("datastore unavailable")
+			}
+			dbType := "sqlite"
+			if c.CurrentSettings().Output.MySQL.Enabled {
+				dbType = "mysql"
+			}
+			return true, dbType + " (auto-migrated at startup)", nil
+		}),
+		checks.NewDatabasePerformanceCheck(func(ctx context.Context) (time.Duration, error) {
+			ds := c.DS
+			if ds == nil {
+				return 0, errors.NewStd("datastore unavailable")
+			}
+			return ds.PingWithLatency(ctx)
+		}),
+		checks.NewDatabaseIntegrityCheck(func() (string, bool) {
+			ds := c.DS
+			if ds == nil {
+				return "", false
+			}
+			// Read integrity from whichever datastore exposes it (the legacy
+			// SQLiteStore or the v2 datastore) via a consumer-side interface. The
+			// old *datastore.SQLiteStore assertion failed on v2 installs, leaving
+			// the check stuck at "Unknown" (#3939).
+			if ir, ok := ds.(integrityResulter); ok {
+				return ir.IntegrityResult()
+			}
+			return "", false
+		}),
+
+		// Network checks
+		checks.NewMQTTCheck(
+			func() bool { return c.CurrentSettings().Realtime.MQTT.Enabled },
+			func() bool {
+				proc := c.Processor
+				if proc == nil {
+					return false
+				}
+				client := proc.GetMQTTClient()
+				if client == nil {
+					return false
+				}
+				return client.IsConnected()
+			},
+		),
+		checks.NewBirdWeatherCheck(
+			func() bool { return c.CurrentSettings().Realtime.Birdweather.Enabled },
+			func() (bool, string) {
+				proc := c.Processor
+				if proc == nil {
+					return false, "Processor unavailable"
+				}
+				bw := proc.GetBwClient()
+				if bw == nil {
+					return false, "BirdWeather client not initialized"
+				}
+				return bw.Status()
+			},
+		),
+		checks.NewNotificationProvidersCheck(func() (int, int, string) {
+			providers := notification.GetAllPushProviderHealth()
+			if len(providers) == 0 {
+				return 0, 0, ""
+			}
+			total := len(providers)
+			healthy := 0
+			for i := range providers {
+				if providers[i].Healthy {
+					healthy++
+				}
+			}
+			unhealthy := total - healthy
+			var msg string
+			switch unhealthy {
+			case 0:
+				msg = fmt.Sprintf("All %d providers healthy", total)
+			case total:
+				msg = fmt.Sprintf("All %d providers failing", total)
+			default:
+				msg = fmt.Sprintf("%d of %d providers unhealthy", unhealthy, total)
+			}
+			return total, healthy, msg
+		}),
+		checks.NewWeatherCheck(
+			func() bool {
+				p := c.CurrentSettings().Realtime.Weather.Provider
+				return p != string(conf.WeatherNone)
+			},
+			weather.GetStatus,
+		),
+
+		// Config checks
+		checks.NewToolAvailabilityCheck(func() []checks.ToolInfo {
+			return requiredTools(c.CurrentSettings())
+		}),
+		checks.NewPathAccessCheck(map[string]string{
+			"data": filepath.Dir(c.CurrentSettings().Output.SQLite.Path),
+		}),
+		checks.NewStoragePersistenceCheck(c.storagePersistenceReport),
+		checks.NewConfigConsistencyCheck(func() []string { return nil }),
+		checks.NewDiskBudgetCheck(
+			func() bool { return false }, // TODO: wire when disk budget feature exists
+			func() (int64, int64) { return 0, 0 },
+		),
+
+		// Log checks
+		checks.NewRecentErrorsCheck(c.healthErrors),
+		checks.NewErrorTrendCheck(c.healthErrors),
+		checks.NewCriticalEventsCheck(c.healthErrors),
+	)
+}
+
+// buildModelLoadInfoProvider returns a closure that queries the orchestrator for
+// all loaded models and converts them to the health check's ModelLoadInfo format.
+func (c *Handler) buildModelLoadInfoProvider() func() []checks.ModelLoadInfo {
+	return func() []checks.ModelLoadInfo {
+		p := c.Processor
+		if p == nil {
+			return nil
+		}
+		bn := p.GetBirdNET()
+		if bn == nil {
+			return nil
+		}
+		infos := bn.ModelInfos()
+		result := make([]checks.ModelLoadInfo, 0, len(infos))
+		for i := range infos {
+			m := &infos[i]
+			result = append(result, checks.ModelLoadInfo{
+				ID:      m.ID,
+				Name:    m.DisplayName(),
+				Loaded:  true,
+				Backend: m.Backend,
+				SpecInfo: fmt.Sprintf("%dkHz, %ss clips",
+					m.Spec.SampleRate/1000,
+					strconv.FormatFloat(m.Spec.ClipLength.Seconds(), 'f', -1, 64)),
+			})
+		}
+		return result
+	}
+}
+
+// buildAcousticModelsProvider returns a closure that reports the aggregate acoustic-model
+// state for the acoustic_models health check (model de-privilege epic, Phase 4). A nil
+// Processor or orchestrator yields an empty State, which the check reports as Unknown
+// (matching how models_loaded treats a nil provider).
+func (c *Handler) buildAcousticModelsProvider() func() checks.AcousticModelsInfo {
+	return func() checks.AcousticModelsInfo {
+		p := c.Processor
+		if p == nil {
+			return checks.AcousticModelsInfo{}
+		}
+		bn := p.GetBirdNET()
+		if bn == nil {
+			return checks.AcousticModelsInfo{}
+		}
+		// Count distinct enabled models that resolve to a known registry ID, deduping
+		// case variants (["perch_v2","PERCH_V2"]) the way computeThreadAllocation does, so
+		// EnabledCount matches the loaded-model set rather than raw config entries. Guard the
+		// settings snapshot (nil in isolated tests / early init) as the sibling providers do.
+		var enabled []string
+		if s := c.CurrentSettings(); s != nil {
+			enabled = s.Models.Enabled
+		}
+		seen := make(map[string]bool, len(enabled))
+		for _, id := range enabled {
+			if registryID, known := classifier.ResolveConfigModelID(id); known {
+				seen[registryID] = true
+			}
+		}
+		return checks.AcousticModelsInfo{
+			State:        string(bn.AcousticModelsState()),
+			LoadedCount:  len(bn.ModelInfos()),
+			EnabledCount: len(seen),
+			LoadFailures: len(bn.LoadErrors()),
+		}
+	}
+}
+
+// buildInferenceFailuresProvider returns a closure reporting each loaded model's
+// failure run from the classifier's per-model inference health. It returns nil
+// (no loaded model) while no orchestrator is wired.
+func (c *Handler) buildInferenceFailuresProvider() func() []checks.ModelInferenceFailureInfo {
+	return func() []checks.ModelInferenceFailureInfo {
+		p := c.Processor
+		if p == nil {
+			return nil
+		}
+		bn := p.GetBirdNET()
+		if bn == nil {
+			return nil
+		}
+		models := bn.InferenceHealth()
+		out := make([]checks.ModelInferenceFailureInfo, 0, len(models))
+		for i := range models {
+			out = append(out, checks.ModelInferenceFailureInfo{
+				ModelID:             models[i].ModelID,
+				ModelName:           models[i].ModelName,
+				ConsecutiveFailures: models[i].ConsecutiveFailures,
+				Failing:             models[i].Failing,
+				ErrorClass:          models[i].ErrorClass,
+			})
+		}
+		return out
+	}
+}
+
+// buildPerModelInferenceProvider returns a closure that queries per-model
+// inference counters and model specs to produce per-model latency stats.
+// Each model's analysis window is derived from its own BufferInterval
+// (ClipLength - resolved overlap; the bat model stays fixed at 50%).
+func (c *Handler) buildPerModelInferenceProvider() func() []checks.ModelInferenceInfo {
+	return func() []checks.ModelInferenceInfo {
+		p := c.Processor
+		if p == nil {
+			return nil
+		}
+		bn := p.GetBirdNET()
+		if bn == nil {
+			return nil
+		}
+		counters := classifier.GetInferenceCounters()
+		snapshots := counters.PeekAll()
+		if len(snapshots) == 0 {
+			return nil
+		}
+		infos := bn.ModelInfos()
+		infoMap := make(map[string]*classifier.ModelInfo, len(infos))
+		for i := range infos {
+			infoMap[infos[i].ID] = &infos[i]
+		}
+		return mapInferenceSnapshots(snapshots, infoMap)
+	}
+}
+
+// mapInferenceSnapshots converts a per-model PeekSnapshot map into a slice of
+// ModelInferenceInfo suitable for health reporting. When a snapshot's modelID
+// is not present in infoMap (e.g. due to a model-ID drift), the entry is still
+// surfaced using the raw modelID as ModelName and a zero WindowMS, and a
+// warning is logged. This prevents a missing registry entry from silently
+// dropping a model from the inference chart.
+func mapInferenceSnapshots(snapshots map[string]inferencestats.PeekSnapshot, infoMap map[string]*classifier.ModelInfo) []checks.ModelInferenceInfo {
+	result := make([]checks.ModelInferenceInfo, 0, len(snapshots))
+	// Iterate in sorted model-ID order so the returned slice (and the health
+	// results derived from it) is deterministic; map iteration order is random.
+	for _, modelID := range slices.Sorted(maps.Keys(snapshots)) {
+		s := snapshots[modelID]
+		var avgMS, p95MS, windowMS float64
+		if s.InvokeCount > 0 {
+			avgMS = float64(s.InvokeTotalUs) / float64(s.InvokeCount) / 1000.0
+		}
+		// Use the rolling-window p95 latency, not the lifetime max, so a single
+		// slow warm-up inference does not permanently latch the health check into
+		// Warning/Critical, and so an occasional GC pause does not flap it. The
+		// model card uses the lifetime max instead (see buildModelStatus).
+		p95MS = float64(s.RecentP95Us) / 1000.0
+		name := modelID
+		if mi, ok := infoMap[modelID]; ok {
+			name = mi.DisplayName()
+			windowMS = float64(mi.Spec.BufferInterval(mi.Overlap).Milliseconds())
+		} else {
+			apicore.GetLogger().Warn("inference counter has no matching model info; surfacing raw id",
+				logger.String("model_id", modelID))
+		}
+		result = append(result, checks.ModelInferenceInfo{
+			ModelID:   modelID,
+			ModelName: name,
+			AvgMS:     avgMS,
+			P95MS:     p95MS,
+			WindowMS:  windowMS,
+		})
+	}
+	return result
+}
+
+// buildStreamHealthProvider returns a closure that bridges the stream manager's
+// health data to the checks.StreamHealthInfo format. The closure
+// atomically loads c.Engine at call time because it is set after Controller init.
+func (c *Handler) buildStreamHealthProvider() func() []checks.StreamHealthInfo {
+	return func() []checks.StreamHealthInfo {
+		eng := c.Engine.Load()
+		if eng == nil {
+			return nil
+		}
+		mgr := eng.StreamManager()
+		if mgr == nil {
+			return nil
+		}
+		healthMap := mgr.AllStreamHealth()
+		if len(healthMap) == 0 {
+			return nil
+		}
+		registry := eng.Registry()
+		// AllStreamHealth ranges a map, so order deterministically for a stable
+		// support-dump ordering (the diagnostics file sorts its other map-derived
+		// outputs too). Sort by sanitized URL, then by the unique source ID, so two
+		// sources that sanitize to the same URL (credentials stripped) still order
+		// deterministically. Source IDs are precomputed to sanitized URLs so the
+		// comparator does no per-comparison registry lookup.
+		urls := make(map[string]string, len(healthMap))
+		ids := make([]string, 0, len(healthMap))
+		for sourceID := range healthMap {
+			url := sourceID
+			if registry != nil {
+				if connStr, ok := registry.ConnectionStringByID(sourceID); ok {
+					url = privacy.SanitizeStreamUrl(connStr)
+				}
+			}
+			urls[sourceID] = url
+			ids = append(ids, sourceID)
+		}
+		slices.SortFunc(ids, func(a, b string) int {
+			if c := cmp.Compare(urls[a], urls[b]); c != 0 {
+				return c
+			}
+			return cmp.Compare(a, b)
+		})
+		infos := make([]checks.StreamHealthInfo, 0, len(ids))
+		for _, sourceID := range ids {
+			sh := healthMap[sourceID]
+			errMsg := ""
+			if sh.Error != nil {
+				errMsg = sh.Error.Error()
+			}
+			infos = append(infos, checks.StreamHealthInfo{
+				URL:                urls[sourceID],
+				IsHealthy:          sh.IsHealthy,
+				State:              sh.State,
+				RestartCount:       sh.RestartCount,
+				Error:              errMsg,
+				Engine:             sh.Engine,
+				Codec:              sh.Codec,
+				WireBytesPerSecond: sh.WireBytesPerSecond,
+				Packets:            sh.Packets,
+				SeqGaps:            sh.SeqGaps,
+				Duplicates:         sh.Duplicates,
+				Malformed:          sh.Malformed,
+				SSRCResets:         sh.SSRCResets,
+				SourceFiltered:     sh.SourceFiltered,
+			})
+		}
+		return infos
+	}
+}
+
+// buildAudioRouterSnapshotProvider returns a closure that reads cumulative
+// audio counter values from the audio router for the health metrics collector.
+func (c *Handler) buildAudioRouterSnapshotProvider() func() []observability.AudioRouterSnapshot {
+	return func() []observability.AudioRouterSnapshot {
+		eng := c.Engine.Load()
+		if eng == nil {
+			return nil
+		}
+		router := eng.Router()
+		if router == nil {
+			return nil
+		}
+		sourceIDs := router.ActiveSourceIDs()
+		if len(sourceIDs) == 0 {
+			return nil
+		}
+		snaps := make([]observability.AudioRouterSnapshot, 0, len(sourceIDs))
+		for _, sid := range sourceIDs {
+			var totalDrops, totalErrors int64
+			// QueueDepth is the MAX inbox occupancy across all routes for this source.
+			// The analysis/buffer route dominates under load, and max keeps the value
+			// within one inbox capacity rather than summing unrelated consumer queues.
+			var maxQueueDepth int64
+			for _, ri := range router.Routes(sid) {
+				totalDrops += ri.Drops
+				totalErrors += ri.Errors
+				if int64(ri.QueueDepth) > maxQueueDepth {
+					maxQueueDepth = int64(ri.QueueDepth)
+				}
+			}
+			snaps = append(snaps, observability.AudioRouterSnapshot{
+				SourceID:   sid,
+				Drops:      totalDrops,
+				Errors:     totalErrors,
+				QueueDepth: maxQueueDepth,
+			})
+		}
+		return snaps
+	}
+}
+
+// buildStreamHealthSnapshotProvider returns a closure that reads cumulative
+// stream restart counts for the health metrics collector.
+func (c *Handler) buildStreamHealthSnapshotProvider() func() []observability.StreamHealthSnapshot {
+	return func() []observability.StreamHealthSnapshot {
+		eng := c.Engine.Load()
+		if eng == nil {
+			return nil
+		}
+		mgr := eng.StreamManager()
+		if mgr == nil {
+			return nil
+		}
+		healthMap := mgr.AllStreamHealth()
+		if len(healthMap) == 0 {
+			return nil
+		}
+		snaps := make([]observability.StreamHealthSnapshot, 0, len(healthMap))
+		for sourceID, sh := range healthMap {
+			snaps = append(snaps, observability.StreamHealthSnapshot{
+				SourceID:     sourceID,
+				RestartCount: sh.RestartCount,
+			})
+		}
+		return snaps
+	}
+}
+
+// buildAudioLevelProvider returns a closure that reads the latest audio level
+// per source from the global audio level manager, filtered to active sources.
+func (c *Handler) buildAudioLevelProvider() func() []checks.AudioLevelInfo {
+	return func() []checks.AudioLevelInfo {
+		if c.audioLevelProvider == nil {
+			return nil
+		}
+		levels := c.audioLevelProvider()
+		if len(levels) == 0 {
+			return nil
+		}
+
+		// Require engine/router so checks skip cleanly before startup and after teardown.
+		eng := c.Engine.Load()
+		if eng == nil {
+			return nil
+		}
+		router := eng.Router()
+		if router == nil {
+			return nil
+		}
+		ids := router.ActiveSourceIDs()
+		if len(ids) == 0 {
+			return nil
+		}
+		activeSources := make(map[string]struct{}, len(ids))
+		for _, id := range ids {
+			activeSources[id] = struct{}{}
+		}
+
+		infos := make([]checks.AudioLevelInfo, 0, len(levels))
+		for _, l := range levels {
+			if _, ok := activeSources[l.Source]; !ok {
+				continue
+			}
+			infos = append(infos, checks.AudioLevelInfo{
+				Source:   l.Source,
+				Level:    l.Level,
+				Clipping: l.Clipping,
+			})
+		}
+		if len(infos) == 0 {
+			return nil
+		}
+		return infos
+	}
+}
+
+// buildCaptureBufferHealthProvider returns a closure that reads capture buffer
+// utilization from the buffer manager.
+func (c *Handler) buildCaptureBufferHealthProvider() func() []checks.CaptureBufferInfo {
+	return func() []checks.CaptureBufferInfo {
+		eng := c.Engine.Load()
+		if eng == nil {
+			return nil
+		}
+		mgr := eng.BufferManager()
+		if mgr == nil {
+			return nil
+		}
+		snapshots := mgr.CaptureBufferHealthAll()
+		if len(snapshots) == 0 {
+			return nil
+		}
+		infos := make([]checks.CaptureBufferInfo, 0, len(snapshots))
+		for _, s := range snapshots {
+			infos = append(infos, checks.CaptureBufferInfo{
+				SourceID:    s.SourceID,
+				Capacity:    s.Capacity,
+				Initialized: s.Initialized,
+			})
+		}
+		return infos
+	}
+}
+
+// getDataPaths returns filesystem paths that should be monitored for disk space.
+func (c *Handler) getDataPaths() []string {
+	settings := c.CurrentSettings()
+	seen := make(map[string]struct{})
+	var paths []string
+	addPath := func(p string) {
+		dir := filepath.Dir(p)
+		if _, ok := seen[dir]; !ok {
+			seen[dir] = struct{}{}
+			paths = append(paths, dir)
+		}
+	}
+	if settings.Output.SQLite.Path != "" {
+		addPath(settings.Output.SQLite.Path)
+	}
+	if settings.Logging.FileOutput != nil && settings.Logging.FileOutput.Path != "" {
+		addPath(settings.Logging.FileOutput.Path)
+	}
+	if len(paths) == 0 {
+		paths = append(paths, ".")
+	}
+	return paths
+}
+
+// GetDiagnosticsStatus returns a quick health summary from the latest stored report.
+func (c *Handler) GetDiagnosticsStatus(ctx echo.Context) error {
+	latest := c.healthReports.Latest()
+	if latest == nil {
+		return ctx.JSON(http.StatusOK, diagnosticsStatusResponse{
+			Status:     health.StatusUnknown,
+			Categories: map[health.Category]health.Status{},
+			LastRun:    nil,
+		})
+	}
+
+	return ctx.JSON(http.StatusOK, diagnosticsStatusResponse{
+		Status:     latest.Status,
+		Categories: latest.Summary,
+		LastRun:    &latest.StartedAt,
+	})
+}
+
+// validWindows maps accepted window parameter values to durations.
+var validWindows = map[string]time.Duration{
+	"15m": 15 * time.Minute,
+	"30m": 30 * time.Minute,
+	"1h":  time.Hour,
+	"6h":  6 * time.Hour,
+	"24h": 24 * time.Hour,
+	"7d":  7 * 24 * time.Hour,
+}
+
+// parseWindow converts a window query parameter to a duration.
+// Returns the default (1h) for empty input, or an error for invalid values.
+func parseWindow(s string) (time.Duration, error) {
+	if s == "" {
+		return time.Hour, nil
+	}
+	d, ok := validWindows[s]
+	if !ok {
+		return 0, fmt.Errorf("invalid window %q: valid values are 15m, 30m, 1h, 6h, 24h, 7d", s)
+	}
+	return d, nil
+}
+
+// RunDiagnostics executes all registered health checks and stores the report.
+func (c *Handler) RunDiagnostics(ctx echo.Context) error {
+	window, err := parseWindow(ctx.QueryParam("window"))
+	if err != nil {
+		return c.HandleError(ctx, err, err.Error(), http.StatusBadRequest)
+	}
+
+	// An explicit refresh forces a fresh database integrity check. The integrity
+	// result is cached for up to 24h so the passive status page never re-runs the
+	// expensive PRAGMA quick_check on the single pinned SQLite connection; opt in
+	// here (refresh_integrity=true) so troubleshooting an unrelated subsystem does
+	// not trigger a multi-minute write stall, while a deliberate integrity refresh
+	// still reflects the current on-disk state (#3939 follow-up). A present but
+	// unparseable value is a client error (mirroring the window param); an absent
+	// value defaults to no refresh.
+	refresh := false
+	if raw := ctx.QueryParam("refresh_integrity"); raw != "" {
+		parsed, perr := strconv.ParseBool(raw)
+		if perr != nil {
+			return c.HandleError(ctx, perr, "invalid refresh_integrity: expected a boolean", http.StatusBadRequest)
+		}
+		refresh = parsed
+	}
+	refreshIntegrityCache(c.DS, refresh)
+
+	id := uuid.New().String()
+	startedAt := time.Now()
+
+	results := c.healthRegistry.RunAllWithWindow(ctx.Request().Context(), window)
+	report := health.NewReport(id, startedAt, results)
+	c.healthReports.Save(report)
+
+	return ctx.JSON(http.StatusOK, report)
+}
+
+// refreshIntegrityCache asks the datastore to refresh its cached integrity result
+// when the caller opted in, so the diagnostics run below reflects current database
+// integrity. The datastore coalesces rapid forced refreshes internally (see
+// RefreshIntegrityCache), so this cannot be used to hammer the expensive scan. A
+// datastore that does not cache an integrity result (or a nil one) is a no-op.
+// Split from RunDiagnostics so the opt-in wiring is unit-testable.
+func refreshIntegrityCache(ds datastore.Interface, refresh bool) {
+	if !refresh {
+		return
+	}
+	if r, ok := ds.(integrityCacheRefresher); ok {
+		r.RefreshIntegrityCache()
+	}
+}
+
+// GetDiagnosticsReport retrieves a stored diagnostics report by ID.
+func (c *Handler) GetDiagnosticsReport(ctx echo.Context) error {
+	id := ctx.Param("id")
+	report, ok := c.healthReports.Get(id)
+	if !ok {
+		return c.HandleError(ctx, nil, "report not found", http.StatusNotFound)
+	}
+	return ctx.JSON(http.StatusOK, report)
+}
+
+// GetRecentErrors returns recent error log entries from the error ring buffer.
+func (c *Handler) GetRecentErrors(ctx echo.Context) error {
+	const defaultLimit = 50
+	const maxLimit = 200
+
+	limit := defaultLimit
+	if limitStr := ctx.QueryParam("limit"); limitStr != "" {
+		parsed, err := strconv.Atoi(limitStr)
+		if err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+
+	entries := c.healthErrors.Recent(limit)
+	return ctx.JSON(http.StatusOK, entries)
+}
+
+// requiredTools lists the external binaries the health check expects: FFmpeg,
+// used for network stream capture.
+func requiredTools(s *conf.Settings) []checks.ToolInfo {
+	return []checks.ToolInfo{
+		{
+			Name:    "FFmpeg",
+			Path:    s.Realtime.Audio.FfmpegPath,
+			Version: s.Realtime.Audio.FfmpegVersion,
+		},
+	}
+}

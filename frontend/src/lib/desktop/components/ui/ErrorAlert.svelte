@@ -6,6 +6,7 @@
   import { t } from '$lib/i18n';
   import { loggers } from '$lib/utils/logger';
   import { safeGet } from '$lib/utils/security';
+  import { createFocusReturn } from '$lib/utils/focusReturn';
 
   type AlertIconType = 'error' | 'warning' | 'info' | 'success' | 'check';
 
@@ -33,6 +34,7 @@
   }: Props = $props();
 
   let isVisible = $state(true);
+  const { track: trackFocus, restore: restoreFocus } = createFocusReturn();
 
   // Base alert classes using native Tailwind
   const baseClasses =
@@ -60,7 +62,8 @@
     check: 'text-[var(--color-success)]',
   };
 
-  function handleDismiss() {
+  function handleDismiss(event: MouseEvent) {
+    restoreFocus(event);
     isVisible = false;
     try {
       onDismiss();
@@ -74,6 +77,7 @@
   <div
     class={cn(baseClasses, safeGet(typeClasses, type, typeClasses.error), className)}
     role="alert"
+    use:trackFocus
     {...rest}
   >
     {#if type === 'error'}
@@ -94,18 +98,20 @@
       />
     {/if}
 
-    <span class="min-w-0">
+    <!-- A div, not a span, so children may hold block content (lists, buttons
+         on their own line). As a flex item it lays out the same either way. -->
+    <div class="min-w-0">
       {#if children}
         {@render children()}
       {:else}
         {message}
       {/if}
-    </span>
+    </div>
 
     {#if dismissible}
       <button
         type="button"
-        class="ml-auto inline-flex items-center justify-center p-1.5 rounded-md bg-transparent hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+        class="ml-auto inline-flex items-center justify-center p-1.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--color-base-content)_10%,transparent)] transition-colors"
         onclick={handleDismiss}
         aria-label={t('common.aria.dismissAlert')}
       >

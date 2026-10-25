@@ -33,6 +33,7 @@ import (
 	"github.com/tphakala/birdnet-go/internal/conf"
 	"github.com/tphakala/birdnet-go/internal/errors"
 	"github.com/tphakala/birdnet-go/internal/logger"
+	"github.com/tphakala/birdnet-go/internal/security/proxytrust"
 )
 
 var (
@@ -52,9 +53,9 @@ var (
 	//
 	// A retry goroutine that finishes on its own (provider registered, or the
 	// retry deadline elapsed) leaves its now-inert cancel func in the map; these
-	// spent entries are reaped by the next cancelAllOIDCRetries (settings reload
-	// or shutdown). The map is therefore bounded by the number of distinct
-	// configured issuer URLs, not by retry attempts.
+	// spent entries are reaped on server shutdown (shutdownOIDCRetries, via
+	// cancelAllOIDCRetriesLocked). The map is therefore bounded by the number of
+	// distinct configured issuer URLs, not by retry attempts.
 	oidcRetryCancels = make(map[string]context.CancelFunc)
 )
 
@@ -67,19 +68,10 @@ func cancelAllOIDCRetriesLocked() {
 	}
 }
 
-// cancelAllOIDCRetries cancels and forgets every in-flight OIDC discovery retry.
-// Used on settings reload, where InitializeGoth rebuilds all providers from
-// scratch and any outstanding retries are superseded.
-func cancelAllOIDCRetries() {
-	oidcRetryCancelMu.Lock()
-	defer oidcRetryCancelMu.Unlock()
-	cancelAllOIDCRetriesLocked()
-}
-
 // shutdownOIDCRetries cancels every in-flight retry and blocks new ones for the
 // remaining lifetime of the current server instance. Called when the server's
 // context is cancelled (application shutdown), so a retry cannot be started
-// after shutdown has begun (e.g. by a late InitializeGoth/UpdateProviders).
+// after shutdown has begun (e.g. by a late InitializeGoth).
 func shutdownOIDCRetries() {
 	oidcRetryCancelMu.Lock()
 	defer oidcRetryCancelMu.Unlock()
@@ -180,7 +172,7 @@ func startOIDCRetry(ctx context.Context, providerConfig conf.OAuthProviderConfig
 					continue
 				}
 
-				goth.UseProviders(oidcProvider)
+				goth.UseProviders(newPKCEOIDCProvider(oidcProvider))
 				secLog.Info("OIDC provider registered after background retry")
 				return
 			}
@@ -227,6 +219,10 @@ type OAuth2Server struct {
 
 	// Throttling
 	throttledMessages map[string]time.Time
+
+	// proxyTrust caches the parsed Security.TrustedProxies list for
+	// AuthClientIP, rebuilt only when the list changes.
+	proxyTrust proxytrust.Cache
 }
 
 // currentSettings returns the latest settings snapshot so security
@@ -242,6 +238,97 @@ func (s *OAuth2Server) CurrentSettings() *conf.Settings {
 	return s.currentSettings()
 }
 
+// authClientIP returns the client address to use for authentication decisions,
+// such as the allowed-subnet bypass, or nil when it cannot be verified (callers
+// must then grant no address-based access). Unlike echo.Context.RealIP, which
+// serves attribution and honors forwarded headers from any private peer, it
+// honors them only from proxies listed in settings' Security.TrustedProxies; see
+// proxytrust.Checker.AuthClientIP. Callers pass the snapshot they loaded once
+// for the whole decision, so changes take effect on the next request without a
+// restart and one decision never mixes two configurations. When the subnet
+// bypass is enabled and an authentication provider is configured, it logs a
+// throttled Info notice naming the peer when forwarded headers kept it from
+// finding an address: one for an unlisted proxy that listing would fix
+// (proxytrust.StatusUntrustedProxy: a loopback, link-local, private or CGNAT
+// peer, never a public scanner), another for a listed proxy whose headers
+// cannot be verified (proxytrust.StatusTrustedProxyUnverified, which a client
+// may also cause by sending forged copies through a correctly configured
+// proxy). Both notices take their decision from proxytrust.Checker.Classify,
+// the classifier the settings connection check also uses; the request is
+// classified once, and not at all while the notice it could earn is throttled. A nil
+// request has no verifiable address.
+func (s *OAuth2Server) authClientIP(settings *conf.Settings, r *http.Request) net.IP {
+	if r == nil {
+		return nil
+	}
+	checker := s.proxyTrust.ResolveSettings(settings)
+	if ip := checker.AuthClientIP(r); ip != nil {
+		return ip
+	}
+	if !bypassNoticeApplies(settings) {
+		return nil
+	}
+	// A listed peer can only earn the listed-proxy notice and any other peer only
+	// the unlisted-peer notice; when that one notice is inside its throttle
+	// interval, skip classifying.
+	noticeKey := unverifiedClientIPLogKey
+	if peerIP, _ := proxytrust.PeerAddr(r); checker.IsConfiguredProxy(peerIP) {
+		noticeKey = listedProxyUnverifiedLogKey
+	}
+	if s.noticeThrottled(noticeKey, unverifiedClientIPLogInterval) {
+		return nil
+	}
+	conn := checker.Classify(r)
+	switch conn.Status {
+	case proxytrust.StatusUntrustedProxy:
+		s.logThrottledInfo(unverifiedClientIPLogKey,
+			"Subnet bypass skipped: forwarded client-IP headers came from a peer not listed in security.trustedproxies; if this peer is your reverse proxy, add it there",
+			unverifiedClientIPLogInterval, logger.String("peer", conn.Peer.String()))
+	case proxytrust.StatusTrustedProxyUnverified:
+		s.logThrottledInfo(listedProxyUnverifiedLogKey,
+			"Subnet bypass skipped: forwarded client-IP headers from a trusted proxy could not be verified: they disagree, repeat a single-value header, carry a malformed or loopback address or a Forwarded header, or every forwarded hop is itself listed in security.trustedproxies",
+			unverifiedClientIPLogInterval, logger.String("peer", conn.Peer.String()))
+	case proxytrust.StatusDirect, proxytrust.StatusTrustedProxy, proxytrust.StatusUntrustedPublicProxy,
+		proxytrust.StatusUntrustedProxyUnverifiable:
+		// No notice: nothing to fix, or advice that would not help.
+	}
+	return nil
+}
+
+// isLocalSubnetBypass reports whether the automatic local-network check grants
+// r access: the subnet bypass is enabled in settings and the verified client
+// address (never the attribution address, so a forged forwarded header cannot
+// place a client on the host's network) is on a network of this host. Both are
+// read from the one snapshot the caller passes. It also returns that address
+// for logging.
+func (s *OAuth2Server) isLocalSubnetBypass(settings *conf.Settings, r *http.Request) (net.IP, bool) {
+	if !settings.Security.AllowSubnetBypass.Enabled {
+		return nil, false
+	}
+	ip := s.authClientIP(settings, r)
+	return ip, IsInLocalSubnet(ip)
+}
+
+// unverifiedClientIPLogKey throttles the unverified forwarded address notice.
+// One key for all peers keeps the throttle map bounded.
+const unverifiedClientIPLogKey = "subnet-bypass-unverified-client-ip"
+
+// listedProxyUnverifiedLogKey throttles the notice for a listed proxy whose
+// forwarded headers could not be verified, separately from the unlisted-peer
+// notice so one cannot hide the other.
+const listedProxyUnverifiedLogKey = "subnet-bypass-listed-proxy-unverified"
+
+// unverifiedClientIPLogInterval is the minimum time between two unverified
+// forwarded address notices.
+const unverifiedClientIPLogInterval = 10 * time.Minute
+
+// bypassNoticeApplies reports whether a subnet bypass notice can apply: the
+// bypass is enabled and an authentication provider is configured (otherwise no
+// login is asked for anyway).
+func bypassNoticeApplies(settings *conf.Settings) bool {
+	return settings != nil && settings.Security.AllowSubnetBypass.Enabled && settings.IsAuthProviderConfigured()
+}
+
 // For testing purposes
 var testConfigPath string
 
@@ -255,7 +342,14 @@ var (
 // governs background goroutines owned by the server (currently the periodic
 // expired-token cleanup); cancelling it stops them, giving the cleanup goroutine
 // a proper shutdown path instead of running for the process lifetime.
-func NewOAuth2Server(ctx context.Context) *OAuth2Server {
+//
+// secureCookies controls the Secure attribute on the session/auth cookies,
+// except for clients listed in Security.PlainHTTPSessionClients that connect
+// directly over plain HTTP (see plainHTTPClientSessionStore). The caller decides
+// it from the effective web-server TLS configuration (see
+// api.Config.SessionCookiesSecure), since the security package cannot import
+// internal/api.
+func NewOAuth2Server(ctx context.Context, secureCookies bool) *OAuth2Server {
 	// Re-enable OIDC discovery retries for this instance, clearing any disabled
 	// state a previous instance's shutdown left behind (sequential tests).
 	enableOIDCRetries()
@@ -273,7 +367,7 @@ func NewOAuth2Server(ctx context.Context) *OAuth2Server {
 	validateSessionSecret(settings)
 
 	// Initialize Gothic with the provided configuration
-	InitializeGoth(settings)
+	InitializeGoth(settings, secureCookies)
 
 	// Set up token persistence
 	server.setupTokenPersistence()
@@ -313,13 +407,7 @@ func handleEmptySessionSecret(settings *conf.Settings) {
 		logger.Bool("debug_mode", settings.WebServer.Debug),
 		logger.String("recommendation", "BirdNET-Go will auto-generate a SessionSecret on next restart"))
 
-	tempSecret, err := conf.GenerateRandomSecret()
-	if err != nil {
-		GetLogger().Error("FATAL: Cannot generate temporary SessionSecret, crypto/rand is unavailable. Shutting down to prevent insecure operation.",
-			logger.Error(err))
-		os.Exit(1)
-	}
-	settings.Security.SessionSecret = tempSecret
+	settings.Security.SessionSecret = conf.GenerateRandomSecret()
 	GetLogger().Info("Generated temporary SessionSecret for this session")
 
 	_ = errors.New(
@@ -403,12 +491,22 @@ func (s *OAuth2Server) setupTokenPersistence() {
 	}
 }
 
-// InitializeGoth initializes social authentication providers.
-func InitializeGoth(settings *conf.Settings) {
+// InitializeGoth initializes social authentication providers. secureCookies sets
+// the Secure attribute on the session store's cookies, except for configured
+// plain-HTTP session clients (see plainHTTPClientSessionStore); the caller
+// derives it from the effective web-server TLS configuration
+// (api.Config.SessionCookiesSecure).
+func InitializeGoth(settings *conf.Settings, secureCookies bool) {
+	if settings == nil {
+		// settings is a required dependency: setupSessionStore and
+		// initializeProviders both dereference it. Fail fast with a clear message
+		// instead of a confusing nil dereference deeper in initialization.
+		panic("security.InitializeGoth: settings must not be nil")
+	}
 	GetLogger().Info("Initializing Goth providers")
 
 	// Setup session store (filesystem or fallback to cookie-based)
-	setupSessionStore(settings)
+	setupSessionStore(settings, secureCookies)
 
 	// Initialize OAuth providers
 	initializeProviders(settings)
@@ -416,13 +514,30 @@ func InitializeGoth(settings *conf.Settings) {
 
 // setupSessionStore configures the Gothic session store.
 // It attempts to use a filesystem store, falling back to an in-memory cookie store on failure.
-func setupSessionStore(settings *conf.Settings) {
+// secureCookies sets the Secure attribute on the session cookies, except for
+// configured plain-HTTP session clients (see plainHTTPClientSessionStore); it is
+// derived by the caller from the effective web-server TLS configuration.
+func setupSessionStore(settings *conf.Settings, secureCookies bool) {
 	secLog := GetLogger()
+
+	maxAge := DefaultSessionMaxAgeSeconds
+	if settings.Security.SessionDuration > 0 {
+		maxAge = int(settings.Security.SessionDuration.Seconds())
+	}
+
+	// newCookieStoreFallback builds the in-memory fallback store with the same
+	// cookie hardening (Secure, HttpOnly, SameSite) as the filesystem store, so a
+	// fallback does not silently drop the Secure attribute the caller requested.
+	newCookieStoreFallback := func() *sessions.CookieStore {
+		store := sessions.NewCookieStore(createSessionKey(settings.Security.SessionSecret))
+		store.Options = buildSessionOptions(secureCookies, maxAge)
+		return store
+	}
 
 	sessionPath, ok := getSessionPath()
 	if !ok {
 		// Fallback to in-memory store if config paths can't be retrieved
-		gothic.Store = sessions.NewCookieStore(createSessionKey(settings.Security.SessionSecret))
+		gothic.Store = plainHTTPClientSessionStore{Store: newCookieStoreFallback(), settings: settings}
 		return
 	}
 
@@ -431,7 +546,7 @@ func setupSessionStore(settings *conf.Settings) {
 	// Ensure directory exists
 	if err := os.MkdirAll(sessionPath, DirPermissions); err != nil {
 		secLog.Error("Failed to create session directory, falling back to in-memory cookie store", logger.Error(err))
-		gothic.Store = sessions.NewCookieStore(createSessionKey(settings.Security.SessionSecret))
+		gothic.Store = plainHTTPClientSessionStore{Store: newCookieStoreFallback(), settings: settings}
 		return
 	}
 
@@ -439,21 +554,16 @@ func setupSessionStore(settings *conf.Settings) {
 	authKey := createSessionKey(settings.Security.SessionSecret)
 	encKey := createSessionKey(settings.Security.SessionSecret + "encryption")
 
-	gothic.Store = sessions.NewFilesystemStore(
+	store := sessions.NewFilesystemStore(
 		sessionPath,
 		authKey,
 		encKey,
 	)
+	gothic.Store = plainHTTPClientSessionStore{Store: store, settings: settings}
 
 	// Configure session store options
-	store := gothic.Store.(*sessions.FilesystemStore)
-	maxAge := DefaultSessionMaxAgeSeconds
-	if settings.Security.SessionDuration > 0 {
-		maxAge = int(settings.Security.SessionDuration.Seconds())
-	}
-	secureCookie := settings.Security.RedirectToHTTPS
-	store.Options = buildSessionOptions(secureCookie, maxAge)
-	secLog.Info("Filesystem session store configured", logger.Int("max_age_seconds", maxAge), logger.Bool("secure", secureCookie))
+	store.Options = buildSessionOptions(secureCookies, maxAge)
+	secLog.Info("Filesystem session store configured", logger.Int("max_age_seconds", maxAge), logger.Bool("secure", secureCookies))
 
 	// Set reasonable values for session cookie storage
 	store.MaxLength(MaxSessionSizeBytes)
@@ -646,7 +756,7 @@ func initializeOIDCProvider(providerConfig *conf.OAuthProviderConfig, redirectUR
 		startOIDCRetry(ctx, *providerConfig, redirectURI, scopes)
 		return nil
 	}
-	return oidcProvider
+	return newPKCEOIDCProvider(oidcProvider)
 }
 
 // createSessionKey creates a key of the proper length for AES encryption from a seed string
@@ -665,21 +775,14 @@ func SetTestConfigPath(path string) {
 	testConfigPath = path
 }
 
-func (s *OAuth2Server) UpdateProviders() {
-	GetLogger().Info("Updating Goth providers based on potentially changed settings")
-	cancelAllOIDCRetries()
-	InitializeGoth(s.currentSettings())
-}
-
 // IsUserAuthenticated checks if the user is authenticated
 func (s *OAuth2Server) IsUserAuthenticated(c echo.Context) bool {
-	settings := s.currentSettings()
-	clientIP := parseIPWithZone(c.RealIP())
 	secLog := GetLogger().With(logger.String("client_ip", c.RealIP()))
 	secLog.Debug("Checking user authentication status")
 
-	if settings.Security.AllowSubnetBypass.Enabled && IsInLocalSubnet(clientIP) {
-		secLog.Info("User authenticated: request from local subnet (subnet bypass enabled)")
+	if authIP, ok := s.isLocalSubnetBypass(s.currentSettings(), c.Request()); ok {
+		secLog.Info("User authenticated: request from local subnet (subnet bypass enabled)",
+			logger.String("auth_ip", authIP.String()))
 		return true
 	}
 
@@ -836,16 +939,12 @@ func isValidUserId(configuredIds, providedId string) bool {
 }
 
 // GenerateAuthCode generates a new authorization code
-func (s *OAuth2Server) GenerateAuthCode() (string, error) {
+func (s *OAuth2Server) GenerateAuthCode() string {
 	secLog := GetLogger()
 	secLog.Debug("Generating new authorization code")
 
 	code := make([]byte, AuthCodeByteLength)
-	_, err := rand.Read(code)
-	if err != nil {
-		secLog.Error("Failed to read random bytes for auth code", logger.Error(err))
-		return "", err
-	}
+	rand.Read(code)
 	authCode := base64.URLEncoding.EncodeToString(code)
 
 	s.mutex.Lock()
@@ -859,7 +958,7 @@ func (s *OAuth2Server) GenerateAuthCode() (string, error) {
 	// Do not log the authCode itself
 	secLog.Info("Generated and stored new authorization code", logger.Time("expires_at", expiresAt))
 	go s.persistTokensIfEnabled() // Persist changes
-	return authCode, nil
+	return authCode
 }
 
 // ExchangeAuthCode exchanges an authorization code for an access token
@@ -899,11 +998,7 @@ func (s *OAuth2Server) ExchangeAuthCode(ctx context.Context, code string) (strin
 
 	// Generate access token
 	tokenBytes := make([]byte, AccessTokenByteLength)
-	_, err := rand.Read(tokenBytes)
-	if err != nil {
-		secLog.Error("Failed to read random bytes for access token", logger.Error(err))
-		return "", err
-	}
+	rand.Read(tokenBytes)
 	accessToken := base64.URLEncoding.EncodeToString(tokenBytes)
 	expiresAt := time.Now().Add(s.currentSettings().Security.BasicAuth.AccessTokenExp)
 
@@ -946,24 +1041,36 @@ func (s *OAuth2Server) ValidateAccessToken(token string) error {
 	return nil // Return nil on success
 }
 
-// IsAuthenticationEnabled checks if any authentication method is enabled
-func (s *OAuth2Server) IsAuthenticationEnabled(ip string) bool {
+// IsAuthenticationEnabled reports whether r must authenticate: an
+// authentication provider is configured and r does not qualify for the
+// allowed-subnet bypass. It takes the request rather than an address so the
+// bypass is always decided on the verified client address (authClientIP), never
+// on a caller-supplied one such as echo.Context.RealIP.
+func (s *OAuth2Server) IsAuthenticationEnabled(r *http.Request) bool {
 	settings := s.currentSettings()
+	return s.isAuthenticationEnabledFor(settings, s.bypassClientIP(settings, r))
+}
+
+// isAuthenticationEnabledFor is IsAuthenticationEnabled for an already
+// resolved client address ("" when there is none), decided on settings.
+func (s *OAuth2Server) isAuthenticationEnabledFor(settings *conf.Settings, ip string) bool {
 	authLog := GetLogger().With(logger.String("ip", ip))
 	authLog.Debug("Checking if authentication is enabled for IP")
-	if s.IsRequestFromAllowedSubnet(ip) {
+	if s.isAllowedSubnetIP(settings, ip) {
 		authLog.Info("Authentication bypassed: request from allowed subnet")
 		return false // Authentication not required for allowed subnets
 	}
 
-	// Check if basic auth is enabled
+	// Both values are read for the log line only. The decision itself goes
+	// through conf.Settings.IsAuthProviderConfigured so that this middleware and the
+	// pprof gate cannot disagree about what "authentication is configured"
+	// means: the gate falls back to its generated token when the predicate is
+	// false, and no token is minted when it is true, so a third authentication
+	// mechanism learned by only one copy would lock a legitimate admin out.
 	basicEnabled := settings.Security.BasicAuth.Enabled
-
-	// Check if any OAuth provider is enabled using the new array
 	enabledOAuthProviders := settings.GetEnabledOAuthProviders()
-	oauthEnabled := len(enabledOAuthProviders) > 0
 
-	if basicEnabled || oauthEnabled {
+	if settings.IsAuthProviderConfigured() {
 		authLog.Info("Authentication required: at least one provider enabled and IP not in allowed subnet",
 			logger.Bool("basic_enabled", basicEnabled),
 			logger.Any("oauth_providers", enabledOAuthProviders),
@@ -974,13 +1081,35 @@ func (s *OAuth2Server) IsAuthenticationEnabled(ip string) bool {
 	return false
 }
 
-// IsRequestFromAllowedSubnet checks if the request IP is within allowed subnets
-func (s *OAuth2Server) IsRequestFromAllowedSubnet(ipStr string) bool {
+// IsRequestFromAllowedSubnet reports whether r qualifies for the allowed-subnet
+// bypass: the bypass is enabled and the verified client address (authClientIP)
+// is loopback or inside a configured subnet. Like IsAuthenticationEnabled it
+// takes the request so no caller can decide the bypass on an unverified address.
+func (s *OAuth2Server) IsRequestFromAllowedSubnet(r *http.Request) bool {
+	settings := s.currentSettings()
+	return s.isAllowedSubnetIP(settings, s.bypassClientIP(settings, r))
+}
+
+// bypassClientIP returns the verified client address as a string for the
+// allowed-subnet check, or "" when the bypass is disabled (the address is then
+// never needed, so it is not resolved) or no address could be verified.
+func (s *OAuth2Server) bypassClientIP(settings *conf.Settings, r *http.Request) string {
+	if !settings.Security.AllowSubnetBypass.Enabled {
+		return ""
+	}
+	if ip := s.authClientIP(settings, r); ip != nil {
+		return ip.String()
+	}
+	return ""
+}
+
+// isAllowedSubnetIP checks whether an already resolved client address is
+// within the allowed subnets of settings.
+func (s *OAuth2Server) isAllowedSubnetIP(settings *conf.Settings, ipStr string) bool {
 	authLog := GetLogger().With(logger.String("ip", ipStr))
 	authLog.Debug("Checking if IP is in allowed subnet")
 
 	// Check if subnet bypass is enabled first
-	settings := s.currentSettings()
 	if !settings.Security.AllowSubnetBypass.Enabled {
 		authLog.Debug("Allowed subnet check: subnet bypass is disabled in settings")
 		return false
@@ -1256,22 +1385,45 @@ func (s *OAuth2Server) cleanupExpired() {
 
 // logThrottledError logs an error message, but only once per specified interval for a given key
 func (s *OAuth2Server) logThrottledError(key, msg string, err error, interval time.Duration) {
-	shouldLog := false
+	if s.shouldLogThrottled(key, interval) {
+		GetLogger().Error(msg, logger.String("key", key), logger.Error(err))
+	}
+}
+
+// logThrottledInfo logs msg at Info level at most once per interval for key.
+func (s *OAuth2Server) logThrottledInfo(key, msg string, interval time.Duration, fields ...logger.Field) {
+	if s.shouldLogThrottled(key, interval) {
+		GetLogger().Info(msg, fields...)
+	}
+}
+
+// noticeThrottled reports whether key was logged within interval, under a read
+// lock only. It does not record anything.
+func (s *OAuth2Server) noticeThrottled(key string, interval time.Duration) bool {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	last, exists := s.throttledMessages[key]
+	return exists && time.Since(last) <= interval
+}
+
+// shouldLogThrottled reports whether a message for key may be logged now, and
+// if so records the time. A read-locked check comes first so a throttled caller
+// on a request path does not take the write lock that also guards tokens.
+func (s *OAuth2Server) shouldLogThrottled(key string, interval time.Duration) bool {
+	if s.noticeThrottled(key, interval) {
+		return false
+	}
 
 	s.mutex.Lock()
+	defer s.mutex.Unlock()
 	if s.throttledMessages == nil {
 		s.throttledMessages = make(map[string]time.Time)
 	}
+	// Re-check under the write lock so concurrent callers log once.
 	lastLogTime, exists := s.throttledMessages[key]
-	if !exists || time.Since(lastLogTime) > interval {
-		// Update timestamp while holding lock to prevent race condition
-		s.throttledMessages[key] = time.Now()
-		shouldLog = true
+	if exists && time.Since(lastLogTime) <= interval {
+		return false
 	}
-	s.mutex.Unlock()
-
-	// Log outside the lock to avoid blocking other operations
-	if shouldLog {
-		GetLogger().Error(msg, logger.String("key", key), logger.Error(err))
-	}
+	s.throttledMessages[key] = time.Now()
+	return true
 }

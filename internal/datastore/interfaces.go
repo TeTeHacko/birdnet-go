@@ -26,6 +26,7 @@ import (
 	"github.com/tphakala/birdnet-go/internal/datastore/dbstats"
 	"github.com/tphakala/birdnet-go/internal/datastore/entities"
 	"github.com/tphakala/birdnet-go/internal/detection"
+	"github.com/tphakala/birdnet-go/internal/diskmanager"
 	"github.com/tphakala/birdnet-go/internal/errors"
 	"github.com/tphakala/birdnet-go/internal/logger"
 	"github.com/tphakala/birdnet-go/internal/observability/metrics"
@@ -34,9 +35,6 @@ import (
 	"gorm.io/gorm/clause"
 	gormlogger "gorm.io/gorm/logger"
 )
-
-// sunriseSetWindowMinutes defines the time window (in minutes) around sunrise and sunset
-const sunriseSetWindowMinutes = 30
 
 // Database dialect constants.
 // NOTE: These must be lowercase to match GORM's dialector.Name() output.
@@ -104,11 +102,13 @@ type Interface interface {
 	// GetTopBirdsData returns daily detection summaries, ordered by detection count descending.
 	// The limit parameter (if > 0) restricts the number of unique species returned.
 	GetTopBirdsData(ctx context.Context, selectedDate string, minConfidenceNormalized float64, limit int) ([]Note, error)
-	// GetBatchHourlyOccurrences retrieves hourly detection counts for multiple species on a given date.
+	// GetBatchHourlyOccurrences retrieves hourly detection counts for multiple species over the
+	// inclusive [startDate, endDate] calendar-date range, summed across every day in the range.
+	// Pass the same date for both to cover a single day.
 	// The species slice holds scientific names; the returned map is keyed by scientific name.
 	// Keying on scientific name keeps the result robust across models and locales.
 	// This batches the per-species hourly lookups into a single query for performance.
-	GetBatchHourlyOccurrences(ctx context.Context, date string, species []string, minConfidence float64) (map[string][24]int, error)
+	GetBatchHourlyOccurrences(ctx context.Context, startDate, endDate string, species []string, minConfidence float64) (map[string][24]int, error)
 	SpeciesDetections(species, date, hour string, duration int, sortAscending bool, limit int, offset int) ([]Note, error)
 	GetLastDetections(numDetections int) ([]Note, error)
 	GetAllDetectedSpecies() ([]Note, error)
@@ -116,6 +116,17 @@ type Interface interface {
 	SearchNotesAdvanced(filters *AdvancedSearchFilters) ([]Note, int64, error)
 	GetNoteClipPath(noteID string) (string, error)
 	GetNoteModelType(noteID string) (string, error)
+	GetNoteKeptSpectrogram(noteID string) (clipName, modelType string, err error)
+	// RecordClipSampleRate sets the stored clip sample rate (Hz) of the detection
+	// when its clip_name still equals clipName, overwriting any existing value. It
+	// is authoritative and used to correct a rate planned before the clip was written.
+	// Only the v2-only store persists it; the legacy store has no such column.
+	RecordClipSampleRate(ctx context.Context, noteID uint, clipName string, rate int) error
+	// FillClipSampleRate stores rate (Hz) only while the detection's clip_sample_rate
+	// is NULL and its clip_name still equals clipName. It reports whether a row
+	// changed, so concurrent or repeated fills converge and never overwrite a value
+	// written by the exporter. Only the v2-only store persists it.
+	FillClipSampleRate(ctx context.Context, noteID uint, clipName string, rate int) (bool, error)
 	DeleteNoteClipPath(noteID string) error
 	GetNoteReview(noteID string) (*NoteReview, error)
 	SaveNoteReview(review *NoteReview) error
@@ -181,29 +192,71 @@ type Interface interface {
 	GetAllImageCaches(providerName string) ([]ImageCache, error)
 	GetLockedNotesClipPaths() ([]string, error)
 	ClearNoteClipPathsByNames(clipNames []string) (int64, error)
+	RetainNoteSpectrogramsByClipNames(clipNames []string) (int64, error)
+	GetNoteClipReferences(afterID uint, limit int) ([]diskmanager.ClipReference, error)
 	CountHourlyDetections(date, hour string, duration int) (int64, error)
-	// Analytics methods.
-	// All analytics methods accept a variadic sourceIDs filter; omit to include all audio sources,
-	// or pass one or more audio_sources.id values to restrict results to those sources.
-	GetSpeciesSummaryData(ctx context.Context, startDate, endDate string, sourceIDs ...uint) ([]SpeciesSummaryData, error)
-	GetHourlyAnalyticsData(ctx context.Context, date string, species string, sourceIDs ...uint) ([]HourlyAnalyticsData, error)
-	GetDailyAnalyticsData(ctx context.Context, startDate, endDate string, species string, sourceIDs ...uint) ([]DailyAnalyticsData, error)
-	GetDetectionTrends(ctx context.Context, period string, limit int, sourceIDs ...uint) ([]DailyAnalyticsData, error)
-	GetHourlyDistribution(ctx context.Context, startDate, endDate string, species string, sourceIDs ...uint) ([]HourlyDistributionData, error)
-	GetNewSpeciesDetections(ctx context.Context, startDate, endDate string, limit, offset int, sourceIDs ...uint) ([]NewSpeciesData, error)
-	GetSpeciesFirstDetectionInPeriod(ctx context.Context, startDate, endDate string, limit, offset int, sourceIDs ...uint) ([]NewSpeciesData, error)
+	// Analytics methods
+	GetSpeciesSummaryData(ctx context.Context, startDate, endDate string) ([]SpeciesSummaryData, error)
+	GetHourlyAnalyticsData(ctx context.Context, date string, species string) ([]HourlyAnalyticsData, error)
+	GetDailyAnalyticsData(ctx context.Context, startDate, endDate string, species string) ([]DailyAnalyticsData, error)
+	GetDetectionTrends(ctx context.Context, period string, limit int) ([]DailyAnalyticsData, error)
+	GetHourlyDistribution(ctx context.Context, startDate, endDate string, species string) ([]HourlyDistributionData, error)
+	GetNewSpeciesDetections(ctx context.Context, startDate, endDate string, limit, offset int) ([]NewSpeciesData, error)
+	GetSpeciesFirstDetectionInPeriod(ctx context.Context, startDate, endDate string, limit, offset int) ([]NewSpeciesData, error)
 	// GetSpeciesDiversityData returns daily unique species counts within the given date range.
-	GetSpeciesDiversityData(ctx context.Context, startDate, endDate string, sourceIDs ...uint) ([]DailyAnalyticsData, error)
-	// ListAnalyticsSourcesData returns the list of historical audio sources with detection counts.
-	// Used by analytics filter pickers. Returns sources that have at least one detection,
-	// ordered by detection count descending. Legacy datastores without an audio_sources table
-	// return an empty slice.
-	ListAnalyticsSourcesData(ctx context.Context) ([]AnalyticsSourceInfo, error)
+	GetSpeciesDiversityData(ctx context.Context, startDate, endDate string) ([]DailyAnalyticsData, error)
+	// GetActivityHeatmap returns detection counts bucketed by (station-local date, intra-day slot)
+	// over the inclusive date range, as a columnar sparse payload. species is an optional filter.
+	GetActivityHeatmap(ctx context.Context, startDate, endDate, species string) (ActivityHeatmapData, error)
+	// GetHourlyDistributionBySpecies returns the normalized hour-of-day activity distribution for
+	// species over the inclusive date range (false positives excluded), ordered by descending
+	// detection volume. species is an optional scientific-name filter: when non-empty the result is
+	// restricted to those species and `limit` does NOT apply (every selected species is returned, so
+	// the caller must bound the selection itself); when nil/empty it covers the top `limit` species by
+	// volume. Powers the who-sings-when ridgeline.
+	GetHourlyDistributionBySpecies(ctx context.Context, startDate, endDate string, species []string, limit int) ([]SpeciesHourlyDistribution, error)
+	// GetDailyActivityOnset returns, per calendar day in the inclusive date range, the dawn-chorus
+	// onset relative to civil dawn (false positives excluded). species is an optional scientific-name
+	// filter. Powers the dawn-chorus onset tracker.
+	GetDailyActivityOnset(ctx context.Context, startDate, endDate, species string) ([]DailyActivityOnset, error)
+	// GetConfidenceHistogram returns the per-species confidence-score distribution over the date range,
+	// powering the confidence distribution chart. With no species filter it covers the top `limit`
+	// species by detection volume; with a species filter it covers just that species.
+	GetConfidenceHistogram(ctx context.Context, startDate, endDate, species string, bins, limit int) ([]SpeciesConfidenceHistogram, error)
+	// GetSpeciesAccumulation returns, per calendar day in the inclusive date range, the cumulative
+	// count of distinct species first detected within that range (false positives excluded). Powers
+	// the species accumulation curve in the Biodiversity tab; "first seen" is bounded to the selected
+	// window, not lifetime.
+	GetSpeciesAccumulation(ctx context.Context, startDate, endDate string) ([]SpeciesAccumulationPoint, error)
+	// GetYearOverYear returns the current year-to-date cumulative detection counts versus the same
+	// calendar span one year earlier (false positives excluded): one point per current-year calendar
+	// day from Jan 1 through date (station-local YYYY-MM-DD; empty -> today in the station timezone).
+	// Counts are aligned by calendar (month, day) with leap-day Feb 29 handled, and the delta is current
+	// minus previous. Powers the year-over-year tracker in the Trends tab.
+	GetYearOverYear(ctx context.Context, date string) (YearOverYearResult, error)
+	// GetSpeciesPhenology returns the arrival/departure residency span (first and last
+	// false-positive-excluded detection, plus the in-range detection count) for the top `limit` species
+	// by volume over the date range. Powers the arrival/departure phenology chart in the Biodiversity
+	// tab; spans are bounded to the selected window, not lifetime.
+	GetSpeciesPhenology(ctx context.Context, startDate, endDate string, limit int) ([]SpeciesPhenologyPoint, error)
+	// GetAcousticSuccession returns the raw hour-of-day detection counts (false positives excluded)
+	// for species over the inclusive date range, ordered by descending detection volume. species is an
+	// optional scientific-name filter: when non-empty the result is restricted to those species and
+	// `limit` does NOT apply (every selected species is returned, so the caller must bound the
+	// selection itself); when nil/empty it covers the top `limit` species by volume.
+	// Powers the acoustic succession streamgraph in the Activity Patterns tab.
+	GetAcousticSuccession(ctx context.Context, startDate, endDate string, species []string, limit int) ([]SpeciesHourlyCounts, error)
+	// GetAudioSources returns each audio source that has at least one (false-positive-excluded)
+	// detection in the date range, with its in-range detection count, ordered by count descending. When
+	// both dates are empty it covers all history. Powers the analytics source/mic filter's option list;
+	// the metric is v2only (the legacy schema does not persist a detection's source), so the legacy
+	// datastore returns an empty result.
+	GetAudioSources(ctx context.Context, startDate, endDate string) ([]AudioSourceSummary, error)
 	// Search functionality
 	SearchDetections(filters *SearchFilters) ([]DetectionRecord, int, error)
 	// Dynamic Threshold methods
 	SaveDynamicThreshold(threshold *DynamicThreshold) error
-	GetDynamicThreshold(speciesName, modelName string) (*DynamicThreshold, error)
+	GetDynamicThreshold(speciesName string) (*DynamicThreshold, error)
 	GetAllDynamicThresholds(limit ...int) ([]DynamicThreshold, error) // Optional limit parameter
 	DeleteDynamicThreshold(speciesName string) error
 	DeleteExpiredDynamicThresholds(before time.Time) (int64, error) // Returns count deleted
@@ -218,16 +271,10 @@ type Interface interface {
 	DeleteThresholdEvents(speciesName string) error
 	DeleteAllThresholdEvents() (int64, error)
 	// Notification History methods
-	// TODO(BG-17): Add context.Context as first parameter for cancellation/timeout support:
-	//   SaveNotificationHistory(ctx context.Context, history *NotificationHistory) error
-	//   GetNotificationHistory(ctx context.Context, scientificName string, notificationType string) (*NotificationHistory, error)
-	//   GetActiveNotificationHistory(ctx context.Context, after time.Time) ([]NotificationHistory, error)
-	//   DeleteExpiredNotificationHistory(ctx context.Context, before time.Time) (int64, error)
-	// This requires updating all implementations and call sites (breaking change)
-	SaveNotificationHistory(history *NotificationHistory) error
-	GetNotificationHistory(scientificName string, notificationType string) (*NotificationHistory, error)
-	GetActiveNotificationHistory(after time.Time) ([]NotificationHistory, error)
-	DeleteExpiredNotificationHistory(before time.Time) (int64, error) // Returns count deleted
+	SaveNotificationHistory(ctx context.Context, history *NotificationHistory) error
+	GetNotificationHistory(ctx context.Context, scientificName string, notificationType string) (*NotificationHistory, error)
+	GetActiveNotificationHistory(ctx context.Context, after time.Time) ([]NotificationHistory, error)
+	DeleteExpiredNotificationHistory(ctx context.Context, before time.Time) (int64, error) // Returns count deleted
 	// Database stats method for runtime statistics
 	GetDatabaseStats(ctx context.Context) (*DatabaseStats, error)
 	// PingWithLatency executes a trivial query (SELECT 1) and returns the round-trip time.
@@ -236,12 +283,6 @@ type Interface interface {
 	CountDetectionsSince(ctx context.Context, since time.Time) (int, error)
 	// SchemaVersion returns the datastore schema version ("legacy" or "v2").
 	SchemaVersion() string
-	// UpdateNameMaps rebuilds species name lookup maps from updated BirdNET labels.
-	// Called after locale or model changes. No-op for legacy datastores.
-	UpdateNameMaps(labels []string)
-	// SetNameResolver installs the authoritative localized species-name resolver
-	// shared with the classifier orchestrator. No-op for legacy datastores.
-	SetNameResolver(resolver SpeciesNameResolver)
 
 	// Application event log (v2 only; legacy stores return nil/empty)
 	SaveAppEvent(ctx context.Context, category, eventType, message string, metadata map[string]any) error
@@ -270,12 +311,11 @@ type DatabaseStats struct {
 
 // DataStore implements StoreInterface using a GORM database.
 type DataStore struct {
-	DB            *gorm.DB          // GORM database instance
-	SunCalc       *suncalc.SunCalc  // Instance for calculating sun times (Assumed initialized)
-	sunTimesCache sync.Map          // Thread-safe map for caching sun times by date
-	metrics       *Metrics          // Metrics instance for tracking operations
-	metricsMu     sync.RWMutex      // Mutex to protect metrics field access
-	dbCounters    *dbstats.Counters // Atomic counters for query latency tracking
+	DB         *gorm.DB          // GORM database instance
+	SunCalc    *suncalc.SunCalc  // Instance for calculating sun times (Assumed initialized)
+	metrics    *Metrics          // Metrics instance for tracking operations
+	metricsMu  sync.RWMutex      // Mutex to protect metrics field access
+	dbCounters *dbstats.Counters // Atomic counters for query latency tracking
 
 	// Monitoring lifecycle management
 	monitoringCtx    context.Context    // Context for monitoring goroutines
@@ -311,31 +351,26 @@ func (ds *DataStore) CountDetectionsSince(ctx context.Context, since time.Time) 
 
 // NewDataStore creates a new DataStore instance based on the provided configuration context.
 func New(settings *conf.Settings) Interface {
-	// Create a SunCalc instance to be shared by all datastore implementations
-	sunCalc := suncalc.NewSunCalc(settings.BirdNET.Latitude, settings.BirdNET.Longitude)
+	// Create a SunCalc instance to be shared by all datastore implementations. It follows the
+	// live station location so a location change in the settings takes effect without a restart.
+	sunCalc := suncalc.NewSunCalcWithSource(conf.LiveLocation(settings))
 
 	switch {
 	case settings.Output.SQLite.Enabled:
 		return &SQLiteStore{
 			Settings: settings,
-			DataStore: DataStore{
-				SunCalc: sunCalc,
-			},
+			SunCalc:  sunCalc,
 		}
 	case settings.Output.MySQL.Enabled:
 		return &MySQLStore{
 			Settings: settings,
-			DataStore: DataStore{
-				SunCalc: sunCalc,
-			},
+			SunCalc:  sunCalc,
 		}
 	default:
-		// No database explicitly enabled — default to SQLite
+		// No database explicitly enabled, default to SQLite
 		return &SQLiteStore{
 			Settings: settings,
-			DataStore: DataStore{
-				SunCalc: sunCalc,
-			},
+			SunCalc:  sunCalc,
 		}
 	}
 }
@@ -358,9 +393,6 @@ func (ds *DataStore) GetDB() *gorm.DB {
 func (ds *DataStore) GetDBCounters() *dbstats.Counters {
 	return ds.dbCounters
 }
-
-// UpdateNameMaps is a no-op for legacy DataStore (common names stored directly in DB).
-func (ds *DataStore) UpdateNameMaps(_ []string) {}
 
 // SpeciesNameResolver resolves a scientific name to a localized common name,
 // returning "" when unknown. Satisfied by *openfauna.Resolver. The locale argument
@@ -386,9 +418,6 @@ func IsNilResolver(r SpeciesNameResolver) bool {
 	}
 	return false
 }
-
-// SetNameResolver is a no-op for legacy DataStore (common names stored in DB).
-func (ds *DataStore) SetNameResolver(_ SpeciesNameResolver) {}
 
 // SetSunCalcMetrics sets the metrics instance for the SunCalc service
 func (ds *DataStore) SetSunCalcMetrics(suncalcMetrics any) {
@@ -481,7 +510,7 @@ func (ds *DataStore) Save(note *Note, results []Results) error {
 			"total_duration_ms", time.Since(txStart).Milliseconds())
 	}
 
-	// Success — record metrics.
+	// Success: record metrics.
 	duration := time.Since(txStart)
 	txLogger.Info("Transaction completed",
 		logger.String("tx_id", txID),
@@ -613,6 +642,26 @@ func (ds *DataStore) GetNoteModelType(_ string) (string, error) {
 	return "bird", nil
 }
 
+// GetNoteKeptSpectrogram returns the clip name of a spectrogram kept after retention
+// removed the detection's audio, and the model type. The legacy schema does not
+// persist the link, so the clip name is always empty and the model type is "bird".
+func (ds *DataStore) GetNoteKeptSpectrogram(_ string) (clipName, modelType string, err error) {
+	return "", "bird", nil
+}
+
+// RecordClipSampleRate is a no-op on the legacy store: its notes table has no
+// clip_sample_rate column (Note.ClipSampleRate is gorm:"-"). This stub exists only
+// because the legacy store still implements Interface and goes away with it.
+func (ds *DataStore) RecordClipSampleRate(_ context.Context, _ uint, _ string, _ int) error {
+	return nil
+}
+
+// FillClipSampleRate is a no-op on the legacy store, see RecordClipSampleRate. It
+// reports that no row changed. Removed together with the legacy store.
+func (ds *DataStore) FillClipSampleRate(_ context.Context, _ uint, _ string, _ int) (bool, error) {
+	return false, nil
+}
+
 // DeleteNoteClipPath deletes the field representing the path to the audio clip associated with a note.
 func (ds *DataStore) DeleteNoteClipPath(noteID string) error {
 	// Validate the input parameter
@@ -663,6 +712,7 @@ func (ds *DataStore) GetTopBirdsData(ctx context.Context, selectedDate string, m
 		Confidence     float64
 		Date           string
 		Time           string
+		FirstTime      string
 	}
 
 	var results []SpeciesCount
@@ -677,7 +727,7 @@ func (ds *DataStore) GetTopBirdsData(ctx context.Context, selectedDate string, m
 	// Exclude detections marked as false_positive
 	query := ds.DB.WithContext(ctx).Table("notes").
 		Joins("LEFT JOIN note_reviews ON notes.id = note_reviews.note_id").
-		Select("notes.common_name, notes.scientific_name, notes.species_code, COUNT(*) as count, MAX(notes.confidence) as confidence, notes.date, MAX(notes.time) as time").
+		Select("notes.common_name, notes.scientific_name, notes.species_code, COUNT(*) as count, MAX(notes.confidence) as confidence, notes.date, MAX(notes.time) as time, MIN(notes.time) as first_time").
 		Where("notes.date = ? AND notes.confidence >= ?", selectedDate, minConfidenceNormalized).
 		Where("(note_reviews.verified IS NULL OR note_reviews.verified != ?)", string(entities.VerificationFalsePositive)).
 		Group("notes.common_name, notes.scientific_name, notes.species_code, notes.date").
@@ -705,6 +755,7 @@ func (ds *DataStore) GetTopBirdsData(ctx context.Context, selectedDate string, m
 			Confidence:     result.Confidence,
 			Date:           result.Date,
 			Time:           result.Time,
+			FirstTime:      result.FirstTime,
 		}
 
 		// Add this note to our results
@@ -817,11 +868,13 @@ func (ds *DataStore) GetDateFormat(columnName string) string {
 	}
 }
 
-// GetBatchHourlyOccurrences retrieves hourly detection counts for multiple species on a given date.
+// GetBatchHourlyOccurrences retrieves hourly detection counts for multiple species over the
+// inclusive [startDate, endDate] calendar-date range, summed across every day in the range (pass
+// the same date for both to cover a single day).
 // The species parameter holds scientific names, and the returned map is keyed by
 // scientific name. Keying on scientific name (rather than the localized common
 // name) keeps the daily summary robust across models and locales.
-func (ds *DataStore) GetBatchHourlyOccurrences(ctx context.Context, date string, species []string, minConfidence float64) (map[string][24]int, error) {
+func (ds *DataStore) GetBatchHourlyOccurrences(ctx context.Context, startDate, endDate string, species []string, minConfidence float64) (map[string][24]int, error) {
 	if len(species) == 0 {
 		return make(map[string][24]int), nil
 	}
@@ -838,7 +891,8 @@ func (ds *DataStore) GetBatchHourlyOccurrences(ctx context.Context, date string,
 	err := ds.DB.WithContext(ctx).Model(&Note{}).
 		Joins("LEFT JOIN note_reviews ON notes.id = note_reviews.note_id").
 		Select(fmt.Sprintf("notes.scientific_name, %s as hour, COUNT(*) as count", hourFormat)).
-		Where("notes.scientific_name IN ? AND notes.date = ? AND notes.confidence >= ?", species, date, minConfidence).
+		Where("notes.scientific_name IN ? AND notes.date >= ? AND notes.date <= ? AND notes.confidence >= ?",
+			species, startDate, endDate, minConfidence).
 		Where("(note_reviews.verified IS NULL OR note_reviews.verified != ?)", string(entities.VerificationFalsePositive)).
 		Group(fmt.Sprintf("notes.scientific_name, %s", hourFormat)).
 		Order("notes.scientific_name, hour").
@@ -849,7 +903,8 @@ func (ds *DataStore) GetBatchHourlyOccurrences(ctx context.Context, date string,
 			Component("datastore").
 			Category(errors.CategoryDatabase).
 			Context("operation", "get_batch_hourly_occurrences").
-			Context("date", date).
+			Context("start_date", startDate).
+			Context("end_date", endDate).
 			Context("species_count", len(species)).
 			Build()
 	}
@@ -1980,6 +2035,14 @@ func (ds *DataStore) GetLockedNotesClipPaths() ([]string, error) {
 	return clipPaths, nil
 }
 
+// RetainNoteSpectrogramsByClipNames is called when retention deleted the audio of the named
+// clips but a spectrogram render was kept. The legacy notes table has no column for the
+// spectrogram link, so this clears clip_name exactly like ClearNoteClipPathsByNames and the
+// kept render stays unlinked. Only the v2 store persists the link.
+func (ds *DataStore) RetainNoteSpectrogramsByClipNames(clipNames []string) (int64, error) {
+	return ds.ClearNoteClipPathsByNames(clipNames)
+}
+
 // ClearNoteClipPathsByNames clears the clip_name field for notes matching the given filenames.
 // This is used by the disk manager to remove stale references after audio files are deleted.
 // Updates are batched to stay within SQLite's parameter limit (999).
@@ -2019,6 +2082,54 @@ func (ds *DataStore) ClearNoteClipPathsByNames(clipNames []string) (int64, error
 	return totalAffected, nil
 }
 
+// GetNoteClipReferences returns up to limit notes with a non-empty clip_name and
+// ID greater than afterID, ordered by ID ascending (keyset pagination, like
+// GetReviewsBatch). It is used by the clip reconcile crawler to walk clip
+// references in bounded chunks. CompletionTime is Note.EndTime, the capture
+// completion time used for the crawler's recency guard.
+func (ds *DataStore) GetNoteClipReferences(afterID uint, limit int) ([]diskmanager.ClipReference, error) {
+	if limit <= 0 {
+		return nil, validationError("limit must be positive", "limit", limit)
+	}
+
+	// EndTime is scanned as *time.Time: the end_time column is nullable, and a NULL
+	// (legacy/incomplete row) must scan as nil rather than erroring out and aborting
+	// the whole reconcile pass. A nil end time yields a zero CompletionTime, which
+	// the crawler treats as unknown-age and skips.
+	var rows []struct {
+		ID       uint
+		ClipName string
+		EndTime  *time.Time
+	}
+	err := ds.DB.Model(&Note{}).
+		Select("id", "clip_name", "end_time").
+		Where("id > ? AND clip_name <> ''", afterID).
+		Order("id ASC").
+		Limit(limit).
+		Find(&rows).Error
+	if err != nil {
+		return nil, errors.New(err).
+			Component("datastore").
+			Category(errors.CategoryDatabase).
+			Context("operation", "get_note_clip_references").
+			Build()
+	}
+
+	refs := make([]diskmanager.ClipReference, len(rows))
+	for i := range rows {
+		var completion time.Time
+		if rows[i].EndTime != nil {
+			completion = *rows[i].EndTime
+		}
+		refs[i] = diskmanager.ClipReference{
+			ID:             rows[i].ID,
+			ClipName:       rows[i].ClipName,
+			CompletionTime: completion,
+		}
+	}
+	return refs, nil
+}
+
 // CountHourlyDetections counts the number of detections for a specific date and hour.
 func (ds *DataStore) CountHourlyDetections(date, hour string, duration int) (int64, error) {
 	var count int64
@@ -2050,10 +2161,9 @@ func (ds *DataStore) CountHourlyDetections(date, hour string, duration int) (int
 // SearchFilters defines parameters for filtering detection records
 type SearchFilters struct {
 	Species string
-	// SpeciesScientific holds exact scientific names the client already resolved
-	// (e.g. in the browser from a per-visitor name dictionary). They are resolved
-	// to label IDs and OR-ed into the species match, so an ambiguous localized
-	// common name can match multiple species without server-locale resolution.
+	// SpeciesScientific holds exact scientific names resolved before the datastore
+	// query, either by the client dictionary or the API's active-locale common-name
+	// substring resolver. They are OR-ed into the free-text species match.
 	SpeciesScientific []string
 	DateStart         string
 	DateEnd           string
@@ -2133,8 +2243,7 @@ func (f *SearchFilters) sanitise() error {
 //
 // filters.Species is a free-text substring match on the scientific or common name.
 // filters.SpeciesScientific is an exact match on any of the listed scientific names,
-// used when the client already resolved the term (e.g. in the browser from the
-// per-visitor name dictionary, which sends scientific names with an empty Species).
+// used when either the API or client dictionary resolved common-name alternatives.
 // When both are present they are OR-ed so the result is their union, mirroring the
 // v2 search path. Without the SpeciesScientific branch a dictionary-resolved search
 // (empty Species) would match every species on the legacy datastore.
@@ -2316,95 +2425,42 @@ func buildTimeOfDayConditions(filters *SearchFilters, sc *suncalc.SunCalc, db *g
 	// Pre-allocate conditions slice based on date range
 	dayCount := int(endDate.Sub(startDate).Hours()/24) + 1
 	conditions := make([]*gorm.DB, 0, dayCount)
-	window := time.Duration(sunriseSetWindowMinutes) * time.Minute // Define window for sunrise/sunset
+	window := suncalc.SunEventWindow // sunrise/sunset transition half-width (single source of truth)
 
-	// Optimization: Group dates by week and calculate sun times once per week
-	// Store weekly sun calculations
-	type WeeklySunTimes struct {
-		year      int
-		week      int
-		sunTimes  suncalc.SunEventTimes
-		dateRange []time.Time
-	}
-
-	// Map to store our weekly calculations
-	weeklySunCache := make(map[string]*WeeklySunTimes)
-
-	// First pass: group dates by week
+	// Build one condition per date using that date's OWN sun events, so the SQL
+	// filter matches the per-row classifier (suncalc.ClassifyTimeOfDay), which also
+	// classifies each detection against its own date's sun events. GetSunEventTimes
+	// caches internally, so computing per date rather than once per representative
+	// week day adds no meaningful cost while removing the day-to-day drift that let
+	// the filter diverge from the per-row label near the solstices (where sunrise
+	// and sunset shift enough within a week to flip a window across midnight).
 	for d := startDate; !d.After(endDate); d = d.AddDate(0, 0, 1) {
-		year, week := d.ISOWeek()
-		key := fmt.Sprintf("%d-%d", year, week)
-
-		if _, exists := weeklySunCache[key]; !exists {
-			// Create a new entry for this week
-			weeklySunCache[key] = &WeeklySunTimes{
-				year:      year,
-				week:      week,
-				dateRange: []time.Time{},
-			}
-		}
-
-		// Add this date to the week's date range
-		weeklySunCache[key].dateRange = append(weeklySunCache[key].dateRange, d)
-	}
-
-	// Second pass: calculate sun times for one representative day per week
-	for _, weekData := range weeklySunCache {
-		// Find the middle day of the week as representative
-		representativeDay := weekData.dateRange[len(weekData.dateRange)/2]
-		sunTimes, err := sc.GetSunEventTimes(representativeDay)
+		dateStr := d.Format(time.DateOnly)
+		sunTimes, err := sc.GetSunEventTimes(d)
 		if err != nil {
-			GetLogger().Warn("Could not get sun times for week, skipping for TimeOfDay filter",
-				logger.Int("year", weekData.year),
-				logger.Int("week", weekData.week),
+			GetLogger().Warn("Could not get sun times for date, skipping for TimeOfDay filter",
+				logger.String("date", dateStr),
 				logger.Error(err))
 			continue
 		}
-		weekData.sunTimes = sunTimes
-	}
 
-	// Third pass: build conditions for each date using the weekly sun times
-	for d := startDate; !d.After(endDate); d = d.AddDate(0, 0, 1) {
-		dateStr := d.Format(time.DateOnly)
-		year, week := d.ISOWeek()
-		key := fmt.Sprintf("%d-%d", year, week)
-
-		// Get the sun times for this week
-		weekData, exists := weeklySunCache[key]
-		if !exists || weekData == nil {
-			GetLogger().Warn("No sun times found for week, skipping date for TimeOfDay filter",
-				logger.Int("year", year),
-				logger.Int("week", week),
-				logger.String("date", dateStr))
-			continue
-		}
-
-		sunTimes := weekData.sunTimes
-
-		// Calculate all time boundaries once before the switch statement
-		// This reduces code duplication and makes maintenance easier
-		sunriseStart := sunTimes.Sunrise.Add(-window).Format(time.TimeOnly)
-		sunriseEnd := sunTimes.Sunrise.Add(window).Format(time.TimeOnly)
-		sunsetStart := sunTimes.Sunset.Add(-window).Format(time.TimeOnly)
-		sunsetEnd := sunTimes.Sunset.Add(window).Format(time.TimeOnly)
-
-		var condition *gorm.DB
-		switch filters.TimeOfDay {
-		case TimeOfDayDay:
-			// Time should be after sunrise window but before sunset window
-			condition = db.Where("notes.date = ? AND notes.time > ? AND notes.time < ?", dateStr, sunriseEnd, sunsetStart)
-		case TimeOfDayNight:
-			// Time should be before sunrise window or after sunset window
-			condition = db.Where("notes.date = ? AND (notes.time < ? OR notes.time > ?)", dateStr, sunriseStart, sunsetEnd)
-		case TimeOfDaySunrise:
-			condition = db.Where("notes.date = ? AND notes.time >= ? AND notes.time <= ?", dateStr, sunriseStart, sunriseEnd)
-		case TimeOfDaySunset:
-			condition = db.Where("notes.date = ? AND notes.time >= ? AND notes.time <= ?", dateStr, sunsetStart, sunsetEnd)
-		default:
+		// buildTimeOfDayClause handles windows and daytime spans that cross midnight
+		// (for example a high-latitude summer sunset whose local wall-clock falls after
+		// 00:00), which a naive start<=end range test silently drops or inverts.
+		query, args, ok := buildTimeOfDayClause(filters.TimeOfDay, &timeOfDayBounds{
+			date:         dateStr,
+			sunrise:      sunTimes.Sunrise.Format(time.TimeOnly),
+			sunset:       sunTimes.Sunset.Format(time.TimeOnly),
+			sunriseStart: sunTimes.Sunrise.Add(-window).Format(time.TimeOnly),
+			sunriseEnd:   sunTimes.Sunrise.Add(window).Format(time.TimeOnly),
+			sunsetStart:  sunTimes.Sunset.Add(-window).Format(time.TimeOnly),
+			sunsetEnd:    sunTimes.Sunset.Add(window).Format(time.TimeOnly),
+		})
+		if !ok {
 			// Should not happen due to sanitise, but skip if it does
 			continue
 		}
-		conditions = append(conditions, condition)
+		conditions = append(conditions, db.Where(query, args...))
 	}
 
 	// Log summary of how many conditions were created
@@ -2413,6 +2469,92 @@ func buildTimeOfDayConditions(filters *SearchFilters, sc *suncalc.SunCalc, db *g
 		logger.Int("day_range", int(endDate.Sub(startDate).Hours()/24)+1))
 
 	return conditions, nil
+}
+
+// timeOfDayBounds carries the "HH:MM:SS" clock strings buildTimeOfDayClause needs
+// for one date's sun events: the date, the sunrise and sunset event times, and
+// their +/- SunEventWindow boundaries. Grouping them into a struct avoids a long
+// positional parameter list where a same-typed argument could be transposed
+// unnoticed.
+type timeOfDayBounds struct {
+	date         string
+	sunrise      string
+	sunset       string
+	sunriseStart string
+	sunriseEnd   string
+	sunsetStart  string
+	sunsetEnd    string
+}
+
+// buildTimeOfDayClause builds the parameterized WHERE fragment selecting rows on
+// the given date whose notes.time falls in the requested time-of-day category.
+// Boundary values are "HH:MM:SS" strings, which are lexicographically ordered to
+// match the stored notes.time format. A window whose start is later than its end
+// has crossed midnight (for example a high-latitude summer sunset window
+// [23:20, 00:20]); in that case the between/outside test switches to its
+// wraparound form so detections in the after-midnight tail are still matched,
+// consistent with the per-row classifier suncalc.ClassifyTimeOfDay. It returns
+// ok=false for an unknown category.
+func buildTimeOfDayClause(timeOfDay string, b *timeOfDayBounds) (query string, args []any, ok bool) {
+	sunriseWin, sunriseArgs := betweenTimeFragment(b.sunriseStart, b.sunriseEnd)
+	sunsetWin, sunsetArgs := betweenTimeFragment(b.sunsetStart, b.sunsetEnd)
+	dayArc, dayArgs := forwardArcFragment(b.sunrise, b.sunset)
+	switch timeOfDay {
+	case TimeOfDaySunrise:
+		return "notes.date = ? AND " + sunriseWin, append([]any{b.date}, sunriseArgs...), true
+	case TimeOfDaySunset:
+		// Exclude the sunrise window: the per-row classifier gives sunrise priority,
+		// so a timestamp inside both windows (possible when the two overlap at extreme
+		// high latitude) is sunrise, not sunset. Without this the sunset filter would
+		// over-match those rows.
+		clauseArgs := append([]any{b.date}, sunsetArgs...)
+		clauseArgs = append(clauseArgs, sunriseArgs...)
+		return "notes.date = ? AND " + sunsetWin + " AND NOT " + sunriseWin, clauseArgs, true
+	case TimeOfDayDay:
+		// On the daytime arc [sunrise, sunset) but outside both transition windows.
+		// The arc wraps past midnight when the local sunset falls after 00:00 (high
+		// latitude summer, e.g. Iceland/Norway near the solstice); the window
+		// exclusions keep this consistent with the classifier, which checks the
+		// sunrise and sunset windows before the daytime span.
+		clauseArgs := append([]any{b.date}, dayArgs...)
+		clauseArgs = append(clauseArgs, sunriseArgs...)
+		clauseArgs = append(clauseArgs, sunsetArgs...)
+		return "notes.date = ? AND " + dayArc + " AND NOT " + sunriseWin + " AND NOT " + sunsetWin, clauseArgs, true
+	case TimeOfDayNight:
+		// The complement: outside both transition windows and off the daytime arc.
+		// This matches the classifier's else-branch by construction in every regime
+		// (normal, a sub-hour day or night with overlapping windows, and days whose
+		// local sunset falls after midnight).
+		clauseArgs := append([]any{b.date}, sunriseArgs...)
+		clauseArgs = append(clauseArgs, sunsetArgs...)
+		clauseArgs = append(clauseArgs, dayArgs...)
+		return "notes.date = ? AND NOT " + sunriseWin + " AND NOT " + sunsetWin + " AND NOT " + dayArc, clauseArgs, true
+	default:
+		return "", nil, false
+	}
+}
+
+// betweenTimeFragment builds the notes.time predicate for an inclusive [start,
+// end] clock window, using the wraparound form (an OR rather than an AND) when the
+// window crosses midnight, i.e. start is lexicographically later than end (for
+// example a high-latitude sunset window [23:20, 00:20]).
+func betweenTimeFragment(start, end string) (frag string, args []any) {
+	if start <= end {
+		return "(notes.time >= ? AND notes.time <= ?)", []any{start, end}
+	}
+	return "(notes.time >= ? OR notes.time <= ?)", []any{start, end}
+}
+
+// forwardArcFragment builds the notes.time predicate for the forward arc from
+// start (inclusive) to end (exclusive) on the 24-hour clock: the plain interval
+// [start, end) when start <= end, or the wraparound form when start > end (a
+// daytime span whose local sunset falls after midnight). Mirrors suncalc's
+// inForwardArc so the SQL filter and the per-row classifier agree.
+func forwardArcFragment(start, end string) (frag string, args []any) {
+	if start <= end {
+		return "(notes.time >= ? AND notes.time < ?)", []any{start, end}
+	}
+	return "(notes.time >= ? OR notes.time < ?)", []any{start, end}
 }
 
 // SearchDetections retrieves detections based on the given filters
@@ -2463,20 +2605,23 @@ func (ds *DataStore) SearchDetections(filters *SearchFilters) ([]DetectionRecord
 	}
 	// --- End Count Query ---
 
-	// Apply sorting to the main query
+	// Apply sorting to the main query. Every sort appends notes.id as a final
+	// tiebreaker: the primary keys (common_name, confidence, even date+time) are
+	// not unique, and without a total order LIMIT/OFFSET pagination can silently
+	// skip and duplicate rows across pages.
 	switch filters.SortBy {
 	case "date_asc":
-		query = query.Order("notes.date ASC, notes.time ASC")
+		query = query.Order("notes.date ASC, notes.time ASC, notes.id DESC")
 	case "species_asc":
-		query = query.Order("notes.common_name ASC")
+		query = query.Order("notes.common_name ASC, notes.id DESC")
 	case "species_desc":
-		query = query.Order("notes.common_name DESC")
+		query = query.Order("notes.common_name DESC, notes.id DESC")
 	case "confidence_asc":
-		query = query.Order("notes.confidence ASC")
+		query = query.Order("notes.confidence ASC, notes.id DESC")
 	case "confidence_desc":
-		query = query.Order("notes.confidence DESC")
+		query = query.Order("notes.confidence DESC, notes.id DESC")
 	default:
-		query = query.Order("notes.date DESC, notes.time DESC")
+		query = query.Order("notes.date DESC, notes.time DESC, notes.id DESC")
 	}
 
 	// Apply pagination (PerPage and Page are already sanitised)
@@ -2544,34 +2689,12 @@ func (ds *DataStore) SearchDetections(filters *SearchFilters) ([]DetectionRecord
 		// Calculate time of day
 		timeOfDay := TimeOfDayUnknown
 		if ds.SunCalc != nil {
-			// Get date string for cache key
-			dateStr := scanned.Date
-
-			// Get or calculate sun times for this date
-			sunEvents, err := ds.getSunEventsForDate(dateStr, timestamp)
+			// Get or calculate sun times for this date, then delegate the
+			// sunrise/sunset/day/night classification to the shared,
+			// midnight-safe helper so every call site stays in lockstep.
+			sunEvents, err := ds.getSunEventsForDate(scanned.Date, timestamp)
 			if err == nil {
-				// Convert all times to the same format for comparison
-				detTime := timestamp.Format(time.TimeOnly)
-				sunriseTime := sunEvents.Sunrise.Format(time.TimeOnly)
-				sunsetTime := sunEvents.Sunset.Format(time.TimeOnly)
-
-				// Define sunrise/sunset window (using constant)
-				window := time.Duration(sunriseSetWindowMinutes) * time.Minute
-				sunriseStart := sunEvents.Sunrise.Add(-window).Format(time.TimeOnly)
-				sunriseEnd := sunEvents.Sunrise.Add(window).Format(time.TimeOnly)
-				sunsetStart := sunEvents.Sunset.Add(-window).Format(time.TimeOnly)
-				sunsetEnd := sunEvents.Sunset.Add(window).Format(time.TimeOnly)
-
-				switch {
-				case detTime >= sunriseStart && detTime <= sunriseEnd:
-					timeOfDay = TimeOfDaySunrise
-				case detTime >= sunsetStart && detTime <= sunsetEnd:
-					timeOfDay = TimeOfDaySunset
-				case detTime >= sunriseTime && detTime < sunsetTime:
-					timeOfDay = TimeOfDayDay
-				default:
-					timeOfDay = TimeOfDayNight
-				}
+				timeOfDay = suncalc.ClassifyTimeOfDay(timestamp, &sunEvents)
 			}
 		}
 
@@ -2600,14 +2723,11 @@ func (ds *DataStore) SearchDetections(filters *SearchFilters) ([]DetectionRecord
 	return results, int(total), nil
 }
 
-// getSunEventsForDate retrieves sun times for a given date
+// getSunEventsForDate retrieves sun times for the date of timestamp; dateStr only labels the
+// error. It relies on the SunCalc's own per-date cache, which follows the live station location;
+// caching here by date string alone would keep serving the previous location's times after a
+// location change.
 func (ds *DataStore) getSunEventsForDate(dateStr string, timestamp time.Time) (suncalc.SunEventTimes, error) {
-	// Check if the sun times are already cached
-	if cached, exists := ds.getCachedSunTimes(dateStr); exists {
-		return cached, nil
-	}
-
-	// Calculate sun times for the given date
 	sunTimes, err := ds.SunCalc.GetSunEventTimes(timestamp)
 	if err != nil {
 		return suncalc.SunEventTimes{}, errors.New(err).
@@ -2618,22 +2738,5 @@ func (ds *DataStore) getSunEventsForDate(dateStr string, timestamp time.Time) (s
 			Build()
 	}
 
-	// Cache the calculated sun times
-	ds.cacheSunTimes(dateStr, &sunTimes)
-
 	return sunTimes, nil
-}
-
-// getCachedSunTimes retrieves sun times from the cache
-func (ds *DataStore) getCachedSunTimes(dateStr string) (suncalc.SunEventTimes, bool) {
-	cached, exists := ds.sunTimesCache.Load(dateStr)
-	if exists {
-		return cached.(suncalc.SunEventTimes), true
-	}
-	return suncalc.SunEventTimes{}, false
-}
-
-// cacheSunTimes caches sun times
-func (ds *DataStore) cacheSunTimes(dateStr string, sunTimes *suncalc.SunEventTimes) {
-	ds.sunTimesCache.Store(dateStr, *sunTimes)
 }

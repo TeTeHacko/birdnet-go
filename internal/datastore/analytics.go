@@ -9,6 +9,7 @@ import (
 
 	"github.com/tphakala/birdnet-go/internal/conf"
 	"github.com/tphakala/birdnet-go/internal/datastore/entities"
+	"github.com/tphakala/birdnet-go/internal/datastore/mapper"
 	"github.com/tphakala/birdnet-go/internal/errors"
 	"github.com/tphakala/birdnet-go/internal/logger"
 	"gorm.io/gorm"
@@ -51,26 +52,161 @@ type HourlyDistributionData struct {
 	Date  string `json:"date,omitempty"` // Optional field, only set when filtering by specific date
 }
 
-// NewSpeciesData represents a species detected for the first time within a period
-type NewSpeciesData struct {
-	ScientificName string `json:"scientific_name"`
-	CommonName     string `json:"common_name"`
-	FirstSeenDate  string `json:"first_seen_date"` // The absolute first date
-	LastSeenDate   string `json:"last_seen_date"`  // The most recent detection date
-	CountInPeriod  int    `json:"count_in_period"` // Optional: How many times seen in the query period
+// ActivityHeatmapData is the columnar, sparse aggregation behind the seasonal density
+// heatmap: detection counts bucketed by (station-local calendar date, intra-day slot).
+//
+// Dates lists every calendar date in the requested range, ascending, and forms the x-axis;
+// SlotResolutionMinutes is the effective intra-day slot width (15, 30, or 60), downsampled
+// from 15 on wide ranges so the payload stays bounded. The three Cell* slices are parallel
+// and hold only non-zero cells: cell i is Dates[CellDateIndex[i]] at slot CellSlot[i] with
+// CellCount[i] detections. A slot s covers the wall-clock minutes [s*res, (s+1)*res).
+type ActivityHeatmapData struct {
+	Dates                 []string
+	SlotResolutionMinutes int
+	CellDateIndex         []int
+	CellSlot              []int
+	CellCount             []int
 }
 
-// AnalyticsSourceInfo describes an audio source that has detections in the database, used for
-// populating the source filter picker on analytics views. Distinct from live engine sources
-// returned by /api/v2/system/audio/sources: this is grounded in historical data and includes
-// sources that may no longer be active.
-type AnalyticsSourceInfo struct {
-	ID             uint   `gorm:"column:id" json:"id"`                          // audio_sources.id primary key
-	DisplayName    string `gorm:"column:display_name" json:"displayName"`       // Human-readable name (e.g. "Garden feeder")
-	SourceURI      string `gorm:"column:source_uri" json:"sourceUri"`           // Underlying URI (e.g. "rtsp://...")
-	SourceType     string `gorm:"column:source_type" json:"sourceType"`         // Source type classification (rtsp, http, audio_card, file, etc.)
-	NodeName       string `gorm:"column:node_name" json:"nodeName"`             // Node/host that produced the detections
-	DetectionCount int64  `gorm:"column:detection_count" json:"detectionCount"` // Total detections recorded against this source
+// SpeciesHourlyDistribution is one species' normalized hour-of-day activity distribution,
+// behind the "who sings when" ridgeline (design spec section 6.2).
+//
+// Buckets holds 24 values (index = hour 0..23, station-local) that sum to 1.0 for a species
+// with any detections in range, so each species' shape is comparable regardless of its raw
+// volume. Total is the species' detection count over the range (false positives excluded),
+// used to rank species by volume and shown in the tooltip. ScientificName is the stable key;
+// CommonName is the display name, so the payload is self-describing.
+type SpeciesHourlyDistribution struct {
+	ScientificName string
+	// CommonName is the server-locale common name resolved via the datastore name resolver; it falls
+	// back to the scientific name when no mapping exists.
+	CommonName string
+	Buckets    [24]float64
+	Total      int
+}
+
+// DailyActivityOnset is one calendar day's dawn-chorus onset relative to civil dawn, behind the
+// dawn-chorus onset tracker (design spec section 6.3).
+//
+// Date is the station-local calendar day (YYYY-MM-DD). OnsetRelMinutes is the onset minute-of-day
+// (the time by which the morning chorus has clearly begun) minus civil dawn's minute-of-day, so a
+// negative value means the chorus started before civil dawn. It is nil when the day had too few
+// detections to be meaningful, or when civil dawn is undefined for the date (polar day / white
+// nights / polar night). DetectionCount is the day's false-positive-excluded detection count,
+// surfaced in the tooltip. The aggregation emits one entry per calendar day in the requested range
+// (DetectionCount is 0 on quiet days) so the chart has a continuous date axis and its trend line
+// breaks over gaps rather than interpolating across them.
+type DailyActivityOnset struct {
+	Date            string
+	OnsetRelMinutes *int
+	DetectionCount  int
+}
+
+// SpeciesConfidenceHistogram is one species' confidence-score distribution, behind the confidence
+// distribution chart (design spec section 6.5). Bins holds the normalized fraction of the species'
+// detections that fall into each equal-width confidence bin over [0,1] (Bins sums to ~1.0), so the
+// distribution shape is comparable across species regardless of detection volume. Total is the
+// species' detection count over the range (false positives excluded), shown in the tooltip.
+// ScientificName is the stable key; CommonName is the display name, so the payload is self-describing.
+type SpeciesConfidenceHistogram struct {
+	ScientificName string
+	// CommonName is the server-locale common name resolved via the datastore name resolver; it falls
+	// back to the scientific name when no mapping exists.
+	CommonName string
+	Bins       []float64
+	Total      int
+}
+
+// SpeciesAccumulationPoint is one day on the species accumulation curve (the biodiversity collector's
+// curve). Date is the station-local calendar day (YYYY-MM-DD). CumulativeSpecies is the running count
+// of distinct species first detected on or before this day within the selected range; NewSpecies is
+// how many of them first appeared on this day. "First seen" is bounded to the queried window, not
+// lifetime, so the curve answers "how fast is the species list filling up over this period".
+type SpeciesAccumulationPoint struct {
+	Date              string
+	CumulativeSpecies int
+	NewSpecies        int
+}
+
+// AudioSourceSummary describes one audio source for the analytics source/mic filter: a stable opaque
+// ID, the source's display metadata, and how many (false-positive-excluded) detections it has in the
+// queried range. The API layer turns DisplayName/NodeName into a user-facing label (anonymized for
+// unauthenticated clients) and serialises ID as a string. The metric is v2only; the legacy datastore
+// does not persist a detection's source, so it returns an empty result.
+type AudioSourceSummary struct {
+	// ID is the audio source's stable, opaque identifier (the v2 audio_sources primary key).
+	ID uint
+	// DisplayName is the user-configured source name, empty when unset.
+	DisplayName string
+	// NodeName is the capture node name, used as a fallback label when DisplayName is empty.
+	NodeName string
+	// SourceType is the source kind (e.g. "rtsp", "alsa", "file"), used for anonymized labelling.
+	SourceType string
+	// Count is the number of (false-positive-excluded) detections from this source in the range.
+	Count int
+}
+
+// YearOverYearPoint is one calendar position on the year-over-year tracker. Date is the current-year
+// station-local calendar day (YYYY-MM-DD) used for the x-axis; MonthDay ("MM-DD") is the year-
+// independent alignment key shared by both years. ThisYear and LastYear are the cumulative detection
+// counts through this calendar position in the current and previous year respectively (false positives
+// excluded); Delta is ThisYear - LastYear (positive means the current year is running ahead of last).
+type YearOverYearPoint struct {
+	Date     string
+	MonthDay string
+	ThisYear int
+	LastYear int
+	Delta    int
+}
+
+// YearOverYearResult is the year-over-year tracker aggregation: the two calendar years being compared
+// and one cumulative point per current-year calendar day from Jan 1 through the requested date. Points
+// is always non-nil. It answers "are we ahead of or behind last year's detection activity so far?".
+type YearOverYearResult struct {
+	CurrentYear  int
+	PreviousYear int
+	Points       []YearOverYearPoint
+}
+
+// SpeciesPhenologyPoint is one species' residency span within the selected date range: its first and
+// last false-positive-excluded detection (as station-local YYYY-MM-DD dates) and the in-range
+// detection count. Species are the top-N by detection volume; the chart draws one residency bar per
+// species (a Gantt) to show arrival/departure timing. CommonName is the display name, so the payload
+// is self-describing.
+type SpeciesPhenologyPoint struct {
+	ScientificName string
+	// CommonName is the server-locale common name resolved via the datastore name resolver; it falls
+	// back to the scientific name when no mapping exists.
+	CommonName string
+	FirstSeen  string
+	LastSeen   string
+	Count      int
+}
+
+// SpeciesHourlyCounts is one species' raw hour-of-day detection counts, behind the acoustic
+// succession streamgraph (design spec #1155; Tier-2). Counts holds the species' false-positive-
+// excluded detection count in each station-local hour bucket (index = hour 0..23). Unlike the
+// ridgeline's SpeciesHourlyDistribution (which normalizes each species to sum to 1.0 to compare
+// timing shape), the streamgraph stacks the raw counts so band width is detection volume; Total is
+// the sum of Counts, used to rank species by volume and shown in the tooltip. ScientificName is the
+// stable key; CommonName is the display name, so the payload is self-describing.
+type SpeciesHourlyCounts struct {
+	ScientificName string
+	// CommonName is the server-locale common name resolved via the datastore name resolver; it falls
+	// back to the scientific name when no mapping exists.
+	CommonName string
+	Counts     [24]int
+	Total      int
+}
+
+// NewSpeciesData represents a species detected for the first time within a period
+type NewSpeciesData struct {
+	ScientificName string    `json:"scientific_name"`
+	CommonName     string    `json:"common_name"`
+	FirstSeenDate  string    `json:"first_seen_date"` // The absolute first date
+	LastSeenDate   string    `json:"last_seen_date"`  // The most recent detection date
+	CountInPeriod  int       `json:"count_in_period"` // Optional: How many times seen in the query period
+	FirstBeginTime time.Time `json:"-"`               // Earliest audio start, used to restore notification tracking across midnight
 }
 
 // SpeciesDetectionDate represents a species detected on a specific calendar date.
@@ -81,17 +217,12 @@ type SpeciesDetectionDate struct {
 }
 
 // GetSpeciesSummaryData retrieves overall statistics for all bird species
-// Optional date range filtering with startDate and endDate parameters in YYYY-MM-DD format.
-//
-// The sourceIDs variadic parameter is accepted for interface compatibility with the v2 datastore
-// but has no effect on the legacy notes-based path: notes only stores a free-form source_node
-// string, not the v2 audio_sources.id integer used for filtering. Per-source analytics are
-// available only after migrating to the v2 schema.
+// Optional date range filtering with startDate and endDate parameters in YYYY-MM-DD format
 //
 // NOTE: Uses a read-only transaction with repeatable read isolation to prevent race conditions
 // when concurrent writes are occurring. This ensures consistent timestamps even when new species
 // are being inserted. See issue #1239 for details on the SQLite WAL mode race condition.
-func (ds *DataStore) GetSpeciesSummaryData(ctx context.Context, startDate, endDate string, _ ...uint) ([]SpeciesSummaryData, error) {
+func (ds *DataStore) GetSpeciesSummaryData(ctx context.Context, startDate, endDate string) ([]SpeciesSummaryData, error) {
 	// Pre-allocate with reasonable capacity for typical species count
 	summaries := make([]SpeciesSummaryData, 0, 100)
 
@@ -131,8 +262,8 @@ func (ds *DataStore) GetSpeciesSummaryData(ctx context.Context, startDate, endDa
 			COUNT(*) as count,
 			MIN(%s) as first_seen,
 			MAX(%s) as last_seen,
-			AVG(notes.confidence) as avg_confidence,
-			MAX(notes.confidence) as max_confidence
+			COALESCE(AVG(notes.confidence), 0) as avg_confidence,
+			COALESCE(MAX(notes.confidence), 0) as max_confidence
 		FROM notes
 		LEFT JOIN note_reviews ON notes.id = note_reviews.note_id
 	`, dateTimeFormat, dateTimeFormat)
@@ -291,30 +422,41 @@ func (ds *DataStore) GetSpeciesSummaryData(ctx context.Context, startDate, endDa
 	return summaries, nil
 }
 
-// GetHourlyAnalyticsData retrieves detection counts grouped by hour
-// GetHourlyAnalyticsData returns hourly detection counts.
-// sourceIDs is accepted for interface compatibility with the v2 datastore but ignored by
-// the legacy notes-based path (no audio_sources foreign key on legacy notes).
-func (ds *DataStore) GetHourlyAnalyticsData(ctx context.Context, date, species string, _ ...uint) ([]HourlyAnalyticsData, error) {
-	var analytics []HourlyAnalyticsData
-	hourFormat := ds.GetHourFormat()
+// applyHourlyAnalyticsFilters applies the WHERE filters shared by the hourly
+// analytics aggregation and its unparseable-time self-check: exclude detections
+// marked as false positive, an optional exact-date match, and an optional
+// species match on scientific or common name. Unlike the hourly-distribution
+// filters, the date match here is an exact single day, not a range. Keeping
+// both callers on one helper means the self-check counts exactly the rows the
+// aggregation groups.
+func (ds *DataStore) applyHourlyAnalyticsFilters(q *gorm.DB, date, species string) *gorm.DB {
+	q = q.Where("(note_reviews.verified IS NULL OR note_reviews.verified != ?)", string(entities.VerificationFalsePositive))
 
-	// Base query - exclude detections marked as false_positive
-	query := ds.DB.WithContext(ctx).Table("notes").
-		Joins("LEFT JOIN note_reviews ON notes.id = note_reviews.note_id").
-		Select(fmt.Sprintf("%s as hour, COUNT(*) as count", hourFormat)).
-		Where("(note_reviews.verified IS NULL OR note_reviews.verified != ?)", string(entities.VerificationFalsePositive)).
-		Group(hourFormat).
-		Order("hour")
-
-	// Apply filters
 	if date != "" {
-		query = query.Where("notes.date = ?", date)
+		q = q.Where("notes.date = ?", date)
 	}
 
 	if species != "" {
-		query = query.Where("notes.scientific_name = ? OR notes.common_name = ?", species, species)
+		q = q.Where("notes.scientific_name = ? OR notes.common_name = ?", species, species)
 	}
+
+	return q
+}
+
+// GetHourlyAnalyticsData retrieves detection counts grouped by hour
+func (ds *DataStore) GetHourlyAnalyticsData(ctx context.Context, date, species string) ([]HourlyAnalyticsData, error) {
+	var analytics []HourlyAnalyticsData
+	hourFormat := ds.GetHourFormat()
+
+	// Base query - exclude false positives plus the optional date/species
+	// filters - grouped by the dialect-specific hour expression.
+	query := ds.applyHourlyAnalyticsFilters(
+		ds.DB.WithContext(ctx).Table("notes").
+			Joins("LEFT JOIN note_reviews ON notes.id = note_reviews.note_id"),
+		date, species).
+		Select(fmt.Sprintf("%s as hour, COUNT(*) as count", hourFormat)).
+		Group(hourFormat).
+		Order("hour")
 
 	// Execute query
 	if err := query.Scan(&analytics).Error; err != nil {
@@ -327,14 +469,24 @@ func (ds *DataStore) GetHourlyAnalyticsData(ctx context.Context, date, species s
 			Build()
 	}
 
+	// Same unparseable-time invariant as GetHourlyDistribution (GitHub #3388):
+	// detections with a malformed time column collapse into the hour-0 bucket
+	// and silently hollow out this by-hour aggregation. Only run the extra COUNT
+	// when an hour-0 bucket is present, since NULL hours scan into Hour == 0.
+	if hasHourZeroBucket(analytics, func(r HourlyAnalyticsData) int { return r.Hour }) {
+		ds.warnIfHoursUnparseable(ctx, "get_hourly_analytics_data", hourFormat,
+			func(q *gorm.DB) *gorm.DB {
+				return ds.applyHourlyAnalyticsFilters(q, date, species)
+			},
+			logger.String("date", date),
+			logger.String("species", species))
+	}
+
 	return analytics, nil
 }
 
 // GetDailyAnalyticsData retrieves detection counts grouped by day
-// GetDailyAnalyticsData returns daily detection counts.
-// sourceIDs is accepted for interface compatibility with the v2 datastore but ignored by
-// the legacy notes-based path (no audio_sources foreign key on legacy notes).
-func (ds *DataStore) GetDailyAnalyticsData(ctx context.Context, startDate, endDate, species string, _ ...uint) ([]DailyAnalyticsData, error) {
+func (ds *DataStore) GetDailyAnalyticsData(ctx context.Context, startDate, endDate, species string) ([]DailyAnalyticsData, error) {
 	var analytics []DailyAnalyticsData
 
 	// Base query - exclude detections marked as false_positive
@@ -376,10 +528,7 @@ func (ds *DataStore) GetDailyAnalyticsData(ctx context.Context, startDate, endDa
 }
 
 // GetSpeciesDiversityData retrieves the count of unique species detected per day
-// GetSpeciesDiversityData returns daily unique species counts.
-// sourceIDs is accepted for interface compatibility with the v2 datastore but ignored by
-// the legacy notes-based path (no audio_sources foreign key on legacy notes).
-func (ds *DataStore) GetSpeciesDiversityData(ctx context.Context, startDate, endDate string, _ ...uint) ([]DailyAnalyticsData, error) {
+func (ds *DataStore) GetSpeciesDiversityData(ctx context.Context, startDate, endDate string) ([]DailyAnalyticsData, error) {
 	var diversity []DailyAnalyticsData
 
 	// Base query - count distinct species per day, excluding false positives
@@ -414,11 +563,84 @@ func (ds *DataStore) GetSpeciesDiversityData(ctx context.Context, startDate, end
 	return diversity, nil
 }
 
+// GetActivityHeatmap is a stub on the legacy store. The seasonal density heatmap is a v2only
+// feature; the legacy datastore is deprecated and being removed, so it returns an empty grid
+// rather than implementing the aggregation. See internal/datastore/v2only for the real method.
+func (ds *DataStore) GetActivityHeatmap(_ context.Context, _, _, _ string) (ActivityHeatmapData, error) {
+	// Return a structurally valid empty grid (non-nil slices, a real slot resolution) rather
+	// than a zero value, so consumers never see SlotResolutionMinutes == 0.
+	return ActivityHeatmapData{
+		Dates:                 []string{},
+		SlotResolutionMinutes: 15,
+		CellDateIndex:         []int{},
+		CellSlot:              []int{},
+		CellCount:             []int{},
+	}, nil
+}
+
+// GetHourlyDistributionBySpecies is a stub on the legacy store. The who-sings-when ridgeline is a
+// v2only feature; the legacy datastore is deprecated and being removed, so it returns an empty
+// (non-nil) slice rather than implementing the aggregation. See internal/datastore/v2only for the
+// real method.
+func (ds *DataStore) GetHourlyDistributionBySpecies(_ context.Context, _, _ string, _ []string, _ int) ([]SpeciesHourlyDistribution, error) {
+	return []SpeciesHourlyDistribution{}, nil
+}
+
+// GetDailyActivityOnset is a stub on the legacy store. The dawn-chorus onset tracker is a v2only
+// feature; the legacy datastore is deprecated and being removed, so it returns an empty (non-nil)
+// slice rather than implementing the aggregation. See internal/datastore/v2only for the real method.
+func (ds *DataStore) GetDailyActivityOnset(_ context.Context, _, _, _ string) ([]DailyActivityOnset, error) {
+	return []DailyActivityOnset{}, nil
+}
+
+// GetConfidenceHistogram is a stub on the legacy store. The confidence distribution chart is a
+// v2only feature; the legacy datastore is deprecated and being removed, so it returns an empty
+// (non-nil) slice rather than implementing the aggregation. See internal/datastore/v2only for the
+// real method.
+func (ds *DataStore) GetConfidenceHistogram(_ context.Context, _, _, _ string, _, _ int) ([]SpeciesConfidenceHistogram, error) {
+	return []SpeciesConfidenceHistogram{}, nil
+}
+
+// GetSpeciesAccumulation is a stub on the legacy store. The species accumulation curve is a v2only
+// feature; the legacy datastore is deprecated and being removed, so it returns an empty (non-nil)
+// slice rather than implementing the aggregation. See internal/datastore/v2only for the real method.
+func (ds *DataStore) GetSpeciesAccumulation(_ context.Context, _, _ string) ([]SpeciesAccumulationPoint, error) {
+	return []SpeciesAccumulationPoint{}, nil
+}
+
+// GetAudioSources is a stub on the legacy store. The analytics source/mic filter is a v2only feature:
+// the legacy schema does not persist a detection's audio source, so there is nothing to group by. It
+// returns an empty (non-nil) slice rather than implementing the aggregation. See internal/datastore/v2only
+// for the real method.
+func (ds *DataStore) GetAudioSources(_ context.Context, _, _ string) ([]AudioSourceSummary, error) {
+	return []AudioSourceSummary{}, nil
+}
+
+// GetYearOverYear is a stub on the legacy store. The year-over-year tracker is a v2only feature; the
+// legacy datastore is deprecated and being removed, so it returns an empty (non-nil) result rather
+// than implementing the aggregation. See internal/datastore/v2only for the real method.
+func (ds *DataStore) GetYearOverYear(_ context.Context, _ string) (YearOverYearResult, error) {
+	return YearOverYearResult{Points: []YearOverYearPoint{}}, nil
+}
+
+// GetSpeciesPhenology is a stub on the legacy store. The arrival/departure phenology chart is a
+// v2only feature; the legacy datastore is deprecated and being removed, so it returns an empty
+// (non-nil) slice rather than implementing the aggregation. See internal/datastore/v2only for the
+// real method.
+func (ds *DataStore) GetSpeciesPhenology(_ context.Context, _, _ string, _ int) ([]SpeciesPhenologyPoint, error) {
+	return []SpeciesPhenologyPoint{}, nil
+}
+
+// GetAcousticSuccession is a stub on the legacy store. The acoustic succession streamgraph is a
+// v2only feature; the legacy datastore is deprecated and being removed, so it returns an empty
+// (non-nil) slice rather than implementing the aggregation. See internal/datastore/v2only for the
+// real method.
+func (ds *DataStore) GetAcousticSuccession(_ context.Context, _, _ string, _ []string, _ int) ([]SpeciesHourlyCounts, error) {
+	return []SpeciesHourlyCounts{}, nil
+}
+
 // GetDetectionTrends calculates the trend in detections over time
-// GetDetectionTrends returns detection trends over a period.
-// sourceIDs is accepted for interface compatibility with the v2 datastore but ignored by
-// the legacy notes-based path (no audio_sources foreign key on legacy notes).
-func (ds *DataStore) GetDetectionTrends(ctx context.Context, period string, limit int, _ ...uint) ([]DailyAnalyticsData, error) {
+func (ds *DataStore) GetDetectionTrends(ctx context.Context, period string, limit int) ([]DailyAnalyticsData, error) {
 	var trends []DailyAnalyticsData
 
 	var interval string
@@ -495,10 +717,7 @@ func (ds *DataStore) GetDetectionTrends(ctx context.Context, period string, limi
 
 // GetHourlyDistribution retrieves hourly detection distribution across a date range
 // Groups detections by hour of day (0-23) regardless of the specific date
-// GetHourlyDistribution returns aggregated hourly distribution.
-// sourceIDs is accepted for interface compatibility with the v2 datastore but ignored by
-// the legacy notes-based path (no audio_sources foreign key on legacy notes).
-func (ds *DataStore) GetHourlyDistribution(ctx context.Context, startDate, endDate, species string, _ ...uint) ([]HourlyDistributionData, error) {
+func (ds *DataStore) GetHourlyDistribution(ctx context.Context, startDate, endDate, species string) ([]HourlyDistributionData, error) {
 	var parsedStartDate, parsedEndDate time.Time
 	var err error
 
@@ -541,38 +760,19 @@ func (ds *DataStore) GetHourlyDistribution(ctx context.Context, startDate, endDa
 		}
 	}
 
-	// Prepare the SQL query - exclude detections marked as false_positive
-	query := ds.DB.WithContext(ctx).Table("notes").
-		Joins("LEFT JOIN note_reviews ON notes.id = note_reviews.note_id").
-		Where("(note_reviews.verified IS NULL OR note_reviews.verified != ?)", string(entities.VerificationFalsePositive))
-
 	// Extract hour from the time field using database-specific hour format
 	hourExpr := ds.GetHourFormat()
-	query = query.Select(fmt.Sprintf("%s AS hour, COUNT(*) AS count", hourExpr))
 
-	// Apply date range filter conditionally
-	switch {
-	case startDate != "" && endDate != "":
-		query = query.Where("notes.date BETWEEN ? AND ?", startDate, endDate)
-	case startDate != "":
-		query = query.Where("notes.date >= ?", startDate)
-	case endDate != "":
-		query = query.Where("notes.date <= ?", endDate)
-		// No date filter if both are empty
-	}
-
-	// Apply species filter if provided
-	if species != "" {
-		// Try to match on either common_name or scientific_name
-		query = query.Where("notes.common_name = ? OR notes.scientific_name = ?",
-			species, species)
-	}
-
-	// Group by hour
-	query = query.Group(hourExpr)
-
-	// Order by hour
-	query = query.Order("hour ASC")
+	// Build the filtered query (exclude false positives, optional date range and
+	// species) via the shared helper, then group by hour. The same helper feeds
+	// the emptiness self-check below, so the two filter sets cannot drift.
+	query := ds.applyHourlyDistributionFilters(
+		ds.DB.WithContext(ctx).Table("notes").
+			Joins("LEFT JOIN note_reviews ON notes.id = note_reviews.note_id"),
+		startDate, endDate, species).
+		Select(fmt.Sprintf("%s AS hour, COUNT(*) AS count", hourExpr)).
+		Group(hourExpr).
+		Order("hour ASC")
 
 	// Execute the query
 	var results []HourlyDistributionData
@@ -587,17 +787,119 @@ func (ds *DataStore) GetHourlyDistribution(ctx context.Context, startDate, endDa
 			Build()
 	}
 
+	// Invariant self-check for GitHub #3388 ("Detection Patterns by Time of Day"
+	// flat at zero despite data). The failure is not an empty result: GROUP BY
+	// always yields at least one bucket per matching row. It is that detections
+	// with an unparseable time column make the hour expression evaluate to NULL,
+	// so they collapse into the hour-0 bucket and the by-hour chart degenerates.
+	// Only run the extra COUNT when an hour-0 bucket is actually present: NULL
+	// hours scan into Hour == 0, so their absence proves there is nothing to
+	// find, and a healthy install with no midnight detections pays nothing.
+	if hasHourZeroBucket(results, func(r HourlyDistributionData) int { return r.Hour }) {
+		ds.warnIfHoursUnparseable(ctx, "get_hourly_distribution", hourExpr,
+			func(q *gorm.DB) *gorm.DB {
+				return ds.applyHourlyDistributionFilters(q, startDate, endDate, species)
+			},
+			logger.String("start_date", startDate),
+			logger.String("end_date", endDate),
+			logger.String("species", species))
+	}
+
 	return results, nil
+}
+
+// applyHourlyDistributionFilters applies the WHERE filters shared by the hourly
+// distribution aggregation and its emptiness self-check: exclude detections
+// marked as false positive, an optional inclusive date range, and an optional
+// species match on common or scientific name. Keeping both callers on one
+// helper means the self-check counts exactly the rows the aggregation groups.
+func (ds *DataStore) applyHourlyDistributionFilters(q *gorm.DB, startDate, endDate, species string) *gorm.DB {
+	q = q.Where("(note_reviews.verified IS NULL OR note_reviews.verified != ?)", string(entities.VerificationFalsePositive))
+
+	switch {
+	case startDate != "" && endDate != "":
+		q = q.Where("notes.date BETWEEN ? AND ?", startDate, endDate)
+	case startDate != "":
+		q = q.Where("notes.date >= ?", startDate)
+	case endDate != "":
+		q = q.Where("notes.date <= ?", endDate)
+		// No date filter if both are empty
+	}
+
+	if species != "" {
+		q = q.Where("notes.common_name = ? OR notes.scientific_name = ?", species, species)
+	}
+
+	return q
+}
+
+// warnIfHoursUnparseable counts matching detections whose hour could not be
+// extracted (the hour expression evaluates to NULL, e.g. an empty or malformed
+// time column) and emits a WARN when any exist. Those rows collapse into a
+// single bogus bucket and hollow out the by-hour chart (GitHub #3388); the WARN
+// puts the evidence and the count into default logs / a support dump without a
+// live reproduction.
+//
+// It is shared by the two by-hour aggregations (GetHourlyDistribution and its
+// sibling GetHourlyAnalyticsData). The caller passes the operation name, the
+// hour expression, and applyFilters: a closure that applies the SAME WHERE
+// filters its aggregation used, so the count matches exactly the rows that were
+// grouped and the two filter sets cannot drift. extraFields carry the
+// operation-specific context (date range, species) onto the WARN.
+//
+// hourExpr is an internal constant from GetHourFormat (not user input), so
+// interpolating it into the predicate is safe. A count error is logged at debug
+// and swallowed: this diagnostic path must never mask the (successful) primary
+// result.
+func (ds *DataStore) warnIfHoursUnparseable(ctx context.Context, operation, hourExpr string, applyFilters func(*gorm.DB) *gorm.DB, extraFields ...logger.Field) {
+	if hourExpr == "" {
+		return // unsupported dialect; GetHourFormat already returns empty
+	}
+	var unparseable int64
+	countQuery := applyFilters(
+		ds.DB.WithContext(ctx).Table("notes").
+			Joins("LEFT JOIN note_reviews ON notes.id = note_reviews.note_id")).
+		Where(fmt.Sprintf("%s IS NULL", hourExpr))
+	if err := countQuery.Count(&unparseable).Error; err != nil {
+		GetLogger().Debug("hourly self-check count failed",
+			logger.String("operation", operation),
+			logger.Error(err))
+		return
+	}
+	if unparseable == 0 {
+		return
+	}
+	fields := make([]logger.Field, 0, 3+len(extraFields))
+	fields = append(fields,
+		logger.String("operation", operation),
+		logger.String("hour_expr", hourExpr),
+		logger.Int64("unparseable_time_rows", unparseable))
+	fields = append(fields, extraFields...)
+	GetLogger().Warn("detections have an unparseable time and were excluded from the by-hour chart; the time column may be malformed (GitHub #3388)", fields...)
+}
+
+// hasHourZeroBucket reports whether any aggregated row landed in the hour-0
+// bucket. Detections whose time is unparseable make the hour expression
+// evaluate to SQL NULL, which scans into the Go int Hour field as 0, so every
+// unparseable-time row collapses into the hour-0 bucket. When no hour-0 bucket
+// is present the unparseable-time self-check can be skipped entirely (its extra
+// COUNT would provably find nothing). A legitimate midnight detection also
+// lands in hour 0, so this is a necessary-but-not-sufficient gate: presence
+// means "run the check", absence means "provably none".
+func hasHourZeroBucket[T any](rows []T, hourOf func(T) int) bool {
+	for i := range rows {
+		if hourOf(rows[i]) == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // GetSpeciesFirstDetectionInPeriod finds the first detection of each species within a specific date range.
 // This is suitable for seasonal and yearly tracking where we need to know when each species
 // was first detected within that specific period, regardless of prior detections.
 // It returns all species detected in the period with their first detection date in that period.
-// GetSpeciesFirstDetectionInPeriod returns species first detected in a period.
-// sourceIDs is accepted for interface compatibility with the v2 datastore but ignored by
-// the legacy notes-based path (no audio_sources foreign key on legacy notes).
-func (ds *DataStore) GetSpeciesFirstDetectionInPeriod(ctx context.Context, startDate, endDate string, limit, offset int, _ ...uint) ([]NewSpeciesData, error) {
+func (ds *DataStore) GetSpeciesFirstDetectionInPeriod(ctx context.Context, startDate, endDate string, limit, offset int) ([]NewSpeciesData, error) {
 	// Validate input
 	if startDate != "" && endDate != "" && startDate > endDate {
 		return nil, errors.Newf("start date cannot be after end date").
@@ -737,14 +1039,148 @@ func (ds *DataStore) GetSpeciesLastDetectionDateBefore(ctx context.Context, scie
 	return result.LastSeenDate, nil
 }
 
+// GetSpeciesFirstAndLastDetectionTimeBefore returns the earliest and most-recent
+// detection times for a species that occurred strictly before `before`.
+// Either/both may be nil when there is no prior detection.
+//
+// The legacy schema stores detection time as separate notes.date (YYYY-MM-DD) and
+// notes.time (HH:MM:SS) string columns, so the dialect-aware datetime expression
+// from GetDateTimeExpr is used for both the MIN/MAX aggregates and the bound.
+// The bound is converted to the datastore timezone (Timezone) so it compares
+// consistently against the stored wall-clock strings, regardless of the
+// location of `before`.
+func (ds *DataStore) GetSpeciesFirstAndLastDetectionTimeBefore(ctx context.Context, scientificName string, before time.Time) (first, last *time.Time, err error) {
+	dtExpr := ds.GetDateTimeExpr("notes.date", "notes.time")
+	if dtExpr == "" {
+		// Safely get database type for error context
+		dialectName := DialectUnknown
+		if d := ds.Dialector(); d != nil {
+			dialectName = d.Name()
+		}
+		return nil, nil, errors.Newf("unsupported database type for datetime formatting").
+			Component("datastore").
+			Category(errors.CategoryConfiguration).
+			Context("operation", "get_species_first_and_last_detection_time_before").
+			Context("database_type", dialectName).
+			Build()
+	}
+
+	query := fmt.Sprintf(`
+	SELECT MIN(%s) as first_dt, MAX(%s) as last_dt
+	FROM notes
+	LEFT JOIN note_reviews ON notes.id = note_reviews.note_id
+	WHERE notes.scientific_name = ?
+		AND %s < ?
+		AND notes.date != '' AND notes.date IS NOT NULL
+		AND notes.time != '' AND notes.time IS NOT NULL
+		AND (note_reviews.verified IS NULL OR note_reviews.verified != '%s')
+	`, dtExpr, dtExpr, dtExpr, entities.VerificationFalsePositive)
+
+	// The aggregate yields a dialect-dependent driver type: time.Time on MySQL
+	// (STR_TO_DATE with parseTime=True) and a "YYYY-MM-DD HH:MM:SS" string on
+	// SQLite (datetime()). database/sql cannot convert either into a fixed
+	// *time.Time or *string destination (string->*time.Time and time.Time->*string
+	// are both unsupported), and GORM cannot scan into an interface{} struct
+	// field, so read the raw driver values via Rows() and normalize explicitly.
+	rows, err := ds.DB.WithContext(ctx).Raw(query, scientificName, before.In(Timezone()).Format(mapper.DateFormat+" "+mapper.TimeFormat)).Rows()
+	if err != nil {
+		return nil, nil, errors.New(err).
+			Component("datastore").
+			Category(errors.CategoryDatabase).
+			Context("operation", "get_species_first_and_last_detection_time_before").
+			Context("scientific_name", scientificName).
+			Context("before", before.Format(time.RFC3339)).
+			Build()
+	}
+	defer rows.Close() //nolint:errcheck // closing rows after a full read is best-effort
+
+	// MIN/MAX always return exactly one row (NULLs when there is no prior
+	// detection), so a single Next() covers the data. Since a scalar aggregate
+	// always yields a row, Next() returning false indicates an iteration error
+	// (e.g. a context deadline or driver failure) rather than an empty result;
+	// check rows.Err() so a failure is surfaced instead of being published as
+	// null fields without the caller's failure warning.
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, nil, errors.New(err).
+				Component("datastore").
+				Category(errors.CategoryDatabase).
+				Context("operation", "get_species_first_and_last_detection_time_before").
+				Context("scientific_name", scientificName).
+				Build()
+		}
+		return nil, nil, nil
+	}
+
+	var firstRaw, lastRaw any
+	if err := rows.Scan(&firstRaw, &lastRaw); err != nil {
+		return nil, nil, errors.New(err).
+			Component("datastore").
+			Category(errors.CategoryDatabase).
+			Context("operation", "get_species_first_and_last_detection_time_before").
+			Context("scientific_name", scientificName).
+			Build()
+	}
+
+	first, err = speciesDetectionTimeValue(firstRaw, scientificName)
+	if err != nil {
+		return nil, nil, err
+	}
+	last, err = speciesDetectionTimeValue(lastRaw, scientificName)
+	if err != nil {
+		return nil, nil, err
+	}
+	return first, last, nil
+}
+
+// speciesDetectionTimeValue normalizes the dialect-dependent driver value
+// returned by the first/last detection aggregate (time.Time on MySQL, string on
+// SQLite) into a *time.Time in the local timezone. A nil aggregate (no prior
+// detection) yields nil.
+func speciesDetectionTimeValue(v any, scientificName string) (*time.Time, error) {
+	switch t := v.(type) {
+	case nil:
+		return nil, nil //nolint:nilnil // a nil aggregate means no prior detection, not an error
+	case time.Time:
+		return &t, nil
+	case string:
+		if t == "" {
+			return nil, nil //nolint:nilnil // an empty aggregate string means no prior detection, not an error
+		}
+		return parseSpeciesDetectionTime(t, scientificName)
+	case []byte:
+		return parseSpeciesDetectionTime(string(t), scientificName)
+	default:
+		return nil, errors.Newf("unexpected species detection time value type").
+			Component("datastore").
+			Category(errors.CategoryDatabase).
+			Context("scientific_name", scientificName).
+			Context("value_type", fmt.Sprintf("%T", v)).
+			Build()
+	}
+}
+
+// parseSpeciesDetectionTime parses a legacy "YYYY-MM-DD HH:MM:SS" datetime
+// string in the datastore's timezone.
+func parseSpeciesDetectionTime(value, scientificName string) (*time.Time, error) {
+	t, err := time.ParseInLocation(mapper.DateFormat+" "+mapper.TimeFormat, value, Timezone())
+	if err != nil {
+		return nil, errors.New(err).
+			Component("datastore").
+			Category(errors.CategoryDatabase).
+			Context("operation", "parse_species_detection_time").
+			Context("scientific_name", scientificName).
+			Context("value", value).
+			Build()
+	}
+	return &t, nil
+}
+
 // GetNewSpeciesDetections finds species whose absolute first detection falls within the specified date range.
 // This is suitable for lifetime tracking only - NOT for seasonal or yearly tracking.
 // It supports pagination with limit and offset parameters.
 // NOTE: For optimal performance with large datasets, add a composite index on (scientific_name, date)
-// GetNewSpeciesDetections returns species detected for the first time within a date range.
-// sourceIDs is accepted for interface compatibility with the v2 datastore but ignored by
-// the legacy notes-based path (no audio_sources foreign key on legacy notes).
-func (ds *DataStore) GetNewSpeciesDetections(ctx context.Context, startDate, endDate string, limit, offset int, _ ...uint) ([]NewSpeciesData, error) {
+func (ds *DataStore) GetNewSpeciesDetections(ctx context.Context, startDate, endDate string, limit, offset int) ([]NewSpeciesData, error) {
 	// Temporary struct to scan raw results, ensuring date can be checked for null/empty
 	type RawNewSpeciesResult struct {
 		ScientificName     string
@@ -752,6 +1188,7 @@ func (ds *DataStore) GetNewSpeciesDetections(ctx context.Context, startDate, end
 		FirstDetectionDate string // Scan directly into string
 		LastDetectionDate  string
 		CountInPeriod      int
+		FirstBeginTime     time.Time
 	}
 	var rawResults []RawNewSpeciesResult
 
@@ -775,12 +1212,16 @@ func (ds *DataStore) GetNewSpeciesDetections(ctx context.Context, startDate, end
 	// Revised query with pagination
 	// NOTE: This query benefits significantly from a composite index on (scientific_name, date)
 	// Excludes detections marked as false_positive from both CTEs
+	// Select the audio timestamp from the original column so SQLite preserves its
+	// DATETIME type when scanning. MIN alone returns text. NULLIF ignores imports
+	// without an audio start; MIN(id) prevents ties from duplicating species rows.
 	query := fmt.Sprintf(`
 	WITH SpeciesFirstSeen AS (
 	    SELECT
 	        notes.scientific_name,
 	        MIN(CASE WHEN notes.date != '' AND notes.date IS NOT NULL THEN notes.date ELSE NULL END) as first_detection_date,
-	        MAX(CASE WHEN notes.date != '' AND notes.date IS NOT NULL THEN notes.date ELSE NULL END) as last_detection_date
+	        MAX(CASE WHEN notes.date != '' AND notes.date IS NOT NULL THEN notes.date ELSE NULL END) as last_detection_date,
+	        MIN(NULLIF(notes.begin_time, ?)) as first_begin_time
 	    FROM notes
 	    LEFT JOIN note_reviews ON notes.id = note_reviews.note_id
 	    WHERE (note_reviews.verified IS NULL OR note_reviews.verified != '%s')
@@ -803,16 +1244,21 @@ func (ds *DataStore) GetNewSpeciesDetections(ctx context.Context, startDate, end
 	    COALESCE(sip.common_name, sfs.scientific_name) as common_name,
 	    sfs.first_detection_date,
 	    sfs.last_detection_date,
-	    sip.count_in_period
+	    sip.count_in_period,
+	    first_note.begin_time as first_begin_time
 	FROM SpeciesFirstSeen sfs
 	JOIN SpeciesInPeriod sip ON sfs.scientific_name = sip.scientific_name
+	LEFT JOIN notes first_note ON first_note.id = (
+	    SELECT MIN(n.id) FROM notes n
+	    WHERE n.scientific_name = sfs.scientific_name AND n.begin_time = sfs.first_begin_time
+	)
 	WHERE sfs.first_detection_date BETWEEN ? AND ?
 	ORDER BY sfs.first_detection_date DESC
 	LIMIT ? OFFSET ?;
 	`, entities.VerificationFalsePositive, entities.VerificationFalsePositive)
 
 	// Execute the raw SQL query into the temporary struct
-	if err := ds.DB.WithContext(ctx).Raw(query, startDate, endDate, startDate, endDate, limit, offset).Scan(&rawResults).Error; err != nil {
+	if err := ds.DB.WithContext(ctx).Raw(query, time.Time{}, startDate, endDate, startDate, endDate, limit, offset).Scan(&rawResults).Error; err != nil {
 		return nil, errors.New(err).
 			Component("datastore").
 			Category(errors.CategoryDatabase).
@@ -835,6 +1281,7 @@ func (ds *DataStore) GetNewSpeciesDetections(ctx context.Context, startDate, end
 				FirstSeenDate:  raw.FirstDetectionDate, // Assign only if valid
 				LastSeenDate:   raw.LastDetectionDate,
 				CountInPeriod:  raw.CountInPeriod,
+				FirstBeginTime: raw.FirstBeginTime,
 			})
 		} else {
 			// Log if a record surprisingly had an empty date after SQL filtering
@@ -845,12 +1292,4 @@ func (ds *DataStore) GetNewSpeciesDetections(ctx context.Context, startDate, end
 	}
 
 	return finalResults, nil
-}
-
-// ListAnalyticsSourcesData returns an empty slice on the legacy notes-based datastore.
-// Legacy notes have no audio_sources foreign key, so historical sources cannot be enumerated
-// from this schema. Per-source analytics filtering is supported only after migrating to the
-// v2 schema.
-func (ds *DataStore) ListAnalyticsSourcesData(_ context.Context) ([]AnalyticsSourceInfo, error) {
-	return []AnalyticsSourceInfo{}, nil
 }

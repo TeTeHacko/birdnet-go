@@ -17,7 +17,12 @@
   @component
 -->
 <script lang="ts">
-  import { generateId } from '$lib/utils/uuid';
+  import {
+    deviceValue,
+    deviceMatches,
+    deviceLabel,
+    type AudioDevice,
+  } from '$lib/utils/audioDevices';
   import {
     Settings,
     Trash2,
@@ -34,8 +39,13 @@
   import { t } from '$lib/i18n';
   import { cn } from '$lib/utils/cn';
   import { loggers } from '$lib/utils/logger';
-  import { fetchDeviceCapabilities as fetchCapabilities } from '$lib/utils/audio/sampleRate';
-  import { DEFAULT_MODEL_ID } from '$lib/stores/models.svelte';
+  import {
+    fetchDeviceCapabilities as fetchCapabilities,
+    coerceSupportedRate,
+  } from '$lib/utils/audio/sampleRate';
+  import { modelsLoading } from '$lib/stores/models.svelte';
+  import { acousticModelAvailability } from '$lib/stores/acousticModels.svelte';
+  import { defaultModelSelection } from '$lib/utils/defaultModelSelection';
   import SelectDropdown from './SelectDropdown.svelte';
   import InlineSlider from './InlineSlider.svelte';
   import ModelCheckboxList from './ModelCheckboxList.svelte';
@@ -46,14 +56,16 @@
     EqualizerFilterType,
     QuietHoursConfig,
   } from '$lib/stores/settings';
-  import { defaultQuietHoursConfig } from '$lib/stores/settings';
+  import {
+    defaultQuietHoursConfig,
+    AUDIO_GAIN_MIN_DB,
+    AUDIO_GAIN_MAX_DB,
+  } from '$lib/stores/settings';
 
   // Local EqualizerSettings type matching AudioEqualizerSettings component's interface
-  // where filter.id is optional (assigned on save)
   interface LocalEqualizerSettings {
     enabled: boolean;
     filters: Array<{
-      id?: string;
       type: EqualizerFilterType;
       frequency: number;
       q?: number;
@@ -65,20 +77,22 @@
 
   const logger = loggers.audio;
 
+  // Pre-selection for a source without an explicit list: the classifier's
+  // default targets when known, nothing at N=0, the legacy BirdNET pick otherwise.
   function getDefaultModels(): string[] {
-    const defaultModel = modelOptions.find(m => m.value === DEFAULT_MODEL_ID);
-    if (defaultModel) return [DEFAULT_MODEL_ID];
-    return modelOptions.length > 0 ? [modelOptions[0].value] : [DEFAULT_MODEL_ID];
+    return defaultModelSelection(acousticAvailability, availableModels);
   }
 
   interface Props {
     source: AudioSourceConfig;
     index: number;
     sources: AudioSourceConfig[];
-    audioDevices: Array<{ index: number; name: string; id: string }>;
+    audioDevices: AudioDevice[];
     modelOptions: Array<{ value: string; label: string }>;
     availableModels: Array<{
       id: string;
+      /** Classifier registry ID; the join key for default-target mapping. Absent on an older server. */
+      registryId?: string;
       name: string;
       category: string;
       minSampleRate?: number;
@@ -117,25 +131,62 @@
   ]);
   let sampleRateVerified = $state(true);
   let sampleRateLoading = $state(false);
-  let fetchController: AbortController | null = $state(null);
+  // Plain (non-reactive) ref: the probe effect both reads (abort) and writes this
+  // controller in its synchronous prefix. As $state that read/write would register
+  // the controller as a dependency of the effect and immediately re-run it, whose
+  // cleanup then aborts the brand-new in-flight probe (issue #3593). It is only
+  // used imperatively for abort(), never in markup, so it must not be reactive.
+  let fetchController: AbortController | null = null;
 
-  // Device display name lookup
+  // Device display name lookup (matches a saved stable token or legacy ALSA id)
   let deviceDisplayName = $derived(
-    audioDevices.find(d => d.id === source.device)?.name ?? source.device
+    audioDevices.find(d => deviceMatches(d, source.device))?.name ?? source.device
   );
 
-  // Model display names (comma-separated for multiple)
-  let modelDisplayName = $derived(
-    (source.models?.length ?? 0) > 0
-      ? source.models.map(id => modelOptions.find(m => m.value === id)?.label ?? id).join(', ')
-      : (modelOptions[0]?.label ?? '')
-  );
+  const acousticAvailability = $derived(acousticModelAvailability());
 
-  // Device dropdown options — show current source's device + devices not used by other sources
+  let hasExplicitModels = $derived((source.models?.length ?? 0) > 0);
+
+  function modelLabels(ids: readonly string[]): string {
+    return ids.map(id => modelOptions.find(m => m.value === id)?.label ?? id).join(', ');
+  }
+
+  // Model display names (comma-separated for multiple). An empty list means
+  // "analyze with the server defaults": name them when the classifier reports
+  // them, say that no model is loaded when that is the verdict, hedge otherwise.
+  let modelDisplayName = $derived.by(() => {
+    if (hasExplicitModels) return modelLabels(source.models);
+    if (acousticAvailability.kind === 'none') return t('settings.audio.models.noneBadge');
+    const defaults = defaultModelSelection(acousticAvailability, availableModels);
+    if (acousticAvailability.kind === 'ready' && defaults.length > 0) {
+      return t('settings.audio.models.defaultBadge', { models: modelLabels(defaults) });
+    }
+    return t('settings.audio.models.defaultPendingBadge');
+  });
+
+  let modelBadgeIsWarning = $derived(!hasExplicitModels && acousticAvailability.kind === 'none');
+
+  // Tooltip for the no-model pill, so the badge explains itself on hover.
+  let modelBadgeTitle = $derived.by(() => {
+    if (hasExplicitModels || acousticAvailability.kind !== 'none') return undefined;
+    return acousticAvailability.reason === 'load_failed'
+      ? t('settings.audio.models.loadFailedWarning')
+      : t('settings.audio.models.noneEnabledHelp');
+  });
+
+  // Device dropdown options: the current source's device plus devices not used by
+  // other sources. The currently-configured device keeps its saved value (which
+  // may be a legacy ALSA id) so the dropdown pre-selects it; other devices use the
+  // reboot-stable token so a new pick persists the stable form (GH #3651).
   let deviceOptions = $derived(
     audioDevices
-      .filter(d => d.id === source.device || !sources.some(s => s.device === d.id))
-      .map(d => ({ value: d.id, label: d.name }))
+      .filter(
+        d => deviceMatches(d, source.device) || !sources.some(s => deviceMatches(d, s.device))
+      )
+      .map(d => ({
+        value: deviceMatches(d, source.device) ? source.device : deviceValue(d),
+        label: deviceLabel(d, audioDevices),
+      }))
   );
 
   // Edit mode functions
@@ -168,15 +219,12 @@
       editModels = getDefaultModels();
     }
 
-    // Transform equalizer filters to ensure all have an id (required by store type)
+    // A disabled equalizer without filters is stored as undefined
     const transformedEqualizer =
       editEqualizer.enabled || editEqualizer.filters.length > 0
         ? {
             enabled: editEqualizer.enabled,
-            filters: editEqualizer.filters.map(f => ({
-              ...f,
-              id: f.id || generateId(),
-            })),
+            filters: editEqualizer.filters,
           }
         : undefined;
 
@@ -236,16 +284,30 @@
   async function fetchDeviceCapabilities(deviceId: string) {
     if (!deviceId) return;
     fetchController?.abort();
-    fetchController = new AbortController();
+    const controller = new AbortController();
+    fetchController = controller;
     sampleRateLoading = true;
+    // Drop the previous device's probed rates so a slower probe cannot leave
+    // stale, unverified options on screen while the new one is in flight.
+    sampleRateOptions = [{ value: '48000', label: '48 kHz' }];
+    sampleRateVerified = true;
     try {
-      const result = await fetchCapabilities(deviceId, fetchController.signal);
+      const result = await fetchCapabilities(deviceId, controller.signal);
+      // Ignore a superseded probe: a newer device selection has replaced this
+      // controller, so applying these results (or clearing the loading flag)
+      // would clobber the newer probe's state.
+      if (fetchController !== controller) return;
       sampleRateOptions = result.options;
       sampleRateVerified = result.verified;
+      // Coerce the selection to a rate the new device actually supports so an
+      // unsupported rate is never persisted.
+      editSampleRate = coerceSupportedRate(result.options, editSampleRate);
     } catch {
       // Only AbortError reaches here (utility handles all other failures internally)
     } finally {
-      sampleRateLoading = false;
+      if (fetchController === controller) {
+        sampleRateLoading = false;
+      }
     }
   }
 
@@ -255,8 +317,13 @@
       prevEditDevice = editDevice;
       fetchDeviceCapabilities(editDevice);
     }
+    // Capture the controller this run started so the cleanup only aborts that
+    // probe. startEdit() starts a probe directly and then flips isEditing, which
+    // re-runs this effect; without the capture the cleanup would abort that
+    // just-started probe and the edit form would open stuck at 48 kHz (issue #3593).
+    const controllerToAbort = fetchController;
     return () => {
-      fetchController?.abort();
+      controllerToAbort?.abort();
     };
   });
 </script>
@@ -297,7 +364,7 @@
           </button>
           <button
             type="button"
-            class="inline-flex items-center justify-center h-8 px-3 text-sm font-medium rounded-lg bg-[var(--color-error)] text-[var(--color-error-content)] hover:opacity-90 transition-colors"
+            class="inline-flex items-center justify-center h-8 px-3 text-sm font-medium rounded-lg bg-[var(--color-error)] text-[var(--color-error-content)] hover:bg-[var(--color-error-hover)] transition-colors"
             onclick={executeDelete}
           >
             {t('common.delete')}
@@ -376,8 +443,8 @@
           label={t('settings.audio.soundCards.gainLabel')}
           value={editGain}
           onUpdate={value => (editGain = value)}
-          min={-40}
-          max={40}
+          min={AUDIO_GAIN_MIN_DB}
+          max={AUDIO_GAIN_MAX_DB}
           step={1}
           unit=" dB"
           {disabled}
@@ -389,6 +456,8 @@
           selectedModels={editModels}
           sourceSampleRate={editSampleRate}
           isStream={false}
+          loading={modelsLoading()}
+          availability={acousticAvailability}
           {disabled}
           onToggle={models => (editModels = models)}
         />
@@ -418,6 +487,7 @@
                 equalizerSettings={editEqualizer}
                 {disabled}
                 onUpdate={handleEqualizerUpdate}
+                sampleRate={editSampleRate}
               />
             </div>
           {/if}
@@ -443,7 +513,7 @@
           </button>
           <button
             type="button"
-            class="inline-flex items-center justify-center gap-1.5 h-8 px-3 text-sm font-medium rounded-lg bg-[var(--color-primary)] text-[var(--color-primary-content)] hover:opacity-90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            class="inline-flex items-center justify-center gap-1.5 h-8 px-3 text-sm font-medium rounded-lg bg-[var(--color-primary)] text-[var(--color-primary-content)] hover:not-disabled:bg-[var(--color-primary-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             onclick={saveEdit}
             disabled={!editName.trim() || !editDevice}
           >
@@ -496,7 +566,13 @@
               </span>
             {/if}
             <span
-              class="px-2 py-0.5 rounded text-xs font-semibold bg-[var(--color-info)]/15 text-[var(--color-info)]"
+              class={cn(
+                'px-2 py-0.5 rounded text-xs font-semibold',
+                modelBadgeIsWarning
+                  ? 'bg-[var(--color-warning)]/15 text-[var(--color-warning)]'
+                  : 'bg-[var(--color-info)]/15 text-[var(--color-info)]'
+              )}
+              title={modelBadgeTitle}
             >
               {modelDisplayName}
             </span>

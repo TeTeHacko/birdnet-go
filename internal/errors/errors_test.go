@@ -92,8 +92,8 @@ func TestFingerprintIncludesNormalizedErrorType(t *testing.T) {
 		Context("operation", "save_note").
 		Build()
 
-	fp1 := buildFingerprint(ee1)
-	fp2 := buildFingerprint(ee2)
+	fp1 := buildFingerprint(ee1, false)
+	fp2 := buildFingerprint(ee2, false)
 	assert.NotEqual(t, fp1, fp2, "different root causes should have different fingerprints")
 }
 
@@ -178,6 +178,34 @@ func TestLookupComponentAvoidsMisdetection(t *testing.T) {
 	assert.Equal(t, "birdnet", result, "should match birdnet component via classifier package path")
 }
 
+func TestLookupComponentLongestMatchWins(t *testing.T) {
+	t.Parallel()
+
+	// These package paths each match two registered patterns (a broad one and a
+	// more specific one). lookupComponent must return the most specific
+	// (longest-matching) component. The previous first-match implementation
+	// returned a nondeterministic result because Go map iteration order is
+	// randomized, so each case is checked repeatedly.
+	tests := []struct {
+		name     string
+		funcName string
+		want     string
+	}{
+		{"stream beats audiocore", "github.com/tphakala/birdnet-go/internal/audiocore/stream.newStream", "native-stream"},
+		{"engine beats audiocore", "github.com/tphakala/birdnet-go/internal/audiocore/engine.New", "audiocore.engine"},
+		{"processor beats analysis", "github.com/tphakala/birdnet-go/internal/analysis/processor.Process", "analysis.processor"},
+		{"imports/audio beats imports", "github.com/tphakala/birdnet-go/internal/imports/audio.Import", "imports.audio"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			for range 50 {
+				assert.Equal(t, tt.want, lookupComponent(tt.funcName))
+			}
+		})
+	}
+}
+
 func TestRegexPrecompilation(t *testing.T) {
 	t.Parallel()
 
@@ -219,6 +247,66 @@ func TestRegexPrecompilation(t *testing.T) {
 			for _, exclude := range tt.excludes {
 				assert.NotContains(t, scrubbed, exclude)
 			}
+		})
+	}
+}
+
+// TestDetectCategoryComponentMapping covers the component-based fallback in
+// detectCategory, in particular that the api component (the HTTP server, the
+// successor to the removed http-controller package) auto-categorizes as
+// CategoryHTTP when an error carries no explicit category. The error messages
+// are neutral so the string heuristics that run before the component switch do
+// not fire.
+func TestDetectCategoryComponentMapping(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		component string
+		expected  ErrorCategory
+	}{
+		{name: "api maps to HTTP", component: "api", expected: CategoryHTTP},
+		{name: "datastore maps to database", component: "datastore", expected: CategoryDatabase},
+		{name: "unknown component falls back to generic", component: "somethingelse", expected: CategoryGeneric},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := detectCategory(fmt.Errorf("request rejected"), tt.component)
+			assert.Equal(t, tt.expected, got)
+		})
+	}
+}
+
+func TestNormalizeErrorType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		msg  string
+		want string
+	}{
+		{"Error 1205 (HY000): Lock wait timeout exceeded; try restarting transaction", "lock_wait_timeout"},
+		{"Error 1213 (40001): Deadlock found when trying to get lock", "deadlock"},
+		{"Error 1049 (42000): Unknown database 'x'", "unknown_database"},
+		{"dial tcp: lookup db on 127.0.0.11:53: read udp 1.2.3.4:5->6.7.8.9:53: i/o timeout", "dns_error"},
+		{"dial tcp: lookup db on r:53: server misbehaving", "dns_error"},
+		{"dial tcp 10.0.0.1:3306: connect: no route to host", "host_unreachable"},
+		{"dial tcp 10.0.0.1:3306: connect: network is unreachable", "network_unreachable"},
+		{"invalid connection", "invalid_connection"},
+		{"driver: bad connection", "bad_connection"},
+		{"dial tcp 10.0.0.1:3306: i/o timeout", "io_timeout"},
+		{"operation timed out", "timeout"},
+		{"dial tcp: lookup db: context deadline exceeded", "context_deadline"},
+		{"invalid connection string: no such file or directory", "file_not_found"},
+		{"Cannot add a NOT NULL column with default value NULL", "error"},
+		{"connection refused", "connection_refused"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.msg, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, NormalizeErrorType(tt.msg))
 		})
 	}
 }

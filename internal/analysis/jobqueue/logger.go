@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/tphakala/birdnet-go/internal/errors"
 	"github.com/tphakala/birdnet-go/internal/logger"
 )
 
@@ -53,7 +54,15 @@ func LogJobCompleted(ctx context.Context, jobID, actionType string, duration tim
 	getLog().WithContext(ctx).Info("Job completed", fields...)
 }
 
-// LogJobFailed logs when a job fails
+// LogJobFailed logs a job's final, permanent failure.
+//
+// It is reached once a job's attempts are exhausted, from handleJobFailure
+// (queue.go) inside its job.Attempts >= job.MaxAttempts branch, and when a job
+// is failed after waiting too long for an abandoned attempt
+// (holdForAbandonedAttemptLocked). A retryable failure goes to LogJobRetryScheduled instead, so this
+// function does not need, and must not have, a "will retry" level. The two
+// counters stay in the signature because they say how many attempts were spent
+// before giving up, which is the useful part of the record.
 func LogJobFailed(ctx context.Context, jobID, actionType string, attempt, maxAttempts int, err error) {
 	fields := []logger.Field{
 		logger.String("job_id", jobID),
@@ -66,13 +75,7 @@ func LogJobFailed(ctx context.Context, jobID, actionType string, attempt, maxAtt
 		fields = append(fields, logger.String("trace_id", traceID))
 	}
 
-	contextLogger := getLog().WithContext(ctx)
-	// Use Error level for final failure, Warn for retryable failures
-	if attempt >= maxAttempts {
-		contextLogger.Error("Job failed permanently", fields...)
-	} else {
-		contextLogger.Warn("Job failed, will retry", fields...)
-	}
+	getLog().WithContext(ctx).Error("Job failed permanently", fields...)
 }
 
 // LogQueueStats logs queue statistics
@@ -159,7 +162,32 @@ func LogJobRetryScheduled(ctx context.Context, jobID, actionDesc string, attempt
 	if traceID := extractTraceID(ctx); traceID != "" {
 		fields = append(fields, logger.String("trace_id", traceID))
 	}
-	getLog().WithContext(ctx).Warn("Job scheduled for retry after failure", fields...)
+	// A deferred action (errors.Is(lastErr, ErrJobDeferred)) is rescheduling itself on
+	// purpose (e.g. Extended Capture waiting for the capture tail), not failing. Log it
+	// at Debug so expected backpressure does not flood the warning stream; genuine
+	// failures still log at Warn.
+	log := getLog().WithContext(ctx)
+	if errors.Is(lastErr, ErrJobDeferred) {
+		log.Debug("Job deferred, retry scheduled", fields...)
+		return
+	}
+	log.Warn("Job scheduled for retry after failure", fields...)
+}
+
+// LogAbandonedAttemptReturned logs the late result of an attempt that overran
+// its timeout and was abandoned, when that result does not complete the job
+// (a late failure, or the job already failed).
+func LogAbandonedAttemptReturned(ctx context.Context, jobID, actionDesc string, attempt int, err error) {
+	fields := []logger.Field{
+		logger.String("job_id", jobID),
+		logger.String("action_type", actionDesc),
+		logger.Int("attempt", attempt),
+		logger.Error(err),
+	}
+	if traceID := extractTraceID(ctx); traceID != "" {
+		fields = append(fields, logger.String("trace_id", traceID))
+	}
+	getLog().WithContext(ctx).Debug("Abandoned job attempt returned late", fields...)
 }
 
 // LogJobSuccess logs when a job completes successfully

@@ -13,7 +13,7 @@ import (
 
 	"github.com/getsentry/sentry-go"
 	"github.com/tphakala/birdnet-go/internal/conf"
-	internalerrors "github.com/tphakala/birdnet-go/internal/errors"
+	"github.com/tphakala/birdnet-go/internal/errors"
 	"github.com/tphakala/birdnet-go/internal/logger"
 	"github.com/tphakala/birdnet-go/internal/privacy"
 )
@@ -155,10 +155,14 @@ func resolveSentryDSN() string {
 	return strings.TrimSpace(sentryDSN)
 }
 
-// GetFrontendDSN returns the Sentry DSN for frontend error tracking. The
+// FrontendDSN returns the Sentry DSN for frontend error tracking, or "" when
+// settings do not allow reporting (telemetry off or the build too old). The
 // frontend shares the backend Sentry project, so it follows the same resolver
 // and therefore the same build-time/runtime precedence.
-func GetFrontendDSN() string {
+func FrontendDSN(settings *conf.Settings) string {
+	if !reportingAllowed(settings, time.Now()) {
+		return ""
+	}
 	return resolveSentryDSN()
 }
 
@@ -175,32 +179,55 @@ type DeferredMessage struct {
 const maxDeferredMessages = 100
 
 // sentryInitialized tracks whether Sentry has been initialized
+// testMode state values. testMode lets tests bypass settings checks.
+const (
+	testModeDisabled int32 = 0
+	testModeEnabled  int32 = 1
+)
+
 var (
 	sentryInitialized      bool
 	deferredMessages       []DeferredMessage
 	deferredMutex          sync.Mutex
 	deferredOverflowLogged bool
 	attachmentUploader     *AttachmentUploader
-	testMode               int32 // testMode allows tests to bypass settings checks (0=false, 1=true)
+	testMode               atomic.Int32 // testMode allows tests to bypass settings checks
 )
 
 // shouldSkipTelemetry returns true if telemetry should be skipped.
-// It checks test mode, whether Sentry is enabled in settings, and whether the
-// Sentry SDK is actually initialized for this build.
+// It checks test mode, whether Sentry is enabled in settings, whether this build
+// is still young enough to report, and whether the Sentry SDK is actually
+// initialized for this build.
 // This helper reduces code duplication across telemetry functions.
 func shouldSkipTelemetry() bool {
 	// In test mode, never skip (telemetry is always "enabled" for testing)
-	if atomic.LoadInt32(&testMode) == 1 {
+	if testMode.Load() == testModeEnabled {
 		return false
 	}
-	settings := conf.GetSettings()
-	if settings == nil || !settings.Sentry.Enabled {
+	// Checked per call so a running process stops once its build ages out.
+	if !reportingAllowed(conf.GetSettings(), time.Now()) {
 		return true
 	}
 	// Even when opted in, skip when the SDK was never initialized for this build
 	// (no DSN configured). Otherwise the capture paths would run and log
 	// "event sent" while sentry-go silently no-ops because no client is bound.
-	return sentry.CurrentHub().Client() == nil
+	return !sentryClientBound()
+}
+
+// discardDeferredMessages drops queued deferred messages and marks Sentry as
+// initialized, for the cases where the SDK will never be initialized.
+func discardDeferredMessages() {
+	deferredMutex.Lock()
+	deferredMessages = nil
+	sentryInitialized = true
+	deferredMutex.Unlock()
+}
+
+// sentryClientBound reports whether a real Sentry client is bound to the
+// current hub. sentry-go binds a shared, disabled no-op client when none was
+// initialized, so a nil check on Client() cannot tell the two apart.
+func sentryClientBound() bool {
+	return sentry.CurrentHub().Client().IsEnabled()
 }
 
 // PlatformInfo holds privacy-safe platform information for telemetry
@@ -235,16 +262,14 @@ func collectPlatformInfo() PlatformInfo {
 }
 
 // InitSentry initializes Sentry SDK with privacy-compliant settings
-// This function will only initialize Sentry if explicitly enabled by the user
+// This function will only initialize Sentry if explicitly enabled by the user,
+// a DSN is configured for this build, and the build is not older than
+// maxTelemetryBuildAge.
 func InitSentry(settings *conf.Settings) error {
 	// Check if Sentry is explicitly enabled (opt-in)
 	if !settings.Sentry.Enabled {
 		GetLogger().Info("Sentry telemetry is disabled (opt-in required)")
-		// Drain deferred messages; Sentry will never initialize
-		deferredMutex.Lock()
-		deferredMessages = nil
-		sentryInitialized = true
-		deferredMutex.Unlock()
+		discardDeferredMessages()
 		return nil
 	}
 
@@ -260,11 +285,18 @@ func InitSentry(settings *conf.Settings) error {
 	if resolveSentryDSN() == "" {
 		GetLogger().Info("Sentry telemetry enabled but no DSN is configured for this build; skipping initialization",
 			logger.String("hint", "set "+sentryDSNEnvVar+" to point telemetry at a Sentry project"))
-		// Drain deferred messages; Sentry will never initialize for this build.
-		deferredMutex.Lock()
-		deferredMessages = nil
-		sentryInitialized = true
-		deferredMutex.Unlock()
+		discardDeferredMessages()
+		return nil
+	}
+
+	// Builds past their telemetry age do not report. Support dump uploads still
+	// work through InitMinimalSentryForSupport.
+	if buildTooOld(settings.BuildDate, time.Now()) {
+		GetLogger().Info("Sentry telemetry enabled but this build is too old to report errors; skipping initialization",
+			logger.String("build_date", settings.BuildDate),
+			logger.Int("max_build_age_days", maxTelemetryBuildAgeDays),
+			logger.String("hint", "update to a current release to resume error reporting"))
+		discardDeferredMessages()
 		return nil
 	}
 
@@ -321,6 +353,10 @@ func initializeSentrySDK(settings *conf.Settings) error {
 		// sentry-go v0.46.0 telemetry processor drops event attachments (support dumps).
 		// Scheduler.sendItem() only adds the event envelope item, skipping Attachments.
 		DisableTelemetryBuffer: true,
+
+		// sentry-go has no backoff for network errors; the gate stops DNS and
+		// dial attempts while the ingest host is unreachable (GitHub #4813).
+		HTTPTransport: sentryDeliveryGate,
 	})
 
 	if err != nil {
@@ -332,7 +368,8 @@ func initializeSentrySDK(settings *conf.Settings) error {
 
 // createBeforeSendHook creates the BeforeSend hook for privacy filtering and
 // uptime enrichment. Only one BeforeSend can be attached to the Sentry client,
-// so uptime annotation runs inside this hook after privacy filtering.
+// so uptime annotation runs inside this hook after privacy filtering. It also
+// drops every event from a build past its telemetry age, except support dumps.
 func createBeforeSendHook(settings *conf.Settings) func(*sentry.Event, *sentry.EventHint) *sentry.Event {
 	return func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
 		// Guard against a nil event before the privacy filters dereference
@@ -340,6 +377,12 @@ func createBeforeSendHook(settings *conf.Settings) func(*sentry.Event, *sentry.E
 		// helpers are not. Returning nil drops the event cleanly (CodeRabbit
 		// review on #2762).
 		if event == nil {
+			return nil
+		}
+
+		// Per event: direct sentry.* callers bypass shouldSkipTelemetry, and a
+		// running process can cross the age limit after init.
+		if buildTooOld(settings.BuildDate, time.Now()) && !isSupportDumpEvent(event) {
 			return nil
 		}
 
@@ -677,6 +720,42 @@ func SetDatastoreSchemaTag(schemaVersion string) {
 	})
 }
 
+const (
+	// migrationStateTagKey is the Sentry tag holding the legacy-to-v2 migration state.
+	migrationStateTagKey = "migration_state"
+	// migrationPrereqTagKey is the Sentry tag holding the outcome of the migration prerequisite checks.
+	migrationPrereqTagKey = "migration_prereq"
+)
+
+// SetMigrationStateTag sets a global Sentry tag with the legacy-to-v2 migration
+// state. The caller must pass a value from a closed set (the migration status
+// strings plus fixed fallbacks), never error text or a path. It reports whether
+// the tag was applied; false means telemetry is currently off or the value is
+// empty, so a caller may retry later.
+func SetMigrationStateTag(value string) bool {
+	if shouldSkipTelemetry() || value == "" {
+		return false
+	}
+	sentry.ConfigureScope(func(scope *sentry.Scope) {
+		scope.SetTag(migrationStateTagKey, value)
+	})
+	return true
+}
+
+// SetMigrationPrereqTag sets a global Sentry tag with the outcome of the
+// migration prerequisite checks. The caller must pass a value from a closed
+// set: "passed" or the fixed ID of a failing check, never error text or a path.
+// It reports whether the tag was applied.
+func SetMigrationPrereqTag(value string) bool {
+	if shouldSkipTelemetry() || value == "" {
+		return false
+	}
+	sentry.ConfigureScope(func(scope *sentry.Scope) {
+		scope.SetTag(migrationPrereqTagKey, value)
+	})
+	return true
+}
+
 // processDeferredMessages processes any messages that were captured before Sentry was ready
 func processDeferredMessages() int {
 	deferredMutex.Lock()
@@ -886,12 +965,12 @@ func normalizeDirectCaptureErrorType(scrubbedMsg string) string {
 		if idx := strings.Index(trimmed, "]"); idx > 1 {
 			category := trimmed[1:idx]
 			rest := strings.TrimSpace(trimmed[idx+1:])
-			normalizedType := internalerrors.NormalizeErrorType(strings.ToLower(rest))
+			normalizedType := errors.NormalizeErrorType(strings.ToLower(rest))
 			return category + ":" + normalizedType
 		}
 	}
 
-	return internalerrors.NormalizeErrorType(strings.ToLower(scrubbedMsg))
+	return errors.NormalizeErrorType(strings.ToLower(scrubbedMsg))
 }
 
 // CaptureError captures an error with privacy-compliant context
@@ -1105,7 +1184,7 @@ func InitMinimalSentryForSupport(systemID, version string) error {
 	// drain deferred messages without initializing the SDK; relying on that flag
 	// here would make support-dump upload a silent no-op for users who keep
 	// telemetry disabled but request an upload.
-	if sentry.CurrentHub().Client() != nil {
+	if sentryClientBound() {
 		return nil
 	}
 
@@ -1131,18 +1210,19 @@ func InitMinimalSentryForSupport(systemID, version string) error {
 		// sentry-go v0.46.0 telemetry processor drops event attachments (support dumps).
 		DisableTelemetryBuffer: true,
 
+		// Same delivery gate as the main client (GitHub #4813).
+		HTTPTransport: sentryDeliveryGate,
+
 		// Only allow support dump events
 		BeforeSend: func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
 			// Only allow events tagged as support dumps
-			if event.Tags == nil || event.Tags["type"] != "support_dump" {
+			if !isSupportDumpEvent(event) {
 				return nil // Drop all non-support events
 			}
-			// Skip ScrubMessage on event.Message: the message is constructed by
-			// our code (system ID + timestamp) and contains no user input. The
-			// IPv6 regex in ScrubStandaloneIPs incorrectly matches the colon-
-			// separated time components of ISO 8601 timestamps, corrupting them
-			// to "invalid-ip-..." hashes. User-provided text is already scrubbed
-			// before being added to the support context.
+			// Skip ScrubMessage on event.Message: the message is built by our
+			// code (system ID + timestamp) and carries no user input.
+			// User-provided text is already scrubbed before it is added to the
+			// support context.
 			event.User = sentry.User{ID: systemID} // Only include system ID
 			event.ServerName = ""
 			event.Modules = nil

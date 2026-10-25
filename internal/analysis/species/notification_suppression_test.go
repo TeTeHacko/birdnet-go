@@ -14,24 +14,24 @@ import (
 // mockSpeciesDatastore implements SpeciesDatastore interface for testing
 type mockSpeciesDatastore struct{}
 
-func (m *mockSpeciesDatastore) GetNewSpeciesDetections(ctx context.Context, startDate, endDate string, limit, offset int, _ ...uint) ([]datastore.NewSpeciesData, error) {
+func (m *mockSpeciesDatastore) GetNewSpeciesDetections(ctx context.Context, startDate, endDate string, limit, offset int) ([]datastore.NewSpeciesData, error) {
 	return []datastore.NewSpeciesData{}, nil
 }
 
-func (m *mockSpeciesDatastore) GetSpeciesFirstDetectionInPeriod(ctx context.Context, startDate, endDate string, limit, offset int, _ ...uint) ([]datastore.NewSpeciesData, error) {
+func (m *mockSpeciesDatastore) GetSpeciesFirstDetectionInPeriod(ctx context.Context, startDate, endDate string, limit, offset int) ([]datastore.NewSpeciesData, error) {
 	return []datastore.NewSpeciesData{}, nil
 }
 
 // BG-17 fix: Add notification history methods
-func (m *mockSpeciesDatastore) GetActiveNotificationHistory(after time.Time) ([]datastore.NotificationHistory, error) {
+func (m *mockSpeciesDatastore) GetActiveNotificationHistory(_ context.Context, after time.Time) ([]datastore.NotificationHistory, error) {
 	return []datastore.NotificationHistory{}, nil
 }
 
-func (m *mockSpeciesDatastore) SaveNotificationHistory(history *datastore.NotificationHistory) error {
+func (m *mockSpeciesDatastore) SaveNotificationHistory(_ context.Context, history *datastore.NotificationHistory) error {
 	return nil
 }
 
-func (m *mockSpeciesDatastore) DeleteExpiredNotificationHistory(before time.Time) (int64, error) {
+func (m *mockSpeciesDatastore) DeleteExpiredNotificationHistory(_ context.Context, before time.Time) (int64, error) {
 	return 0, nil
 }
 
@@ -155,4 +155,42 @@ func TestNotificationSuppressionThreadSafety(t *testing.T) {
 		"Species1 should be suppressed after recording")
 	assert.True(t, tracker.ShouldSuppressNotification("Species2", now.Add(1*time.Hour)),
 		"Species2 should be suppressed after recording")
+}
+
+func TestNotificationWindowPreservesConfiguredSuppression(t *testing.T) {
+	t.Parallel()
+	first := time.Date(2025, 6, 1, 10, 0, 0, 0, time.UTC)
+	untilWindowEnd := time.Date(2025, 6, 8, 0, 0, 0, 0, time.UTC).Sub(first)
+	const scientificName = "Parus major"
+	tests := []struct {
+		name             string
+		windowDays       int
+		suppressionHours int
+		repeatAfter      time.Duration
+		wantNotification bool
+	}{
+		{"short_interval_active", 7, 1, 30 * time.Minute, false},
+		{"short_interval_expired", 7, 1, time.Hour, true},
+		{"suppression_disabled", 7, 0, time.Minute, true},
+		{"longer_new_species_window", 14, 168, 168 * time.Hour, true},
+		{"before_window_end", 7, 0, untilWindowEnd - time.Nanosecond, true},
+		{"at_window_end", 7, 0, untilWindowEnd, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tracker := NewTrackerFromSettings(nil, &conf.SpeciesTrackingSettings{
+				NewSpeciesWindowDays:         tt.windowDays,
+				NotificationSuppressionHours: tt.suppressionHours,
+			})
+			isNew, _ := tracker.CheckAndUpdateSpecies(scientificName, first)
+			require.True(t, isNew)
+			tracker.RecordNotificationSent(scientificName, first)
+
+			repeat := first.Add(tt.repeatAfter)
+			isNew, _ = tracker.CheckAndUpdateSpecies(scientificName, repeat)
+			notify := isNew && !tracker.ShouldSuppressNotification(scientificName, repeat)
+			assert.Equal(t, tt.wantNotification, notify)
+		})
+	}
 }

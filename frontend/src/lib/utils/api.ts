@@ -67,6 +67,8 @@ export class ApiError extends Error {
   response: Response;
   userMessage: string;
   isNetworkError: boolean;
+  /** The server's i18n error_key when the error body carried one. */
+  errorKey?: string;
 
   constructor(message: string, status: number, response: Response, isNetworkError = false) {
     super(message);
@@ -217,6 +219,7 @@ function getSecureErrorMessage(status: number): string {
 async function handleResponse<T = unknown>(response: Response): Promise<T> {
   if (!response.ok) {
     let serverMessage = '';
+    let serverErrorKey: string | undefined;
 
     try {
       // SECURITY: Limit response size for error parsing
@@ -232,6 +235,7 @@ async function handleResponse<T = unknown>(response: Response): Promise<T> {
       if (errorData && typeof errorData === 'object') {
         // Try i18n translation via error_key first
         if (errorData.error_key && typeof errorData.error_key === 'string') {
+          serverErrorKey = errorData.error_key;
           const params =
             errorData.error_params &&
             typeof errorData.error_params === 'object' &&
@@ -260,7 +264,9 @@ async function handleResponse<T = unknown>(response: Response): Promise<T> {
 
     // Use translated message if available, otherwise fall back to secure generic message
     const userMessage = serverMessage || getSecureErrorMessage(response.status);
-    throw new ApiError(userMessage, response.status, response);
+    const apiError = new ApiError(userMessage, response.status, response);
+    apiError.errorKey = serverErrorKey;
+    throw apiError;
   }
 
   // Handle empty responses
@@ -337,10 +343,21 @@ interface FetchOptions extends Omit<RequestInit, 'body'> {
   timeout?: number;
   /** Internal flag to prevent infinite CSRF retry loops */
   _csrfRetried?: boolean;
+  /**
+   * Called with the headers of the final response, success or HTTP error, before
+   * the body is read. Not called for any 401 (the redirect to login, and the
+   * guest and login-request cases that throw an ApiError); a CSRF retry calls it
+   * for the retry's response only.
+   */
+  onHeaders?: (headers: Headers) => void;
 }
 
 /**
  * SECURITY: Enhanced fetch with comprehensive protection
+ *
+ * Headers in options.headers are merged over the defaults (including the CSRF
+ * token) for each request, and options is never modified, so the retry after a
+ * 403 merges them again over the refreshed token.
  */
 export async function fetchWithCSRF<T = unknown>(
   url: string,
@@ -422,8 +439,6 @@ export async function fetchWithCSRF<T = unknown>(
       }
       defaultHeaders.set(key, value);
     }
-
-    options.headers = defaultHeaders;
   }
 
   // SECURITY: Validate and sanitize body
@@ -448,8 +463,13 @@ export async function fetchWithCSRF<T = unknown>(
   }
 
   // Strip signal from options so caller's signal doesn't overwrite the internal one
-  const { signal: _ignored, ...restOptions } = options;
+  // onHeaders is likewise ours, not fetch's. headers are already merged into
+  // defaultOptions.headers above; leaving the caller's copy in the spread would
+  // replace the merged set (and its CSRF token) with only the custom headers.
+  const { signal: _ignored, onHeaders: _onHeaders, headers: _headers, ...restOptions } = options;
   void _ignored; // Consumed via addEventListener above; destructured only to exclude from spread
+  void _onHeaders; // Called below; destructured only to exclude from spread
+  void _headers; // Merged into defaultOptions.headers above; destructured only to exclude from spread
 
   const finalOptions: RequestInit = {
     ...defaultOptions,
@@ -499,6 +519,8 @@ export async function fetchWithCSRF<T = unknown>(
         return fetchWithCSRF<T>(url, { ...options, _csrfRetried: true });
       }
     }
+
+    options.onHeaders?.(response.headers);
 
     const result = await handleResponse<T>(response);
     logger.debug(`Response from ${url} received successfully`);

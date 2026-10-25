@@ -11,6 +11,7 @@
   - Editable stream name and URL with credential masking
   - Stream type selector (RTSP, HTTP, HLS, RTMP, UDP)
   - Protocol selector (TCP/UDP) for RTSP and RTMP streams
+  - Gain slider (-40 to +40 dB)
   - Inline editing mode
   - Delete confirmation
   - Always-visible action buttons for accessibility
@@ -19,7 +20,6 @@
 -->
 <script lang="ts">
   import { getContext } from 'svelte';
-  import { generateId } from '$lib/utils/uuid';
   import {
     Settings,
     Trash2,
@@ -34,11 +34,14 @@
   import { slide } from 'svelte/transition';
   import { t } from '$lib/i18n';
   import { cn } from '$lib/utils/cn';
-  import { DEFAULT_MODEL_ID } from '$lib/stores/models.svelte';
+  import { modelsLoading } from '$lib/stores/models.svelte';
+  import { acousticModelAvailability } from '$lib/stores/acousticModels.svelte';
+  import { defaultModelSelection } from '$lib/utils/defaultModelSelection';
   import { maskUrlCredentials } from '$lib/utils/security';
   import StatusPill, { type StatusVariant } from '$lib/desktop/components/ui/StatusPill.svelte';
   import Checkbox from './Checkbox.svelte';
   import SelectDropdown from './SelectDropdown.svelte';
+  import InlineSlider from './InlineSlider.svelte';
   import ModelCheckboxList from './ModelCheckboxList.svelte';
   import QuietHoursEditor from './QuietHoursEditor.svelte';
   import AudioEqualizerSettings from '$lib/desktop/features/settings/components/AudioEqualizerSettings.svelte';
@@ -48,20 +51,29 @@
     EqualizerFilterType,
     QuietHoursConfig,
     ChannelMode,
+    MediaMode,
     ChannelAnalysis,
   } from '$lib/stores/settings';
-  import { defaultQuietHoursConfig } from '$lib/stores/settings';
+  import {
+    defaultQuietHoursConfig,
+    AUDIO_GAIN_MIN_DB,
+    AUDIO_GAIN_MAX_DB,
+  } from '$lib/stores/settings';
   import type { StreamHealthResponse } from './StreamManager.svelte';
   import StreamTestButton from './StreamTestButton.svelte';
   import StreamTimeline from './StreamTimeline.svelte';
   import StreamChannelControls from './StreamChannelControls.svelte';
-  import { streamTypeOptions, transportOptions, analyzeStreamChannels } from './streamOptions';
+  import {
+    streamTypeOptions,
+    transportOptions,
+    getMediaModeOptions,
+    analyzeStreamChannels,
+  } from './streamOptions';
   import { normalizeChannelMode } from './streamChannel';
 
   interface LocalEqualizerSettings {
     enabled: boolean;
     filters: Array<{
-      id?: string;
       type: EqualizerFilterType;
       frequency: number;
       q?: number;
@@ -73,13 +85,7 @@
 
   // Stream health status type
   export type StreamStatus =
-    | 'connected'
-    | 'connecting'
-    | 'disabled'
-    | 'error'
-    | 'idle'
-    | 'suppressed'
-    | 'unknown';
+    'connected' | 'connecting' | 'disabled' | 'error' | 'idle' | 'suppressed' | 'unknown';
 
   interface Props {
     stream: StreamConfig;
@@ -87,6 +93,8 @@
     status?: StreamStatus;
     availableModels: Array<{
       id: string;
+      /** Classifier registry ID; the join key for default-target mapping. Absent on an older server. */
+      registryId?: string;
       name: string;
       category: string;
       minSampleRate?: number;
@@ -106,6 +114,8 @@
     onUpdate,
     onDelete,
   }: Props = $props();
+
+  const acousticAvailability = $derived(acousticModelAvailability());
 
   // Get the stream health state from context - the $state object is passed directly
   // Mutations to this object are reactive and will trigger re-renders
@@ -169,7 +179,8 @@
   // Derive connection stability status
   let connectionStatus = $derived.by(() => {
     if (!health) return 'Unknown';
-    if (health.process_state === 'circuit_open') return 'Failed';
+    if (health.process_state === 'circuit_open' || health.process_state === 'failed')
+      return 'Failed';
     if (health.process_state === 'backoff' || health.process_state === 'restarting')
       return 'Degraded';
     if (health.is_healthy && health.is_receiving_data) return 'Stable';
@@ -192,12 +203,15 @@
   let editTransport = $state<'tcp' | 'udp'>('tcp');
   let editStreamType = $state<StreamType>('rtsp');
   let editEnabled = $state(true);
+  let editGain = $state(0);
   let editModels = $state<string[]>([]);
   let editEqualizer = $state<LocalEqualizerSettings>({ enabled: false, filters: [] });
   let editQuietHours = $state<QuietHoursConfig>({ ...defaultQuietHoursConfig });
   let showDeleteConfirm = $state(false);
   let showEqualizer = $state(false);
   let editChannelMode = $state<ChannelMode>('downmix');
+  // Default matches the backend default (empty = full-stream).
+  let editMediaMode = $state<MediaMode>('full-stream');
   let isAnalyzing = $state(false);
   let analysisResult = $state<ChannelAnalysis | null>(null);
   let analysisError = $state<string | null>(null);
@@ -314,14 +328,22 @@
   let showTransport = $derived(stream.type === 'rtsp' || stream.type === 'rtmp');
   let showTransportInEdit = $derived(editStreamType === 'rtsp' || editStreamType === 'rtmp');
 
+  // Media mode only affects the RTSP handshake, so it is RTSP-only.
+  let showMediaModeInEdit = $derived(editStreamType === 'rtsp');
+
   function startEdit() {
     editName = stream.name;
     editUrl = stream.url;
     editTransport = stream.transport ?? 'tcp';
     editChannelMode = normalizeChannelMode(stream.channelMode);
+    // Empty/unset media mode is the full-stream default.
+    editMediaMode = stream.mediaMode ?? 'full-stream';
     editStreamType = stream.type;
     editEnabled = stream.enabled;
-    editModels = stream.models?.length ? [...stream.models] : [DEFAULT_MODEL_ID];
+    editGain = stream.gain ?? 0;
+    editModels = stream.models?.length
+      ? [...stream.models]
+      : defaultModelSelection(acousticAvailability, availableModels);
     editEqualizer = stream.equalizer
       ? { ...stream.equalizer, filters: [...stream.equalizer.filters] }
       : { enabled: false, filters: [] };
@@ -350,14 +372,19 @@
   function saveEdit() {
     if (needsTest) return;
     if (editName.trim() && editUrl.trim()) {
+      // Rewrite an empty model list to the defaults so a cleared selection saves
+      // the classifier defaults rather than []. This is a no-op at N=0, where
+      // defaultModelSelection returns [] (no acoustic model to map), preserving
+      // the empty-list save the backend resolves to its own defaults.
+      if (editModels.length === 0) {
+        editModels = defaultModelSelection(acousticAvailability, availableModels);
+      }
+
       const transformedEqualizer =
         editEqualizer.enabled || editEqualizer.filters.length > 0
           ? {
               enabled: editEqualizer.enabled,
-              filters: editEqualizer.filters.map(f => ({
-                ...f,
-                id: f.id || generateId(),
-              })),
+              filters: editEqualizer.filters,
             }
           : undefined;
 
@@ -370,9 +397,12 @@
         channelMode: editChannelMode,
         // Use selected transport for RTSP/RTMP, omit for others
         ...(showTransportInEdit ? { transport: editTransport } : {}),
+        // Media mode is RTSP-only; omit for other stream types so it is not persisted where it has no effect.
+        ...(showMediaModeInEdit ? { mediaMode: editMediaMode } : {}),
+        gain: editGain,
         equalizer: transformedEqualizer,
         quietHours: editQuietHours,
-      } as StreamConfig);
+      });
       if (success) {
         isEditing = false;
       }
@@ -478,7 +508,7 @@
           </button>
           <button
             type="button"
-            class="inline-flex items-center justify-center h-8 px-3 text-sm font-medium rounded-lg bg-[var(--color-error)] text-[var(--color-error-content)] hover:opacity-90 transition-colors"
+            class="inline-flex items-center justify-center h-8 px-3 text-sm font-medium rounded-lg bg-[var(--color-error)] text-[var(--color-error-content)] hover:bg-[var(--color-error-hover)] transition-colors"
             onclick={executeDelete}
           >
             {t('common.delete')}
@@ -566,6 +596,21 @@
           {/if}
         </div>
 
+        <!-- RTSP media mode: audio-only handshake, full stream, or auto fallback -->
+        {#if showMediaModeInEdit}
+          <div>
+            <SelectDropdown
+              value={editMediaMode}
+              label={t('settings.audio.streams.mediaModeLabel')}
+              helpText={t('settings.audio.streams.mediaModeHelp')}
+              options={getMediaModeOptions()}
+              onChange={value => (editMediaMode = value as MediaMode)}
+              groupBy={false}
+              menuSize="sm"
+            />
+          </div>
+        {/if}
+
         <!-- Channel handling: format display, selector, and stereo analysis -->
         <StreamChannelControls
           channelMode={editChannelMode}
@@ -588,12 +633,26 @@
           size="sm"
         />
 
+        <!-- Gain -->
+        <InlineSlider
+          label={t('settings.audio.soundCards.gainLabel')}
+          value={editGain}
+          onUpdate={value => (editGain = value)}
+          min={AUDIO_GAIN_MIN_DB}
+          max={AUDIO_GAIN_MAX_DB}
+          step={1}
+          unit=" dB"
+          {disabled}
+        />
+
         <!-- Model Selection -->
         <ModelCheckboxList
           models={availableModels}
           selectedModels={editModels}
           {sourceSampleRate}
           isStream={true}
+          loading={modelsLoading()}
+          availability={acousticAvailability}
           {disabled}
           onToggle={models => (editModels = models)}
         />
@@ -621,6 +680,10 @@
           </button>
           {#if showEqualizer}
             <div id="stream-eq-{index}" class="mt-3" transition:slide={{ duration: 200 }}>
+              <!-- No sampleRate: a stream's EQ chain runs at the pipeline output rate,
+                   which is the server's configured rate (the preview default) for
+                   every stream except a bat stream with a higher native rate. The
+                   probed stream rate is not that rate, so it is not sent. -->
               <AudioEqualizerSettings
                 equalizerSettings={editEqualizer}
                 {disabled}
@@ -651,7 +714,7 @@
           <span title={needsTest ? t('settings.audio.streams.testRequired') : undefined}>
             <button
               type="button"
-              class="inline-flex items-center justify-center gap-1.5 h-8 px-3 text-sm font-medium rounded-lg bg-[var(--color-primary)] text-[var(--color-primary-content)] hover:opacity-90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              class="inline-flex items-center justify-center gap-1.5 h-8 px-3 text-sm font-medium rounded-lg bg-[var(--color-primary)] text-[var(--color-primary-content)] hover:not-disabled:bg-[var(--color-primary-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               onclick={saveEdit}
               disabled={!editName.trim() || !editUrl.trim() || needsTest}
             >
@@ -737,6 +800,13 @@
         <div class="flex-shrink-0 flex items-center gap-2">
           <!-- Colored Protocol Tags -->
           <div class="hidden sm:flex items-center gap-1.5">
+            {#if stream.gain}
+              <span
+                class="px-2 py-0.5 rounded text-xs font-semibold bg-[var(--color-warning)]/15 text-[var(--color-warning)]"
+              >
+                {stream.gain > 0 ? '+' : ''}{stream.gain} dB
+              </span>
+            {/if}
             <span
               class="px-2 py-0.5 rounded text-xs font-semibold bg-[var(--color-info)]/15 text-[var(--color-info)]"
             >
@@ -759,6 +829,19 @@
                 class="px-2 py-0.5 rounded text-xs font-mono font-semibold bg-[var(--color-info)]/15 text-[var(--color-info)]"
                 >R</span
               >
+            {/if}
+            {#if stream.type === 'rtsp' && stream.mediaMode === 'auto'}
+              <span
+                class="px-2 py-0.5 rounded text-xs font-semibold bg-[var(--color-secondary)]/15 text-[var(--color-secondary)]"
+              >
+                {t('settings.audio.streams.mediaMode.auto')}
+              </span>
+            {:else if stream.type === 'rtsp' && stream.mediaMode === 'audio-only'}
+              <span
+                class="px-2 py-0.5 rounded text-xs font-semibold bg-[var(--color-secondary)]/15 text-[var(--color-secondary)]"
+              >
+                {t('settings.audio.streams.mediaMode.audioOnly')}
+              </span>
             {/if}
           </div>
 
@@ -828,7 +911,9 @@
               <span
                 class={cn(
                   'ml-2',
-                  health?.process_state === 'circuit_open' || health?.process_state === 'stopped'
+                  health?.process_state === 'circuit_open' ||
+                    health?.process_state === 'failed' ||
+                    health?.process_state === 'stopped'
                     ? 'text-[var(--color-error)]'
                     : 'text-[var(--color-base-content)]'
                 )}

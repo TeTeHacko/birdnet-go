@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	ort "github.com/tphakala/birdnet-go/internal/inference/onnx"
+	"github.com/tphakala/birdnet-go/internal/logger"
 	ortlib "github.com/yalue/onnxruntime_go"
 )
 
@@ -113,6 +114,25 @@ func (c *onnxClassifier) Close() {
 	}
 }
 
+// DetectEmbeddingOutput returns the output-port index and size of a model's BirdNET
+// v2.4 embedding output ([.,1024]): index 1 for the 2-output backbone (logits@0 +
+// embedding@1), index 0 for the head-pruned, embedding-only model. The bat OpenVINO
+// path uses it to bind the embedding extractor to the correct port before inference.
+// Returns an error when the model has no 1024-dim output. The ONNX Runtime must be
+// initialized via InitONNXRuntime before calling.
+func DetectEmbeddingOutput(modelPath string) (index, size int, err error) {
+	return ort.DetectEmbeddingOutput(modelPath)
+}
+
+// DetectPredictionsOutput returns the output-port index of a model's
+// species-predictions output: the output whose last dimension equals numClasses.
+// BirdNET v3.0 also exposes a 1280-dim embeddings output whose position varies by
+// export, so the OpenVINO path uses this to bind the classifier to the correct
+// port before inference. Returns an error when no output matches numClasses.
+func DetectPredictionsOutput(modelPath string, numClasses int) (index int, err error) {
+	return ort.DetectPredictionsOutput(modelPath, numClasses)
+}
+
 // ONNXCustomClassifierOptions configures the ONNX custom classifier.
 type ONNXCustomClassifierOptions struct {
 	Labels     []string // Provide labels directly (takes priority over LabelsPath)
@@ -182,6 +202,14 @@ func (c *onnxCustomClassifier) NumClasses() int {
 		return 0
 	}
 	return c.classifier.NumClasses()
+}
+
+// InputDim returns the embedding vector length the classifier expects as input.
+func (c *onnxCustomClassifier) InputDim() int {
+	if c.classifier == nil {
+		return 0
+	}
+	return c.classifier.InputDim()
 }
 
 // Labels returns the classification labels.
@@ -275,6 +303,7 @@ func InitONNXRuntime(libraryPath string) (err error) {
 		return nil
 	}
 
+	configured := libraryPath != ""
 	if libraryPath == "" {
 		libraryPath = findONNXRuntimeLibrary()
 	}
@@ -287,7 +316,29 @@ func InitONNXRuntime(libraryPath string) (err error) {
 
 	ort.MustInitORT(libraryPath)
 	ortInitialized = true
+	publishORTRuntime(libraryPath, configured)
+	logKleidiAIWorkaround(ortlib.GetVersion(), runtime.GOARCH)
 	return nil
+}
+
+// archARM64 is the runtime.GOARCH value of 64-bit Arm. Of the targets
+// BirdNET-Go builds for, it is the only one where ONNX Runtime uses KleidiAI
+// kernels.
+const archARM64 = "arm64"
+
+// logKleidiAIWorkaround logs at Info that sessions disable the KleidiAI
+// kernels for ortVersion, so support can confirm the workaround is active on
+// an arm64 host. It stays silent off arm64, where the
+// session option changes nothing. InitONNXRuntime calls it after a successful
+// init.
+func logKleidiAIWorkaround(ortVersion, goarch string) {
+	if goarch != archARM64 || !ort.KleidiAIWorkaroundNeeded(ortVersion) {
+		return
+	}
+	logger.Global().Module("inference").Info(
+		"ONNX Runtime KleidiAI kernels are disabled to avoid a known memory growth in older ONNX Runtime releases on Arm CPUs with SME",
+		logger.String("ort_version", ortVersion),
+		logger.String("fixed_in", ort.KleidiAIFixedVersion))
 }
 
 // findONNXRuntimeLibrary searches standard system paths for the ONNX Runtime
@@ -347,5 +398,6 @@ func DestroyONNXRuntime() error {
 		return err
 	}
 	ortInitialized = false
+	clearORTRuntime()
 	return nil
 }

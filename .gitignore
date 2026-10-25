@@ -4,11 +4,22 @@ assets/tailwind.css
 log/
 clips/
 models/
+# The bare models/ pattern above ignores the runtime ML-model download dir, but
+# it also matches the api/v2 models domain package; keep that source tracked.
+!internal/api/v2/models/
 plans/
 superpowers/
 docs/plans/
 docs/specs/
 docs/superpowers/
+docs/research/
+docs/design/
+# Design specs and implementation plans are kept out of the repository.
+SPEC.md
+PLAN.md
+*-spec.md
+*-plan.md
+*-design.md
 db/
 cache/
 spectrograms/
@@ -25,6 +36,7 @@ tmp
 *.exe
 *.off
 *.local.md
+/AGENTS.override.md
 model/labels_en.txt
 model/labels_fi.txt
 output/soundscape.wav.txt
@@ -53,10 +65,20 @@ REFACTOR_CHANGELOG.md
 .worktrees/
 .leann/
 .codegraph/
-# Track the shared Serena project config; ignore caches, logs, memories, and local overrides
-.serena/*
-!.serena/project.yml
+.serena/
 
 # Python bytecode caches (db-doctor and other tools/ scripts)
 __pycache__/
 *.pyc
+
+# Release-notes drafts are transient working files (deleted after each release);
+# they must never be committed. See the drafting-release-changelog skill.
+RELEASE_NOTES_DRAFT.md
+
+# Compiled Go test binaries (`go test -c`), which are easy to sweep in with `git add -A`
+*.test
+
+# Binaries built in the repository root by go build ./tools/release-manifest and
+# go build ./scripts/generate-multi-taxa; they must never be committed.
+/release-manifest
+/generate-multi-taxa

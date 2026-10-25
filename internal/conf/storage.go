@@ -21,7 +21,8 @@ var ConfigPath string
 
 // settingsInstance holds the current *Settings snapshot. Published via
 // atomic.Pointer.Store and never mutated in place; writers produce a new
-// snapshot via CloneSettings + StoreSettings.
+// snapshot via UpdateSettings, which clones the current snapshot, lets the
+// writer mutate the clone and publishes it under the settings writer lock.
 //
 // loadMu guards the on-demand Load() that Setting() performs when
 // settingsInstance is nil. A plain sync.Mutex is used rather than sync.Once
@@ -32,6 +33,26 @@ var (
 	settingsInstance atomic.Pointer[Settings]
 	loadMu           sync.Mutex
 )
+
+// defaultConfigCreatedPath records the path of a default config generated
+// during this process's Load(). internal/conf must NOT import
+// internal/diagnostics (import cycle), so the journal event is emitted by
+// diagnostics.RecordBoot reading this marker via its caller.
+var defaultConfigCreatedPath atomic.Pointer[string]
+
+// markDefaultConfigCreated records that a default config was generated.
+func markDefaultConfigCreated(path string) {
+	defaultConfigCreatedPath.Store(&path)
+}
+
+// DefaultConfigCreated reports whether this process generated a default
+// config file during Load, and at which path.
+func DefaultConfigCreated() (created bool, path string) {
+	if p := defaultConfigCreatedPath.Load(); p != nil && *p != "" {
+		return true, *p
+	}
+	return false, ""
+}
 
 // Load reads the configuration file and environment variables into GlobalConfig.
 //
@@ -52,12 +73,32 @@ func Load() (*Settings, error) {
 	// missing field before unmarshal so the runtime struct can use a plain bool.
 	streamEnabledMigrated := migrateStreamEnabledDefaults()
 
-	// Unmarshal the config into settings, with custom Duration decode hook
-	if err := viper.Unmarshal(settings, viper.DecodeHook(DurationDecodeHook())); err != nil {
+	// Unmarshal the config into settings. configDecodeHook restores flat map
+	// keys that viper split on "." (scalar-valued maps that viper reaches by
+	// key path, today logging.module_levels and taxonomySynonyms; maps inside
+	// list entries are never split, see #4523) and decodes durations.
+	if err := viper.Unmarshal(settings, viper.DecodeHook(configDecodeHook())); err != nil {
 		return nil, errors.New(err).
 			Category(errors.CategoryConfiguration).
 			Context("operation", "unmarshal-config").
 			Build()
+	}
+
+	// Re-decode the logging section from viper's raw subtree: AllSettings()
+	// has re-split dotted module keys ("analysis.processor") into nested maps,
+	// losing them from logging.modules and, when a parent and a dotted child
+	// coexist, from module_levels. The raw subtree keeps the flat keys, so
+	// decoding from it restores both (#4523).
+	if err := reDecodeLoggingConfig(settings); err != nil {
+		return nil, err
+	}
+
+	// Restore species config and season keys that contain a dot. This must run
+	// before key normalization and before any persistMigration below, so a
+	// migration save never writes the zero-value phantom entry viper's split
+	// leaves behind.
+	if err := reDecodeDottedStructMaps(settings); err != nil {
+		return nil, err
 	}
 
 	// Normalize species config keys to lowercase for case-insensitive matching
@@ -92,8 +133,49 @@ func Load() (*Settings, error) {
 		persistMigration(settings, "source models")
 	}
 
+	// Pin every pre-Phase-4 empty source/stream model list to ["birdnet"] once, then
+	// stamp ConfigVersion. Before Phase 4 an empty list meant the built-in v2.4;
+	// afterwards it means the orchestrator's default targets. Runs before
+	// ReconcileMisplacedAudioSources so a relocated source is pinned before its list
+	// is copied to the new stream (model de-privilege epic, Phase 4).
+	if settings.MigrateSourceTargetDefaults() {
+		persistMigration(settings, "source target defaults")
+	}
+
+	// Write the implicit BirdNET v2.4 enable out to models.enabled once (moving it to the
+	// front, or prepending it), before the implicit enable is dropped from the orchestrator,
+	// so every existing install keeps loading exactly the models it did in the same order
+	// (model de-privilege epic, Phase 4). Runs after MigrateSourceTargetDefaults (a version-0
+	// file gets both) and before MigrateModelIDAliases, which then canonicalizes any catalog
+	// spelling.
+	if settings.MigrateModelsEnabledAuthoritative() {
+		persistMigration(settings, "models enabled authoritative")
+	}
+
+	// Relocate stream URLs misconfigured under realtime.audio.sources (meant
+	// for local sound cards) into realtime.rtsp.streams so the runtime opens
+	// them with FFmpeg instead of failing to open them as ALSA devices.
+	if settings.ReconcileMisplacedAudioSources() {
+		persistMigration(settings, "misplaced audio sources")
+	}
+
 	if streamEnabledMigrated {
 		persistMigration(settings, "stream enabled defaults")
+	}
+
+	// Canonicalize catalog-style model IDs (e.g. "perch-v2" -> "perch_v2") so a
+	// hand-edited config persists a single canonical spelling and model
+	// install/uninstall bookkeeping stays consistent. Runs before validation so
+	// the normalized IDs are what gets checked.
+	if settings.MigrateModelIDAliases() {
+		persistMigration(settings, "model ID aliases")
+	}
+
+	// Retire the dead birdnet.version field (model de-privilege epic, Phase 3).
+	// Runs before validation so a migrated "3.0" config that now enables
+	// birdnet_v3.0 is validated in its post-migration shape.
+	if settings.MigrateBirdNETVersion() {
+		persistMigration(settings, "birdnet version")
 	}
 
 	// Validate multi-model configuration
@@ -121,15 +203,49 @@ func Load() (*Settings, error) {
 		persistMigration(settings, "LocationConfigured flag")
 	}
 
-	// Auto-generate SessionSecret if not set (for backward compatibility)
-	if err := ensureSessionSecret(settings); err != nil {
-		return nil, err
+	// Heal a lossy export left with a blank bitrate by writing the documented
+	// default back once. Runs before normalizeIncompleteFeatures so persistMigration
+	// saves the file with every feature's on-disk enabled state intact; that pass
+	// disables switched-on-but-unconfigured integrations in memory only, and those
+	// disables must never be written to disk.
+	if settings.migrateEmptyLossyExportBitrate() {
+		persistMigration(settings, "empty lossy export bitrate")
 	}
+
+	// Auto-generate SessionSecret if not set (for backward compatibility)
+	ensureSessionSecret(settings)
+
+	// Mint the profiling token when pprof is enabled without an authentication
+	// provider.
+	if EnsureProfilingToken(settings) {
+		// A token that is minted but never written to disk is worse than none:
+		// it gates the endpoints for this process while being unreadable (it is
+		// never logged), and the next start mints a different one. Say so
+		// plainly, because persistMigration is silent when there is no config
+		// file to write and only warns on a write failure.
+		if viper.ConfigFileUsed() == "" {
+			GetLogger().Warn("Generated a profiling token but there is no config file to save it to; " +
+				"the profiling endpoints will be unusable and the token will differ on the next start")
+		} else {
+			persistMigration(settings, "profiling token")
+		}
+	}
+
+	// Resolve features that are switched on but were never configured, before the
+	// validators get to see them. A config file can age into that state across
+	// upgrades, and rejecting the file leaves no UI in which to correct it, so
+	// those features are disabled or defaulted with a warning instead. This is
+	// deliberately scoped to loading a file: the settings API validates without
+	// normalizing, so a half-finished section submitted from the UI is still
+	// answered with an error the user can act on rather than silently discarded.
+	// See validate_incomplete.go for the policy and the per-rule reasoning.
+	normalizeIncompleteFeatures(settings)
 
 	// Validate settings. Any error ValidateSettings returns is a fatal
 	// misconfiguration that must block startup; non-fatal findings live on the
 	// separate settings.ValidationWarnings channel (recorded during config
-	// migration), never demoted from a fatal error by matching its message text.
+	// migration and normalization), never demoted from a fatal error by matching
+	// its message text.
 	if err := finalizeValidation(ValidateSettings(settings)); err != nil {
 		return nil, err
 	}
@@ -146,6 +262,17 @@ func Load() (*Settings, error) {
 		)
 	}
 
+	// Log the effective privacy and dog-bark filter thresholds once at load.
+	// These values are otherwise silent until a detection is actually filtered,
+	// which makes reports of a configured threshold "not taking effect"
+	// impossible to localize from logs or a support dump: this line records
+	// exactly what was read from config.yaml into the running settings.
+	GetLogger().Info("privacy and dog-bark filter settings loaded",
+		logger.Bool("privacy_enabled", settings.Realtime.PrivacyFilter.Enabled),
+		logger.Float32("privacy_confidence", settings.Realtime.PrivacyFilter.Confidence),
+		logger.Bool("dogbark_enabled", settings.Realtime.DogBarkFilter.Enabled),
+		logger.Float32("dogbark_confidence", settings.Realtime.DogBarkFilter.Confidence))
+
 	// Publish the loaded settings atomically. Readers calling GetSettings
 	// immediately after this point see this snapshot.
 	settingsInstance.Store(settings)
@@ -157,9 +284,10 @@ func Load() (*Settings, error) {
 //
 // Severity is structural: every error a validator returns (collected into
 // ValidationError.Errors) is fatal and blocks startup. Non-fatal configuration
-// findings use a separate channel, Settings.ValidationWarnings, recorded during
-// config migration (see applyModelValidation), not by the ValidateSettings
-// validators. Severity is never inferred from the error message text;
+// findings use a separate channel, Settings.ValidationWarnings, written during
+// config migration, during normalizeIncompleteFeatures, and by the few validators
+// that normalize a value rather than rejecting it. Severity is never inferred from
+// the error message text;
 // an earlier heuristic that demoted errors whose message contained substrings
 // like "fallback" or "not supported" to warnings could silently start the app
 // with invalid config, so it was removed.
@@ -256,8 +384,7 @@ func initViper() error {
 
 		// For default path search: ConfigFileNotFoundError means no config
 		// exists yet, so create one with defaults.
-		var configFileNotFoundError viper.ConfigFileNotFoundError
-		if errors.As(err, &configFileNotFoundError) {
+		if _, ok := errors.AsType[viper.ConfigFileNotFoundError](err); ok {
 			return createDefaultConfig()
 		}
 
@@ -269,6 +396,15 @@ func initViper() error {
 	}
 
 	return nil
+}
+
+// stampConfigVersion prefixes a freshly generated config with the current config version so
+// this build's one-shot migrations never treat a file it just created as an older build's
+// file. Without it MigrateSourceTargetDefaults would pin its default source to ["birdnet"]
+// and MigrateModelsEnabledAuthoritative would re-add "birdnet" after a later fresh N=0
+// install removed it (model de-privilege epic, Phase 4).
+func stampConfigVersion(yamlText string) string {
+	return fmt.Sprintf("configversion: %d\n", currentConfigVersion) + yamlText
 }
 
 // createDefaultConfig creates a default config file and writes it to the default config path
@@ -286,30 +422,22 @@ func createDefaultConfig() error {
 		return err
 	}
 
+	// Stamp the freshly generated file at the current config version so this build's one-shot
+	// migrations never treat a file it just created as an older build's file (model
+	// de-privilege epic, Phase 4). The AutoEnableMigrated marker is intentionally NOT stamped
+	// here: a fresh install still runs the classifier's one-shot auto-enable capture once
+	// (a no-op on a truly fresh install), and Phase 6 sets the marker when the default template
+	// moves to enabled: [].
+	defaultConfig = stampConfigVersion(defaultConfig)
+
 	// If the basicauth secret is not set, generate a random one
 	if viper.GetString("security.basicauth.clientsecret") == "" {
-		clientSecret, err := GenerateRandomSecret()
-		if err != nil {
-			return errors.New(err).
-				Component("conf").
-				Category(errors.CategoryConfiguration).
-				Context("operation", "generate_client_secret").
-				Build()
-		}
-		viper.Set("security.basicauth.clientsecret", clientSecret)
+		viper.Set("security.basicauth.clientsecret", GenerateRandomSecret())
 	}
 	// If the session secret is not set, generate a random one
 	// This ensures backward compatibility for existing deployments
 	if viper.GetString("security.sessionsecret") == "" {
-		sessionSecret, err := GenerateRandomSecret()
-		if err != nil {
-			return errors.New(err).
-				Component("conf").
-				Category(errors.CategoryConfiguration).
-				Context("operation", "generate_session_secret").
-				Build()
-		}
-		viper.Set("security.sessionsecret", sessionSecret)
+		viper.Set("security.sessionsecret", GenerateRandomSecret())
 	}
 
 	// Create directories for config file
@@ -330,6 +458,10 @@ func createDefaultConfig() error {
 			Context("path", configPath).
 			Build()
 	}
+	// Record that this process generated a default config so the diagnostics
+	// boot journal can emit a config_defaulted event (conf must not import
+	// diagnostics, so the marker is read by the caller of RecordBoot).
+	markDefaultConfigCreated(configPath)
 
 	fmt.Println("Created default config file at:", configPath)
 	return viper.ReadInConfig()
@@ -349,7 +481,7 @@ func getDefaultConfig() (string, error) {
 
 // GetSettings returns the current settings snapshot. Safe for concurrent use;
 // the returned pointer is published via atomic.Pointer.Store and never mutated
-// in place. Writers produce a new snapshot via CloneSettings + StoreSettings.
+// in place. Writers produce a new snapshot via UpdateSettings.
 func GetSettings() *Settings {
 	return settingsInstance.Load()
 }
@@ -369,14 +501,18 @@ func CurrentOrFallback(fallback *Settings) *Settings {
 	return fallback
 }
 
-// StoreSettings publishes a new *Settings snapshot atomically. Callers must
-// not mutate the pointee after calling StoreSettings; readers may observe the
-// snapshot concurrently through GetSettings. The canonical writer pattern is:
-//
-//	current := conf.GetSettings()
-//	updated := conf.CloneSettings(current)
-//	// ... mutate updated ...
-//	conf.StoreSettings(updated)
+// StoreSettings publishes a new *Settings snapshot atomically and without
+// taking the settings writer lock. It exists for Load, for tests and for test
+// helpers that seed or clear the snapshot (conftest, securitytest). Production
+// code that changes a setting at runtime must use UpdateSettings, which reads
+// its baseline under the writer lock; a bare clone-mutate-StoreSettings can
+// publish over another writer's change, and the SettingsPublishThroughWriter
+// ruleguard rule rejects it outside this package. It does not stamp a Revision
+// (the snapshot keeps whatever it carries, 0 for a new one), so a test that needs
+// ETag or If-Match behaviour to change publishes through UpdateSettings. Callers
+// must not mutate the
+// pointee after calling StoreSettings; readers may observe the snapshot
+// concurrently through GetSettings.
 //
 // Passing nil is valid and clears the stored settings (mostly useful in tests).
 func StoreSettings(s *Settings) {
@@ -435,9 +571,20 @@ func prepareSettingsForSave(s *Settings, latitude float64) Settings {
 	return settingsCopy
 }
 
+// saveMu serializes SaveSettings. Each save loads the published snapshot after
+// taking it, so the save that finishes last persists a snapshot at least as new
+// as every earlier save's, and disk cannot end up older than memory because a
+// slower save renamed its older snapshot over a newer one. It is a leaf lock:
+// nothing else is acquired while it is held, and in particular not
+// settingsWriteMu, so callers may hold any other settings lock.
+var saveMu sync.Mutex
+
 // SaveSettings saves the current settings to the configuration file.
 // It uses UpdateYAMLConfig to handle the atomic write process.
 func SaveSettings() error {
+	saveMu.Lock()
+	defer saveMu.Unlock()
+
 	// Load the current snapshot through the atomic pointer; the pointee is
 	// immutable after publication so reading fields off it is race-free.
 	current := settingsInstance.Load()
@@ -449,8 +596,8 @@ func SaveSettings() error {
 	}
 
 	// Deep-clone the published snapshot before mutating it in
-	// prepareSettingsForSave. The snapshot is immutable (range filter
-	// writers use clone-mutate-publish), so CloneSettings captures a
+	// prepareSettingsForSave. The snapshot is immutable (writers
+	// publish a clone through UpdateSettings), so CloneSettings captures a
 	// consistent point-in-time copy without additional locking.
 	settingsCopy := *CloneSettings(current)
 
@@ -476,6 +623,17 @@ func SaveSettings() error {
 	}
 
 	GetLogger().Info("Settings saved successfully", logger.String("path", configPath))
+
+	// Record the privacy and dog-bark filter thresholds that were just
+	// persisted. Paired with the load-time log above, this brackets the config
+	// round-trip: comparing the value a user set in the UI against what actually
+	// reaches disk here isolates a frontend/save drop from a load-side problem
+	// without needing to reproduce a detection.
+	GetLogger().Info("persisted privacy and dog-bark filter settings",
+		logger.Bool("privacy_enabled", settingsCopy.Realtime.PrivacyFilter.Enabled),
+		logger.Float32("privacy_confidence", settingsCopy.Realtime.PrivacyFilter.Confidence),
+		logger.Bool("dogbark_enabled", settingsCopy.Realtime.DogBarkFilter.Enabled),
+		logger.Float32("dogbark_confidence", settingsCopy.Realtime.DogBarkFilter.Confidence))
 	return nil
 }
 

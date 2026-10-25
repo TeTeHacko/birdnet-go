@@ -1,6 +1,7 @@
 package diskmanager
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tphakala/birdnet-go/internal/conf"
 	mock_diskmanager "github.com/tphakala/birdnet-go/internal/diskmanager/mocks"
+	"github.com/tphakala/birdnet-go/internal/errors"
 )
 
 // MockFileInfo implements os.FileInfo for testing
@@ -1042,3 +1044,259 @@ func TestUsageBasedCleanupLockedFiles(t *testing.T) {
 
 // Define a variable for os.Remove to allow mocking in tests
 var osRemove = os.Remove
+
+// makeUsageTestFile creates a real file on disk (deletion touches the real
+// filesystem) and returns a matching FileInfo for use with
+// processUsageDeletionLoop's stats tests below.
+func makeUsageTestFile(t *testing.T, dir, species string, size int64, locked bool) FileInfo {
+	t.Helper()
+	path := filepath.Join(dir, fmt.Sprintf("%s_80p_%d.wav", species, size))
+	require.NoError(t, os.WriteFile(path, make([]byte, size), 0o644)) //nolint:gosec // G306: Test files don't require restrictive permissions
+	return FileInfo{
+		Path:    path,
+		Species: species,
+		Size:    size,
+		Locked:  locked,
+	}
+}
+
+// newUsageLoopTestParams builds a *usageLoopParams for the stats tests below,
+// keeping the required fields explicit at each call site.
+func newUsageLoopTestParams(totalBytes, usedBytes uint64, threshold, minClips int) *usageLoopParams {
+	return &usageLoopParams{
+		diskInfo:            DiskSpaceInfo{TotalBytes: totalBytes, UsedBytes: usedBytes},
+		initialUsagePercent: calculateUsagePercent(usedBytes, totalBytes),
+		usageThreshold:      threshold,
+		minClipsPerSpecies:  minClips,
+		refreshInterval:     50, // large enough that these small tests never trigger a real disk refresh
+		keepSpectrograms:    true,
+		readDiskUsage: func(string) (DiskSpaceInfo, error) {
+			return DiskSpaceInfo{}, errors.NewStd("no real disk reading in tests")
+		},
+	}
+}
+
+// TestProcessUsageDeletionLoopStats verifies that the per-run cleanupStats
+// summary (added for GitHub #3892 / #4059 diagnosability) correctly tallies
+// every outcome bucket, including the two distinct reasons the loop can stop
+// early (usage satisfied vs. run time budget spent), without changing
+// which files get deleted.
+func TestProcessUsageDeletionLoopStats(t *testing.T) {
+	t.Parallel()
+
+	t.Run("usage below threshold tallies remaining files as not eligible", func(t *testing.T) {
+		t.Parallel()
+		testDir := t.TempDir()
+
+		// file1 is large enough that deleting it alone drops usage below the
+		// 80% threshold, so file2 and file3 are never evaluated.
+		file1 := makeUsageTestFile(t, testDir, "species_a", 150, false)
+		file2 := makeUsageTestFile(t, testDir, "species_b", 10, false)
+		file3 := makeUsageTestFile(t, testDir, "species_c", 10, false)
+		files := []FileInfo{file1, file2, file3}
+		speciesMonthCount := buildSpeciesSubDirCountMap(files)
+
+		params := newUsageLoopTestParams(1000, 900, 80, 0)
+		run, _ := newTestRun(t)
+		deletedCount, deletedNames, _, stats, loopErr := processUsageDeletionLoop(files, speciesMonthCount, params, testDir, run)
+
+		require.NoError(t, loopErr)
+		assert.Equal(t, 1, deletedCount)
+		assert.Equal(t, []string{file1.Path}, deletedNames)
+		assert.Equal(t, cleanupStats{
+			Scanned:         1,
+			Deleted:         1,
+			LockedSkipped:   0,
+			MinClipsBlocked: 0,
+			NotEligible:     2,
+			Errors:          0,
+			BytesFreed:      150, // the one deleted file's size
+			StopReason:      stopBelowThreshold,
+		}, stats)
+	})
+
+	t.Run("time budget stop does not tally remaining files", func(t *testing.T) {
+		t.Parallel()
+		testDir := t.TempDir()
+
+		file1 := makeUsageTestFile(t, testDir, "species_a", 10, false)
+		file2 := makeUsageTestFile(t, testDir, "species_b", 10, false)
+		files := []FileInfo{file1, file2}
+		speciesMonthCount := buildSpeciesSubDirCountMap(files)
+
+		// Threshold 0 means usage can never fall "below" it. A batch of one and
+		// a run budget shorter than the pacing wait make the run stop at the
+		// first boundary, after file1, on the time budget.
+		params := newUsageLoopTestParams(1000, 500, 0, 0)
+		run, _ := newTestRun(t, func(_ *drainTestEnv, r *deletionRun) {
+			r.cfg.batchSize = 1
+			r.cfg.runBudget = minDeletionInterval
+		})
+		deletedCount, deletedNames, _, stats, loopErr := processUsageDeletionLoop(files, speciesMonthCount, params, testDir, run)
+
+		require.NoError(t, loopErr)
+		assert.Equal(t, 1, deletedCount)
+		assert.Equal(t, []string{file1.Path}, deletedNames)
+		assert.Equal(t, cleanupStats{
+			Scanned:         1,
+			Deleted:         1,
+			LockedSkipped:   0,
+			MinClipsBlocked: 0,
+			NotEligible:     0, // file2 was never evaluated; a time budget stop is not "not eligible"
+			Errors:          0,
+			BytesFreed:      10, // the one deleted file's size
+			StopReason:      stopTimeBudget,
+			MoreWork:        true, // file1 deleted, usage still at or above target
+		}, stats)
+		assert.FileExists(t, file2.Path)
+	})
+
+	t.Run("locked and min-clips-blocked files are tallied", func(t *testing.T) {
+		t.Parallel()
+		testDir := t.TempDir()
+
+		lockedFile := makeUsageTestFile(t, testDir, "sp_locked", 10, true)
+		minBlockedFile := makeUsageTestFile(t, testDir, "sp_min", 10, false)
+		delOld := makeUsageTestFile(t, testDir, "sp_del", 10, false)
+		delNew := makeUsageTestFile(t, testDir, "sp_del", 11, false)
+		files := []FileInfo{lockedFile, minBlockedFile, delOld, delNew}
+		speciesMonthCount := buildSpeciesSubDirCountMap(files)
+
+		// Threshold 0 keeps the loop running for the whole file list.
+		const minClipsPerSpecies = 1
+		params := newUsageLoopTestParams(1000, 500, 0, minClipsPerSpecies)
+		run, _ := newTestRun(t)
+		deletedCount, deletedNames, _, stats, loopErr := processUsageDeletionLoop(files, speciesMonthCount, params, testDir, run)
+
+		require.NoError(t, loopErr)
+		assert.Equal(t, 1, deletedCount, "only the first sp_del file should clear the min-clips guard")
+		assert.Equal(t, []string{delOld.Path}, deletedNames)
+		assert.Equal(t, cleanupStats{
+			Scanned:         4,
+			Deleted:         1,
+			LockedSkipped:   1,
+			MinClipsBlocked: 2, // sp_min (always) and the second sp_del file (after the first is deleted)
+			NotEligible:     0,
+			Errors:          0,
+			BytesFreed:      10, // the one deleted file's size
+			StopReason:      stopExhausted,
+		}, stats)
+	})
+
+	t.Run("deletion error is tallied without stopping the loop", func(t *testing.T) {
+		t.Parallel()
+		testDir := t.TempDir()
+
+		// blockedFile is a non-empty directory named like a clip: os.Remove
+		// fails on it (the path exists, so it is a real error, not a vanished
+		// file) inside deleteFileAndOptionalSpectrogram.
+		blockedPath := filepath.Join(testDir, "blocked_species_80p_5.wav")
+		require.NoError(t, os.MkdirAll(blockedPath, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(blockedPath, "inner"), []byte("x"), 0o644)) //nolint:gosec // G306: test file
+		blockedFile := FileInfo{
+			Path:    blockedPath,
+			Species: "blocked_species",
+			Size:    5,
+			Locked:  false,
+		}
+		files := []FileInfo{blockedFile}
+		speciesMonthCount := buildSpeciesSubDirCountMap(files)
+
+		params := newUsageLoopTestParams(1000, 900, 80, 0)
+		run, env := newTestRun(t)
+		deletedCount, deletedNames, _, stats, loopErr := processUsageDeletionLoop(files, speciesMonthCount, params, testDir, run)
+
+		require.NoError(t, loopErr, "a single deletion error stays below the stop threshold")
+		assert.Equal(t, 0, deletedCount)
+		assert.Empty(t, deletedNames)
+		assert.Equal(t, cleanupStats{
+			Scanned:    1,
+			Errors:     1,
+			StopReason: stopExhausted,
+		}, stats)
+		assert.Len(t, env.sleeps, 1, "a failed attempt is paced too")
+	})
+
+	t.Run("a file already gone is tallied and is not an error", func(t *testing.T) {
+		t.Parallel()
+		testDir := t.TempDir()
+
+		ghost := FileInfo{
+			Path:    filepath.Join(testDir, "species_a_80p_5.wav"),
+			Species: "species_a",
+			Size:    5,
+		}
+		files := []FileInfo{ghost}
+		speciesMonthCount := buildSpeciesSubDirCountMap(files)
+
+		params := newUsageLoopTestParams(1000, 900, 80, 0)
+		run, env := newTestRun(t)
+		deletedCount, _, _, stats, loopErr := processUsageDeletionLoop(files, speciesMonthCount, params, testDir, run)
+
+		require.NoError(t, loopErr)
+		assert.Equal(t, 0, deletedCount)
+		assert.Equal(t, cleanupStats{
+			Scanned:     1,
+			AlreadyGone: 1,
+			StopReason:  stopExhausted,
+		}, stats)
+		assert.Equal(t, 0, speciesMonthCount["species_a"][testDir], "the vanished clip no longer counts toward its species and month")
+		assert.Empty(t, env.sleeps, "nothing was written, so no pacing wait")
+	})
+
+	// vanishedRun runs a ghost clip (200 of 1000 bytes, usage starting at 90%
+	// against an 80% target) followed by one real clip, with readDiskUsage
+	// faked by read, and returns the deleted count, the last usage percent and
+	// the run stats.
+	vanishedRun := func(t *testing.T, read func(string) (DiskSpaceInfo, error)) (deleted, lastUsagePct int, stats cleanupStats) {
+		t.Helper()
+		testDir := t.TempDir()
+		ghost := FileInfo{
+			Path:    filepath.Join(testDir, drainTestSpecies+"_80p_ghost.wav"),
+			Species: drainTestSpecies,
+			Size:    200,
+		}
+		files := append([]FileInfo{ghost}, makeDrainFiles(t, testDir, 1)...)
+
+		params := newUsageLoopTestParams(1000, 900, 80, 0)
+		params.readDiskUsage = read
+		run, _ := newTestRun(t)
+		deletedCount, _, lastUsagePct, stats, loopErr := processUsageDeletionLoop(files, buildSpeciesSubDirCountMap(files), params, testDir, run)
+		require.NoError(t, loopErr)
+		assert.Equal(t, 1, stats.AlreadyGone)
+		return deletedCount, lastUsagePct, stats
+	}
+
+	t.Run("a vanished file lowers usage to a fresh reading", func(t *testing.T) {
+		t.Parallel()
+		// The reading taken after the ghost shows usage at 75%, which differs
+		// from the 70% that subtracting its size would give.
+		deleted, lastUsagePct, stats := vanishedRun(t, func(string) (DiskSpaceInfo, error) {
+			return DiskSpaceInfo{TotalBytes: 1000, UsedBytes: 750}, nil
+		})
+		assert.Equal(t, 0, deleted, "usage already fell below the target")
+		assert.Equal(t, stopBelowThreshold, stats.StopReason)
+		assert.Equal(t, 75, lastUsagePct, "the usage comes from the fresh reading")
+	})
+
+	t.Run("a vanished file already counted by a reading is not credited twice", func(t *testing.T) {
+		t.Parallel()
+		// The initial reading was taken after the ghost was removed, so usage
+		// really is 90%; subtracting its size again would stop at 70%.
+		deleted, _, stats := vanishedRun(t, func(string) (DiskSpaceInfo, error) {
+			return DiskSpaceInfo{TotalBytes: 1000, UsedBytes: 900}, nil
+		})
+		assert.Equal(t, 1, deleted, "usage is still over the target, so cleanup continues")
+		assert.Equal(t, stopExhausted, stats.StopReason)
+	})
+
+	t.Run("a vanished file subtracts its size when the reading fails", func(t *testing.T) {
+		t.Parallel()
+		deleted, lastUsagePct, stats := vanishedRun(t, func(string) (DiskSpaceInfo, error) {
+			return DiskSpaceInfo{}, errors.NewStd("statfs failed")
+		})
+		assert.Equal(t, 0, deleted, "the fallback errs on the side of keeping clips")
+		assert.Equal(t, stopBelowThreshold, stats.StopReason)
+		assert.Equal(t, 70, lastUsagePct, "the fallback subtracts the clip's size")
+	})
+}

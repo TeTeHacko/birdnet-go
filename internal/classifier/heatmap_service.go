@@ -11,6 +11,7 @@ import (
 
 	"github.com/tphakala/birdnet-go/internal/conf"
 	"github.com/tphakala/birdnet-go/internal/errors"
+	"github.com/tphakala/birdnet-go/internal/inference/onnx"
 	"github.com/tphakala/birdnet-go/internal/logger"
 )
 
@@ -116,6 +117,12 @@ func createHeatmapSession(modelPath string, inputNames, outputNames []string) (*
 	}
 	if err := sessOpts.SetInterOpNumThreads(heatmapInterOpThreads); err != nil {
 		return nil, errors.Newf("heatmap service: failed to set inter-op threads: %v", err).
+			Component("classifier.heatmap_service").
+			Category(errors.CategoryModelInit).
+			Build()
+	}
+	if err := onnx.DisableKleidiAIIfNeeded(sessOpts); err != nil {
+		return nil, errors.Newf("heatmap service: %v", err).
 			Component("classifier.heatmap_service").
 			Category(errors.CategoryModelInit).
 			Build()
@@ -522,22 +529,14 @@ func (o *Orchestrator) GetHeatmapService() *HeatmapInferenceService {
 		return nil
 	}
 
-	o.mu.RLock()
-	primary := o.primary
-	o.mu.RUnlock()
-	if primary == nil {
+	rfs, ok := o.rangeFilterReady()
+	if !ok || rfs == nil {
 		return nil
 	}
 
-	// Get labels from the mapped range filter
-	primary.mu.Lock()
-	rf := primary.rangeFilter
-	primary.mu.Unlock()
-	if rf == nil {
-		return nil
-	}
-
-	mrf, ok := rf.(*mappedRangeFilter)
+	// Get labels from the mapped range filter, read lock-free from the immutable
+	// published state (Phase 2b; the range filter is owned by the service now).
+	mrf, ok := rfs.mappedView()
 	if !ok {
 		return nil
 	}

@@ -109,6 +109,14 @@
       "closeModal": "Alles sluiten",
       "dismissAlert": "Negeer melding",
       "closeNotification": "Sluit melding",
+      "toastRegion": {
+        "topLeft": "Meldingen, linksboven",
+        "topCenter": "Meldingen, middenboven",
+        "topRight": "Meldingen, rechtsboven",
+        "bottomLeft": "Meldingen, linksonder",
+        "bottomCenter": "Meldingen, middenonder",
+        "bottomRight": "Meldingen, rechtsonder"
+      },
       "toggleDropdown": "Open/sluit keuzelijst",
       "sortAscending": "Oplopend sorteren",
       "selectLanguage": "Kies de taal",
@@ -130,11 +138,10 @@
       "selectToday": "Selecteer vandaag",
       "dateSelected": "Datum geselecteerd: {date}",
       "calendarNavigation": "Navigeer met pijl toetsen door de kalender, Enter om te selecteren, Esc om te sluiten",
-      "downloadCsv": "Soorten lijst als CSV ophalen",
       "visitEbirdLink": "Open eBird.org in een nieuwe tab",
       "learnEbirdTaxonomyLink": "Open eBird Taxonomy in een nieuwe tab",
       "resizeHandle": "Sleep om te vergroten/verkleinen",
-      "imageCredit": "Image credit: {name}"
+      "imageCredit": "Foto door: {name}"
     },
     "labels": {
       "confidence": "Betrouwbaarheid",
@@ -156,7 +163,7 @@
         "falsePositive": "Afgekeurd",
         "notReviewed": "Niet beoordeeld",
         "locked": "Vergrendeld",
-        "unlikely": "Unlikely"
+        "unlikely": "Onwaarschijnlijk"
       },
       "form": {
         "correctDetection": "Herkenning goedgekeurd",
@@ -205,12 +212,20 @@
     "serverError": "500 - Interne serverfout",
     "componentError": "Component laadfout",
     "speciesAnalytics": "Soortanalyses",
-    "advancedAnalytics": "Geavanceerde analyses",
     "detectionDetails": "Detectiedetails",
-    "settingsNotAvailable": "Instellingen niet beschikbaar"
+    "settingsNotAvailable": "Instellingen niet beschikbaar",
+    "analyticsSummary": "Analyses - Overzicht",
+    "analyticsActivity": "Analyses - Activiteitspatronen",
+    "analyticsTrends": "Analyses - Trends",
+    "analyticsBiodiversity": "Analyses - Biodiversiteit",
+    "analyticsReview": "Analyses - Beoordeling & Nauwkeurigheid",
+    "analyticsNocturnal": "Analyse - Nachtelijke activiteit",
+    "analyticsWeather": "Analyse - Weercorrelatie",
+    "analyticsSoundscape": "Analyse - Geluidlandschap"
   },
   "navigation": {
     "dashboard": "Overzicht",
+    "liveAudio": "Live audio",
     "settingsMenu": "Instellingenmenu",
     "theme": "Thema",
     "github": "GitHub",
@@ -238,7 +253,13 @@
     "reportBugAriaLabel": "Meld een bug op GitHub (opent in nieuw venster)",
     "askQuestionAriaLabel": "Stel een vraag op GitHub Discussions (opent in nieuw venster)",
     "viewOnGithubAriaLabel": "Bekijk BirdNET-Go op GitHub (opent in nieuw venster)",
-    "health": "Health"
+    "health": "Gezondheid",
+    "sections": {
+      "explore": "Verkennen",
+      "patterns": "Patronen",
+      "environment": "Omgeving",
+      "dataQuality": "Gegevenskwaliteit"
+    }
   },
   "about": {
     "title": "BirdNET-Go",
@@ -398,6 +419,7 @@
         "updatingIntervals": "Detectie-intervallen worden bijgewerkt...",
         "reconfiguringMqtt": "MQTT-verbinding wordt bijgewerkt...",
         "reconfiguringBirdweather": "BirdWeather-integratie wordt bijgewerkt...",
+        "reconfiguringEbird": "Updating eBird integration...",
         "reconfiguringStreams": "Audiostreams worden bijgewerkt...",
         "reconfiguringTelemetry": "Telemetrie-instellingen worden bijgewerkt...",
         "reconfiguringPushNotifications": "Pushmeldingsproviders herconfigureren...",
@@ -405,14 +427,16 @@
         "recalculatingThresholds": "Dynamische drempels worden herberekend voor nieuwe basiswaarde",
         "reconfiguringDynamicThresholds": "Dynamische drempels worden opnieuw geconfigureerd...",
         "webserverRestartRequired": "Webserverinstellingen gewijzigd. Herstart vereist.",
-        "databaseRestartRequired": "Database settings changed. Restart required.",
-        "loggingRestartRequired": "Logging settings changed. Restart required.",
+        "oauthRestartRequired": "Authenticatieproviderinstellingen gewijzigd. Herstart vereist.",
+        "databaseRestartRequired": "Database-instellingen gewijzigd. Herstart vereist.",
+        "loggingRestartRequired": "Logboek-instellingen gewijzigd. Herstart vereist.",
         "reconfiguringSoundLevel": "Geluidsniveaubewaking wordt bijgewerkt...",
         "reconfiguringAudioSources": "Audiobronnen worden opnieuw geconfigureerd...",
         "rebuildingExtendedCapture": "Filter voor uitgebreide opname wordt opnieuw opgebouwd...",
         "extendedCaptureRestartRequired": "Instellingen voor uitgebreide opname gewijzigd. Herstart vereist.",
         "equalizerUpdateFailed": "Bijwerken van audio-equalizerinstellingen mislukt",
         "equalizerUpdated": "Audio-equalizerinstellingen bijgewerkt",
+        "equalizerFiltersSkipped": "Audio-equalizerinstellingen opgeslagen, maar sommige filters worden overgeslagen bij {count, plural, one {de bron} other {de bronnen}} {sources}: een filter moet geldig zijn bij de samplefrequentie van de bron, en de frequentie ervan moet onder de helft daarvan liggen.",
         "savedSuccessfully": "Instellingen succesvol opgeslagen",
         "saveFailed": "Opslaan van instellingen mislukt"
       },
@@ -426,7 +450,15 @@
         "completedTitle": "Databasemigratie voltooid",
         "completedMessage": "Migratie voltooid. Herstart BirdNET-Go om over te schakelen naar de nieuwe database.",
         "errorTitle": "Databasemigratiefout",
-        "errorMessage": "Migratie gepauzeerd vanwege fouten. Controleer de logs en probeer te hervatten."
+        "errorMessage": "Migratie gepauzeerd vanwege fouten. Controleer de logs en probeer te hervatten.",
+        "legacyNotStartedTitle": "Database-upgrade vereist",
+        "legacyNotStartedMessage": "Deze installatie gebruikt nog het oude databaseformaat, dat in een toekomstige versie niet meer zal werken. Open Systeem > Database om de migratie uit te voeren.",
+        "legacyInProgressTitle": "Databasemigratie bezig",
+        "legacyInProgressMessage": "De migratie naar het nieuwe databaseformaat wordt uitgevoerd. Laat BirdNET-Go draaien tot deze klaar is; het oude formaat zal in een toekomstige versie niet meer werken.",
+        "legacyNeedsAttentionTitle": "Databasemigratie heeft aandacht nodig",
+        "legacyNeedsAttentionMessage": "De migratie naar het nieuwe databaseformaat is gepauzeerd of mislukt. Open Systeem > Database om te hervatten of opnieuw te proberen; het oude formaat zal in een toekomstige versie niet meer werken.",
+        "legacyRestartRequiredTitle": "Herstart om de databasemigratie af te ronden",
+        "legacyRestartRequiredMessage": "De migratie is voltooid. Herstart BirdNET-Go om over te schakelen naar de nieuwe database. Als dit bericht na een herstart blijft staan, controleer dan het logboek op databasefouten."
       },
       "cleanup": {
         "completeTitle": "Opruiming oude database voltooid",
@@ -442,6 +474,32 @@
         "unavailableTitle": "ONNX Runtime niet beschikbaar",
         "unavailableMessage": "ONNX Runtime {requiredVersion} is vereist voor {modelName}, maar werd niet gevonden. Zie de installatiegids: {installGuideURL}"
       },
+      "region": {
+        "staleTitle": "Modelregio is mogelijk verouderd",
+        "staleMessage": "{modelName} is geïnstalleerd voor {oldRegion}, maar uw nieuwe locatie komt overeen met {newRegion}. U kunt van variant wisselen via de modellengalerij in Instellingen.",
+        "staleGlobalMessage": "{modelName} is geïnstalleerd voor {oldRegion}, maar uw nieuwe locatie valt buiten de dekking. U kunt overschakelen naar de globale variant via de modellengalerij in Instellingen."
+      },
+      "modelPath": {
+        "reconciledTitle": "Bestandspaden van model hersteld voor {modelName}",
+        "reconciledMessage": "De geconfigureerde bestandspaden voor {modelName} waren verouderd en zijn hersteld om overeen te komen met het geïnstalleerde model op {modelPath}.",
+        "substitutedTitle": "Geconfigureerd modelbestand voor {modelName} niet gevonden",
+        "substitutedMessage": "Het voor {modelName} geconfigureerde modelbestand is niet op de schijf gevonden, dus wordt in plaats daarvan het geïnstalleerde model op {modelPath} gebruikt. Uw configuratie is ongewijzigd gebleven.",
+        "unreadableTitle": "Geconfigureerd modelbestand voor {modelName} kon niet worden gelezen",
+        "unreadableMessage": "Het voor {modelName} geconfigureerde modelbestand bestaat, maar kon niet worden gelezen, dus wordt in plaats daarvan het geïnstalleerde model op {modelPath} gebruikt. Uw configuratie is ongewijzigd gebleven. Controleer de bestandsmachtigingen en of de opslag is gekoppeld.",
+        "builtinMessage": "Het voor {modelName} geconfigureerde modelbestand is niet op de schijf gevonden en er is geen geïnstalleerd model beschikbaar om het te vervangen, dus wordt in plaats daarvan het ingebouwde model gebruikt. Uw configuratie is ongewijzigd gebleven.",
+        "notRegisteredTitle": "Geen model analyseert {sourceName}",
+        "notRegisteredMessage": "Er bereikt geen audio {models} op audiobron \"{sourceName}\", waardoor er geen detecties worden geproduceerd. Open Systeem > AI-modellen om de status per bron te controleren, en bevestig dat de audiobron is verbonden en audio verzendt."
+      },
+      "acousticModels": {
+        "noneTitle": "Geen akoestisch model ingeschakeld",
+        "noneMessage": "Er is geen akoestisch model geladen, dus audio wordt opgenomen maar niet geanalyseerd. Schakel een model in via Instellingen > Analyse, of installeer er een vanuit de modellengalerij.",
+        "loadFailedTitle": "Akoestisch model kon niet worden geladen",
+        "loadFailedMessage": "Een ingeschakeld akoestisch model kon niet worden geladen, dus audio wordt opgenomen maar niet geanalyseerd. Controleer het model op de pagina Systeem > AI-modellen."
+      },
+      "modelOptimize": {
+        "title": "{count, plural, one {# model heeft een betere versie voor dit systeem} other {# modellen hebben betere versies voor dit systeem}}",
+        "message": "Er is een versie beschikbaar die beter past bij de hardware of locatie van dit systeem, voor: {models}. Open Instellingen > Analyse > Modellen en kies Optimaliseren om over te schakelen."
+      },
       "alert": {
         "firedTitle": "{rule_name}",
         "metricExceeded": "Huidige waarde: {value}% (drempelwaarde: {threshold}%)",
@@ -449,18 +507,35 @@
         "errorOccurred": "{error}",
         "disconnected": "{source_name} verbroken",
         "error": {
-          "authError": "Authenticatie mislukt — controleer je API-sleutel of inloggegevens",
-          "rateLimited": "Snelheidslimiet bereikt — verzoeken worden automatisch vertraagd",
+          "authError": "Authenticatie mislukt - controleer je API-sleutel of inloggegevens",
+          "rateLimited": "Snelheidslimiet bereikt - verzoeken worden automatisch vertraagd",
           "gatewayTimeout": "Service heeft mogelijk een hoge belasting",
           "serverError": "Service is tijdelijk niet beschikbaar",
-          "connectionRefused": "Service onbereikbaar — controleer het adres en of deze draait",
-          "dnsError": "Hostnaam kon niet worden opgelost — controleer het adres",
-          "tlsError": "TLS/certificaatfout — controleer je beveiligingsinstellingen",
-          "timeout": "Verbinding verlopen — de service is mogelijk traag of onbereikbaar",
-          "connectionInterrupted": "Verbinding onderbroken — wordt automatisch opnieuw geprobeerd",
-          "diskFull": "Schijf vol — maak ruimte vrij",
-          "permissionDenied": "Toegang geweigerd — controleer bestands- of servicemachtigingen"
+          "connectionRefused": "Service onbereikbaar - controleer het adres en of deze draait",
+          "dnsError": "Hostnaam kon niet worden opgelost - controleer het adres",
+          "tlsError": "TLS/certificaatfout - controleer je beveiligingsinstellingen",
+          "timeout": "Verbinding verlopen - de service is mogelijk traag of onbereikbaar",
+          "connectionInterrupted": "Verbinding onderbroken - wordt automatisch opnieuw geprobeerd",
+          "diskFull": "Schijf vol - maak ruimte vrij",
+          "permissionDenied": "Toegang geweigerd - controleer bestands- of servicemachtigingen"
         }
+      },
+      "inferenceFailing": {
+        "title": "{modelName} faalt bij elke analyse",
+        "message": "{modelName} is geladen, maar de laatste {failures} analyses op rij zijn mislukt op {runtime}: de inferentie gaf een fout. Audio wordt opgenomen, maar dit model detecteert niets. Controleer het model op de pagina Systeem > AI-modellen.",
+        "nonFiniteMessage": "{modelName} is geladen, maar de laatste {failures} analyses op rij zijn mislukt op {runtime}: het model gaf ongeldige scores (NaN of oneindig). Audio wordt opgenomen, maar dit model detecteert niets. Controleer het model op de pagina Systeem > AI-modellen."
+      },
+      "analysis": {
+        "cadenceCappedTitle": "Analyse-overlap beperkt voor dit apparaat",
+        "cadenceCappedMessage": "Het uitvoeren van {models, plural, one {# model} other {# modellen}} op {sources, plural, one {# audiobron} other {# audiobronnen}} met de ingestelde overlap van {configured} s overschrijdt de gemeten capaciteit van dit apparaat, dus audio wordt geanalyseerd met {effective} s overlap. Het Vals Positief Filter kan daardoor minder bevestigingen vereisen. Uw opgeslagen instellingen blijven ongewijzigd; zie Instellingen > Analyse.",
+        "cadenceOverloadedTitle": "Dit apparaat kan de audioanalyse niet bijhouden",
+        "cadenceOverloadedMessage": "Het uitvoeren van {models, plural, one {# model} other {# modellen}} op {sources, plural, one {# audiobron} other {# audiobronnen}} overschrijdt de gemeten capaciteit van dit apparaat, zelfs zonder overlap, dus de analyse kan achterlopen en detecties kunnen worden gemist. Schakel minder modellen of audiobronnen in, of kies een snellere modelvariant."
+      },
+      "storage": {
+        "notPersistentTitle": "Gegevens gaan verloren wanneer de container opnieuw wordt aangemaakt",
+        "notPersistentMessage": "Deze paden staan op opslag die wordt verwijderd wanneer de container opnieuw wordt aangemaakt, bijvoorbeeld bij een image-update: {paths}. Koppel er een volume of een hostmap aan in je containerconfiguratie.",
+        "anonymousVolumeTitle": "Gegevens staan in een anoniem containervolume",
+        "anonymousVolumeMessage": "Deze paden staan in anonieme volumes die de containerruntime heeft aangemaakt omdat er geen volume was gekoppeld: {paths}. Een opnieuw gestarte container, bijvoorbeeld met docker run na een image-update, krijgt nieuwe lege volumes, waardoor de gegevens verloren lijken. Koppel er een benoemd volume of een hostmap aan."
       }
     },
     "loading": "Meldingen laden..."
@@ -536,7 +611,7 @@
       "unverified": "Niet beoordeeld",
       "locked": "Vergrendeld",
       "unlocked": "Ontgrendeld",
-      "unlikely": "Unlikely"
+      "unlikely": "Onwaarschijnlijk"
     },
     "review": {
       "review": "Beoordelen",
@@ -597,7 +672,7 @@
     "currentlyHearing": {
       "title": "Nu te horen",
       "subtitle": "Soorten worden in realtime geïdentificeerd",
-      "empty": "Alles rustig — momenteel geen vogels gedetecteerd"
+      "empty": "Alles rustig - momenteel geen vogels gedetecteerd"
     },
     "rejected": "Afgewezen",
     "newSpeciesHighlights": {
@@ -608,7 +683,8 @@
       "categoryYear": "Nieuw dit jaar",
       "categorySeason": "Nieuw dit seizoen",
       "categorySeasonNamed": "Nieuw dit {season}",
-      "maxConfidenceShort": "Max {confidence}%",
+      "categoryInfrequent": "Zeldzaam",
+      "maxConfidenceShort": "Max. {confidence}%",
       "detections": "{count, plural, one {# detectie} other {# detecties}}",
       "lastSeen": "Laatst: {days, plural, =0 {vandaag} one {# dag geleden} other {# dagen geleden}}"
     },
@@ -642,7 +718,8 @@
         "viewSixHourly": "Bekijk alle herkenningen van {startHour}:00 t/m {endHour}:00",
         "hourlyDetections": "{count} herkend om {hour}:00 - Klik om te zien",
         "biHourlyDetections": "{count} herkend van {startHour}:00 t/m {endHour}:00 - Klik om te zien",
-        "sixHourlyDetections": "{count} herkend van {startHour}:00 t/m {endHour}:00 - Klik om te zien"
+        "sixHourlyDetections": "{count} herkend van {startHour}:00 t/m {endHour}:00 - Klik om te zien",
+        "infrequent": "Zeldzaam - teruggekeerd na {days, plural, one {# dag} other {# dagen}} afwezigheid"
       },
       "loading": {
         "preparing": "Informatie voorbereiden ...",
@@ -677,7 +754,7 @@
         "false": "Afgekeurd",
         "unverified": "Niet beoordeeld",
         "locked": "Vergrendeld",
-        "unlikely": "Unlikely"
+        "unlikely": "Onwaarschijnlijk"
       },
       "modals": {
         "showSpecies": "Toon soort {species}",
@@ -715,6 +792,19 @@
       "recentDetectionsFetch": "Kon Recent herkend niet inlezen: {status}",
       "recentDetectionsLoad": "Kon Recent herkend niet weergeven",
       "configFetch": "Kon Overzicht instellingen niet inlezen: {status}"
+    },
+    "acousticModels": {
+      "noneTitle": "Geen akoestisch model ingeschakeld",
+      "noneMessage": "Audio wordt opgenomen maar niet geanalyseerd. Schakel een model in via de modellengalerij om soorten te detecteren.",
+      "noneAction": "Modellengalerij openen",
+      "loadFailedTitle": "Akoestisch model kon niet worden geladen",
+      "loadFailedMessage": "Een ingeschakeld model kon niet worden geladen, waardoor er geen audio wordt geanalyseerd. De pagina AI-modellen toont welk model is mislukt en waarom.",
+      "loadFailedAction": "Bekijk de status van AI-modellen",
+      "failingTitle": "{count, plural, one {Een model faalt bij elke analyse} other {# modellen falen bij elke analyse}}",
+      "failingMessage": "{count, plural, one {{models} is geladen, maar elke analyse mislukt, dus het detecteert niets.} other {{models} zijn geladen, maar elke analyse mislukt, dus ze detecteren niets.}} De pagina AI-modellen toont de backend en de fout."
+    },
+    "legacyDatabase": {
+      "action": "Database-instellingen openen"
     },
     "banner": {
       "title": "Titel",
@@ -798,8 +888,8 @@
       "species": "Soort",
       "observation": "Waarneming",
       "aria": {
-        "downloadAudioClip": "Download audio clip for {name} detection",
-        "audioRecordingFor": "Audio recording and spectrogram for {name}",
+        "downloadAudioClip": "Audiofragment downloaden voor {name} detectie",
+        "audioRecordingFor": "Geluidsopname en spectrogram voor {name}",
         "scientificName": "Wetenschappelijke naam",
         "classificationBadges": "Soortclassificatie-badges",
         "confidence": "Betrouwbaarheid herkenning {confidence}%",
@@ -852,23 +942,23 @@
       "showing": "Toont {from} tot {to} van {total} resultaten"
     },
     "selection": {
-      "select": "Select",
-      "nSelected": "{count} selected",
-      "selectAllMatching": "Select all {count} matching detections",
-      "allSelected": "All {count} selected",
-      "clear": "Clear selection",
-      "toolbarLabel": "Bulk actions",
-      "confirmBulkDelete": "Delete {count} detections? This cannot be undone.",
-      "confirmBulkMarkCorrect": "Mark {count} detections as correct?",
-      "confirmBulkMarkFalsePositive": "Mark {count} detections as false positive?",
-      "confirmBulkLock": "Lock {count} detections?",
-      "confirmBulkUnlock": "Unlock {count} detections?",
-      "bulkSuccess": "{count} detections updated",
-      "bulkDeleteSuccess": "{count} detections deleted",
-      "bulkPartial": "{processed} updated, {skipped} skipped (locked)",
-      "tooManyDetections": "Too many detections ({count}). Narrow your filters to select fewer than 500.",
-      "bulkError": "Bulk operation failed. Please try again.",
-      "switchToTable": "Switch to table view to select detections"
+      "select": "Selecteren",
+      "nSelected": "{count} geselecteerd",
+      "selectAllMatching": "Alle {count} overeenkomende detecties selecteren",
+      "allSelected": "Alle {count} geselecteerd",
+      "clear": "Selectie wissen",
+      "toolbarLabel": "Bulkacties",
+      "confirmBulkDelete": "{count} detecties verwijderen? Dit kan niet ongedaan worden gemaakt.",
+      "confirmBulkMarkCorrect": "{count} detecties als correct markeren?",
+      "confirmBulkMarkFalsePositive": "{count} detecties als fout-positief markeren?",
+      "confirmBulkLock": "{count} detecties vergrendelen?",
+      "confirmBulkUnlock": "{count} detecties ontgrendelen?",
+      "bulkSuccess": "{count} detecties bijgewerkt",
+      "bulkDeleteSuccess": "{count} detecties verwijderd",
+      "bulkPartial": "{processed} bijgewerkt, {skipped} overgeslagen (vergrendeld)",
+      "tooManyDetections": "Te veel detecties ({count}). Verfijn uw filters om minder dan 500 te selecteren.",
+      "bulkError": "Bulkbewerking mislukt. Probeer het opnieuw.",
+      "switchToTable": "Schakel naar tabelweergave om detecties te selecteren"
     },
     "weather": {
       "title": "Weerinformatie",
@@ -892,56 +982,57 @@
         "pressure": "hPa"
       },
       "conditions": {
-        "clearsky": "Clear Sky",
+        "clearsky": "Helder",
         "cloudy": "Bewolkt",
-        "fair": "Fair",
+        "fair": "Licht bewolkt",
         "fog": "Mist",
-        "heavyrain": "Heavy Rain",
-        "heavyrainandthunder": "Heavy Rain and Thunder",
-        "heavyrainshowers": "Heavy Rain Showers",
-        "heavyrainshowersandthunder": "Heavy Rain Showers and Thunder",
-        "heavysleet": "Heavy Sleet",
-        "heavysleetandthunder": "Heavy Sleet and Thunder",
-        "heavysleetshowers": "Heavy Sleet Showers",
-        "heavysleetshowersandthunder": "Heavy Sleet Showers and Thunder",
-        "heavysnow": "Heavy Snow",
-        "heavysnowandthunder": "Heavy Snow and Thunder",
-        "heavysnowshowers": "Heavy Snow Showers",
-        "heavysnowshowersandthunder": "Heavy Snow Showers and Thunder",
-        "lightrain": "Light Rain",
-        "lightrainandthunder": "Light Rain and Thunder",
-        "lightrainshowers": "Light Rain Showers",
-        "lightrainshowersandthunder": "Light Rain Showers and Thunder",
-        "lightsleet": "Light Sleet",
-        "lightsleetandthunder": "Light Sleet and Thunder",
-        "lightsleetshowers": "Light Sleet Showers",
-        "lightsnow": "Light Snow",
-        "lightsnowandthunder": "Light Snow and Thunder",
-        "lightsnowshowers": "Light Snow Showers",
-        "lightssleetshowersandthunder": "Light Sleet Showers and Thunder",
-        "lightssnowshowersandthunder": "Light Snow Showers and Thunder",
-        "partlycloudy": "Partly Cloudy",
+        "heavyrain": "Zware regen",
+        "heavyrainandthunder": "Zware regen en onweer",
+        "heavyrainshowers": "Zware regenbuien",
+        "heavyrainshowersandthunder": "Zware regenbuien en onweer",
+        "heavysleet": "Zware natte sneeuw",
+        "heavysleetandthunder": "Zware natte sneeuw en onweer",
+        "heavysleetshowers": "Zware natte sneeuwbuien",
+        "heavysleetshowersandthunder": "Zware natte sneeuwbuien en onweer",
+        "heavysnow": "Zware sneeuw",
+        "heavysnowandthunder": "Zware sneeuw en onweer",
+        "heavysnowshowers": "Zware sneeuwbuien",
+        "heavysnowshowersandthunder": "Zware sneeuwbuien en onweer",
+        "lightrain": "Lichte regen",
+        "lightrainandthunder": "Lichte regen en onweer",
+        "lightrainshowers": "Lichte regenbuien",
+        "lightrainshowersandthunder": "Lichte regenbuien en onweer",
+        "lightsleet": "Lichte natte sneeuw",
+        "lightsleetandthunder": "Lichte natte sneeuw en onweer",
+        "lightsleetshowers": "Lichte natte sneeuwbuien",
+        "lightsnow": "Lichte sneeuw",
+        "lightsnowandthunder": "Lichte sneeuw en onweer",
+        "lightsnowshowers": "Lichte sneeuwbuien",
+        "lightssleetshowersandthunder": "Lichte natte sneeuwbuien en onweer",
+        "lightssnowshowersandthunder": "Lichte sneeuwbuien en onweer",
+        "partlycloudy": "Half bewolkt",
         "rain": "Regen",
-        "rainandthunder": "Rain and Thunder",
-        "rainshowers": "Rain Showers",
-        "rainshowersandthunder": "Rain Showers and Thunder",
+        "rainandthunder": "Regen en onweer",
+        "rainshowers": "Regenbuien",
+        "rainshowersandthunder": "Regenbuien en onweer",
         "sleet": "Natte sneeuw",
-        "sleetandthunder": "Sleet and Thunder",
-        "sleetshowers": "Sleet Showers",
-        "sleetshowersandthunder": "Sleet Showers and Thunder",
+        "sleetandthunder": "Natte sneeuw en onweer",
+        "sleetshowers": "Natte sneeuwbuien",
+        "sleetshowersandthunder": "Natte sneeuwbuien en onweer",
         "snow": "Sneeuw",
-        "snowandthunder": "Snow and Thunder",
-        "snowshowers": "Snow Showers",
-        "snowshowersandthunder": "Snow Showers and Thunder",
+        "snowandthunder": "Sneeuw en onweer",
+        "snowshowers": "Sneeuwbuien",
+        "snowshowersandthunder": "Sneeuwbuien en onweer",
         "thunder": "Onweer",
         "unknown": "Onbekend"
       }
     },
     "row": {
       "viewDetails": "Bekijk details voor {species}",
-      "openDetailFromStatus": "Detailpagina voor {species} openen",
-      "play": "Play",
-      "playAudio": "Play audio"
+      "openDetailFromStatus": "Open detail page for {species}",
+      "play": "Afspelen",
+      "playAudio": "Geluid afspelen",
+      "imageFailedToLoad": "Afbeelding kon niet worden geladen"
     },
     "media": {
       "title": "Geluid opname & Spectrogram",
@@ -977,7 +1068,8 @@
       "error": "Fout bij het laden van herkenning: {error}",
       "loadingResults": "{count} resultaten laden...",
       "thumbnailLoading": "{species} miniatuur laden...",
-      "thumbnailLoaded": "Miniatuur van {species} geladen"
+      "thumbnailLoaded": "Miniatuur van {species} geladen",
+      "resultsPerPage": "Resultaten per pagina"
     },
     "errors": {
       "notFound": "Detectie niet gevonden. Deze is mogelijk verwijderd of de ID is onjuist.",
@@ -989,22 +1081,22 @@
       "fetchFailed": "Detecties konden niet worden opgehaald"
     },
     "reanalyze": {
-      "title": "Clip heranalyseren",
-      "running": "Bezig met analyseren…",
-      "noPredictions": "Geen voorspellingen ontvangen.",
-      "colSpecies": "Soort",
-      "button": "Heranalyseren",
-      "buttonAriaLabel": "Clip van {species} heranalyseren met een ander model",
-      "descriptionMulti": "Hieronder zie je wat elk geladen model van deze clip vindt. Klik op 'Deze gebruiken' bij de regel die volgens jou klopt om de detectie aan te passen.",
-      "multiModelSummary": "{models} • {duration} audio",
-      "useThis": "Deze gebruiken",
-      "useThisAriaLabel": "Deze soort ({species}) toepassen als gecorrigeerde detectie",
-      "noModelForCorrection": "Geen model heeft deze soort gescoord; kan niet toegepast worden.",
-      "correctionApplied": "Detectie bijgewerkt naar {species}.",
-      "confirmTitle": "Detectie vervangen door {species}?",
-      "confirmBody": "Dit werkt de soort, het model en de betrouwbaarheid van de detectie ter plekke bij en markeert hem als geverifieerd. Eventuele bestaande beoordeling wordt overschreven.",
-      "confirmApply": "Ja, correctie toepassen",
-      "applying": "Bezig met toepassen…"
+      "title": "Reanalyze this clip",
+      "running": "Analyzing…",
+      "noPredictions": "No predictions returned.",
+      "colSpecies": "Species",
+      "button": "Reanalyze",
+      "buttonAriaLabel": "Reanalyze {species} clip with another model",
+      "descriptionMulti": "Below is how every loaded classifier scored this clip. Click 'Use this' on the row you think is right to update the detection.",
+      "multiModelSummary": "{models} • {duration} of audio",
+      "useThis": "Use this",
+      "useThisAriaLabel": "Apply this species ({species}) as the corrected detection",
+      "noModelForCorrection": "No model has scored this species; cannot apply.",
+      "correctionApplied": "Detection updated to {species}.",
+      "confirmTitle": "Replace detection with {species}?",
+      "confirmBody": "This updates the detection's species, model, and confidence in place, and marks it as verified. Existing review status is overwritten.",
+      "confirmApply": "Yes, apply correction",
+      "applying": "Applying…"
     }
   },
   "species": {
@@ -1172,8 +1264,167 @@
     "sections": {
       "overview": "Overzicht",
       "database": "Database",
-      "inference": "AI Models",
-      "terminal": "Terminal"
+      "inference": "AI-modellen",
+      "terminal": "Terminal",
+      "importExport": "Importeren / Exporteren"
+    },
+    "importExport": {
+      "available": "Beschikbaar",
+      "experimental": "Experimenteel",
+      "comingSoon": "Binnenkort beschikbaar",
+      "loading": "Laden...",
+      "runInBackground": "Sluiten (import gaat door op de achtergrond)",
+      "runInBackgroundTitle": "Dit venster sluiten. De import blijft op de achtergrond doorlopen.",
+      "stepAnnouncement": "Stap {current} van {total}: {name}",
+      "steps": {
+        "source": "Bron",
+        "mode": "Modus",
+        "confirm": "Bevestigen",
+        "progress": "Voortgang",
+        "done": "Klaar"
+      },
+      "import": {
+        "sectionTitle": "Importeren"
+      },
+      "export": {
+        "sectionTitle": "Exporteren",
+        "cardTitle": "Detecties exporteren",
+        "cardDescription": "Exporteer je detectiegegevens naar CSV, JSON of andere formaten."
+      },
+      "birdnetPi": {
+        "cardTitle": "BirdNET-Pi",
+        "cardDescription": "Importeer detectiegeschiedenis uit een BirdNET-Pi-SQLite-database (birds.db).",
+        "startButton": "Importeren uit BirdNET-Pi",
+        "wizardTitle": "Importeren uit BirdNET-Pi",
+        "experimentalNotice": "Importeren vanuit BirdNET-Pi is experimenteel en kan nog problemen hebben.",
+        "reportBug": "Een bug melden op GitHub"
+      },
+      "birdsDbUpload": {
+        "cardTitle": "birds.db uploaden",
+        "cardDescription": "Upload een BirdNET-Pi-databasebestand rechtstreeks vanuit je browser."
+      },
+      "activity": {
+        "sectionTitle": "Importactiviteit",
+        "empty": {
+          "title": "Geen importactiviteit",
+          "description": "Wanneer een import loopt, verschijnt de voortgang hier."
+        },
+        "openWizard": "Importassistent openen"
+      },
+      "wizard": {
+        "stepsLabel": "Stappen van de importassistent"
+      },
+      "sourceAccess": {
+        "pathLabel": "Pad naar birds.db (relatief aan de koppelmap)",
+        "pathHelpText": "Voer het pad in relatief aan de hoofdmap van de externe media-koppeling, bijv. birdnet-pi/birds.db",
+        "pathRequiredReason": "Voer het pad naar birds.db in om door te gaan",
+        "mountDescription": "Je BirdNET-Pi-database moet zich op de externe media-koppeling bevinden.",
+        "mountRoot": "Hoofdmap van de koppeling",
+        "nativeTitle": "Externe media-koppeling vereist",
+        "nativeDescription": "Voor de BirdNET-Pi-import is een externe media-koppeling nodig, die alleen beschikbaar is wanneer BirdNET-Go in een container draait. Native (niet-gecontaineriseerde) installaties kunnen deze importfunctie niet gebruiken.",
+        "nativeHowTo": "Om uit BirdNET-Pi te importeren, draai je BirdNET-Go in een container waarin de BirdNET-Pi-datamap als extern media-volume is gekoppeld.",
+        "missingTitle": "Externe media-koppeling niet gevonden",
+        "missingDescription": "BirdNET-Go draait in een container, maar de externe media-koppeling is niet bereikbaar. Volg de onderstaande stappen om deze in te stellen.",
+        "setupStepsLabel": "Installatiestappen",
+        "recheckButton": "Opnieuw controleren",
+        "recheckHint": "Klik na het voltooien van de installatiestappen op Opnieuw controleren om door te gaan."
+      },
+      "source": {
+        "title": "Waar staan je BirdNET-Pi-gegevens?",
+        "candidatesIntro": "We hebben deze BirdNET-Pi-databases gevonden:",
+        "selectButton": "Selecteren",
+        "useThisButton": "Deze gebruiken",
+        "detectionsSummary": "{count} detecties, tot {date}",
+        "kindLocal": "Op dit apparaat",
+        "kindRemovable": "Verwisselbare schijf",
+        "kindNetwork": "Netwerklocatie",
+        "unreadableTitle": "Gevonden, maar BirdNET-Go kan het niet lezen",
+        "unreadableOwner": "Deze gegevens behoren toe aan een andere gebruiker ({owner}).",
+        "manualEntryLink": "Staat het er niet bij? Voer de locatie handmatig in",
+        "manualEntryLabel": "Locatie van de BirdNET-Pi-database",
+        "manualValidating": "Controleren...",
+        "manualValid": "{count} detecties gevonden.",
+        "manualNotFound": "We konden daar geen bestand vinden.",
+        "manualUnreadable": "Gevonden, maar BirdNET-Go kan het nog niet lezen.",
+        "manualInvalid": "Dat bestand is geen BirdNET-Pi-database.",
+        "zeroTitle": "We konden het niet automatisch vinden",
+        "zeroDescription": "Sluit de schijf met je BirdNET-Pi-gegevens aan en controleer opnieuw.",
+        "checkAgainButton": "Opnieuw controleren",
+        "showCommandsLabel": "Opdrachten tonen",
+        "containerUnreadableHint": "BirdNET-Go (draait als UID {uid}) kan dit bestand niet lezen. Pas de rechten op de host aan zodat UID {uid} het kan lezen en controleer daarna opnieuw.",
+        "elevation": {
+          "copying": "Je gegevens worden gekopieerd...",
+          "passwordTitle": "BirdNET-Go heeft toestemming nodig om deze gegevens te lezen",
+          "passwordDescription": "Voer het beheerderswachtwoord voor dit apparaat in zodat BirdNET-Go de gegevens kan kopiëren.",
+          "passwordLabel": "Beheerderswachtwoord",
+          "passwordRequiredReason": "Voer het beheerderswachtwoord in om door te gaan",
+          "httpWarning": "Deze pagina gebruikt geen HTTPS. Het beheerderswachtwoord wordt onversleuteld over je lokale netwerk verzonden. Ga alleen verder op een netwerk dat je vertrouwt.",
+          "submitButton": "Kopiëren en doorgaan",
+          "fallbackTitle": "Voer deze opdracht uit om toegang te verlenen",
+          "fallbackDescription": "BirdNET-Go kan de rechten niet automatisch verhogen. Voer de onderstaande opdracht uit en klik daarna op Opnieuw controleren.",
+          "disabledNote": "Rechtenverhoging in de app is uitgeschakeld. Gebruik de onderstaande opdracht om toegang te verlenen.",
+          "failed": "Dat werkte niet. Controleer het wachtwoord en probeer het opnieuw, of gebruik de onderstaande opdracht."
+        }
+      },
+      "mode": {
+        "label": "Wat wil je importeren?",
+        "dbOnly": {
+          "label": "Alleen database",
+          "description": "Importeer detectiegegevens uit birds.db. Audiofragmenten worden niet geïmporteerd."
+        },
+        "dbAudio": {
+          "label": "Database + audiofragmenten",
+          "description": "Importeer detectiegegevens en de bijbehorende audio-opnamen.",
+          "badge": "Niet beschikbaar",
+          "disabledReason": "Import van audiofragmenten is nog niet beschikbaar. Alleen import van de database wordt ondersteund."
+        }
+      },
+      "confirm": {
+        "description": "Controleer je importinstellingen voordat je begint. Geïmporteerde detecties worden gemarkeerd met de bron birdnet-pi en duplicaten worden automatisch overgeslagen.",
+        "source": "Bronpad",
+        "mode": "Importmodus",
+        "tagging": "Bronlabel",
+        "taggingValue": "birdnet-pi (automatisch toegepast)",
+        "deduplicationNote": "Dubbele detecties (dezelfde soort, tijd en datum die al in de database staan) worden automatisch overgeslagen. De exacte aantallen worden live tijdens de import getoond.",
+        "startButton": "Import starten"
+      },
+      "progress": {
+        "label": "Importvoortgang",
+        "runningLabel": "Import loopt",
+        "progressLabel": "{percent}% voltooid",
+        "cancelButton": "Annuleren",
+        "cancellingLabel": "Annuleren...",
+        "cancelledMessage": "Import is geannuleerd.",
+        "processed": "Verwerkt",
+        "inserted": "Toegevoegd",
+        "skipped": "Overgeslagen",
+        "errors": "Fouten",
+        "phase": {
+          "validate": "Valideren",
+          "dedup": "Duplicaten verwijderen",
+          "import": "Importeren"
+        }
+      },
+      "done": {
+        "successTitle": "Import voltooid",
+        "successDescription": "Je BirdNET-Pi-detecties zijn succesvol geïmporteerd.",
+        "cancelledTitle": "Import geannuleerd",
+        "cancelledDescription": "De import is geannuleerd voordat deze voltooid was.",
+        "errorTitle": "Import mislukt",
+        "interruptedTitle": "Import onderbroken",
+        "interruptedDescription": "De verbinding met de server is verbroken terwijl de import bezig was, dus het uiteindelijke resultaat is onbekend. Controleer je detecties en start de import opnieuw als dat nodig is.",
+        "viewDetectionsLink": "Geïmporteerde detecties bekijken",
+        "partialInserted": "{count} detecties zijn geïmporteerd vóór de annulering.",
+        "importAnother": "Nog een import uitvoeren"
+      },
+      "errors": {
+        "loadFailed": "Kan de importstatus niet laden. Probeer het opnieuw.",
+        "mediaLoadFailed": "Kan de externe media niet controleren. Probeer het opnieuw.",
+        "alreadyRunning": "Er loopt al een import. Wacht tot deze voltooid is.",
+        "startFailed": "Kan de import niet starten. Probeer het opnieuw.",
+        "cancelFailed": "Kan de import niet annuleren.",
+        "importFailed": "Import mislukt. Controleer je configuratie en probeer het opnieuw."
+      }
     },
     "database": {
       "title": "Databasebeheer",
@@ -1361,15 +1612,15 @@
           "restartTitle": "Herstart vereist",
           "restartBody": "Herstart de applicatie om naar de V2-database te schakelen. Opruiming van de oude database is beschikbaar na herstart.",
           "fallbackError": "Verschil in recordaantal tussen legacy- en V2-database. Sommige records zijn mogelijk niet correct gemigreerd.",
-          "migrateInfo": "De migratie zal {count} records overzetten van de legacy-database naar het nieuwe V2-schema. De dual-write-modus garandeert nul dataverlies tijdens de migratie.",
+          "migrateInfo": "De migratie zal {count} records overzetten van de legacy-database naar het nieuwe V2-schema. Nieuwe detecties die tijdens de migratie worden opgeslagen, worden ook naar de nieuwe database gekopieerd.",
           "sourceLegacy": "Bron (legacy)",
           "targetV2": "Doel (V2)",
           "recordsLabel": "Records",
           "sizeLabel": "Grootte",
-          "prerequisitesNotMet": "Vereisten niet voldaan — los de kritieke problemen hieronder op",
+          "prerequisitesNotMet": "Vereisten niet voldaan - los de kritieke problemen hieronder op",
           "validatingTitle": "Gegevens valideren",
           "validatingBody": "{count} legacy-records vergelijken met V2-database...",
-          "dirtyRecordsCatchup": "{count} gewijzigde records — poging tot synchronisatie",
+          "dirtyRecordsCatchup": "{count} gewijzigde records - poging tot synchronisatie",
           "cutoverTitle": "Overschakeling voltooien",
           "cutoverBody": "Overschakeling naar V2-database voltooien...",
           "migratingPhase": "Migratie van {phase}",
@@ -1378,7 +1629,7 @@
           "percentComplete": "{percent}% voltooid",
           "recordsPerSec": "{rate} records/s",
           "calculating": "Berekenen...",
-          "dirtyWriteFailed": "{count} records konden niet worden geschreven — worden afgestemd tijdens validatie"
+          "dirtyWriteFailed": "{count} records konden niet worden geschreven - worden afgestemd tijdens validatie"
         },
         "details": {
           "title": "Databasedetails",
@@ -1388,14 +1639,14 @@
           "integrity": "Integriteit: {status}"
         },
         "strip": {
-          "legacy": "Legacy",
+          "legacy": "Oud",
           "v2Target": "V2 (doel)",
           "active": "Actief",
           "migration": "Migratie",
           "complete": "Voltooid",
           "recordsMigrated": "{count} records gemigreerd",
           "readyToMigrate": "Klaar voor migratie",
-          "recordsInLegacy": "{count} records in legacy",
+          "recordsInLegacy": "{count} records in oud",
           "comparingRecords": "Recordaantallen vergelijken...",
           "validationFailed": "Validatie mislukt",
           "rate": "Snelheid",
@@ -1413,7 +1664,7 @@
         },
         "notes": {
           "in_progress": "U kunt het systeem normaal blijven gebruiken terwijl de migratie op de achtergrond draait.",
-          "dual_write": "Migratie is bezig. Uw gegevens zijn veilig - alle nieuwe detecties worden opgeslagen in beide databases. U kunt BirdNET-Go gewoon blijven gebruiken.",
+          "dual_write": "Migratie is bezig. Uw gegevens zijn veilig - nieuwe detecties worden opgeslagen in de huidige database en tijdens de migratie naar de nieuwe database gekopieerd. U kunt BirdNET-Go gewoon blijven gebruiken.",
           "migrating": "Bestaande detecties worden gekopieerd naar de nieuwe database. Dit kan even duren afhankelijk van hoeveel detecties u heeft. U kunt op elk moment pauzeren en hervatten.",
           "validating": "Controleren of alle records correct zijn gekopieerd. Bijna klaar!",
           "cutover": "Overschakelen naar de nieuwe database. Dit duurt slechts een moment.",
@@ -1529,57 +1780,96 @@
       }
     },
     "inference": {
-      "title": "AI Models & Inference",
-      "loading": "Loading inference status",
-      "error": "Could not load inference status",
+      "title": "AI-modellen & Inferentie",
+      "loading": "Inferentiestatus laden",
+      "error": "Kan inferentiestatus niet laden",
+      "vad": {
+        "section": "Privacybescherming",
+        "title": "Silero VAD",
+        "active": "Actief",
+        "activeHelp": "Het spraakdetectiemodel is geladen en beoordeelt audio.",
+        "idle": "Inactief",
+        "idleHelp": "Ingeschakeld en gereed; het model wordt geladen wanneer het eerste audiofragment wordt beoordeeld.",
+        "disabled": "Uitgeschakeld",
+        "disabledHelp": "Privacybescherming is uitgeschakeld in de instellingen van het privacyfilter.",
+        "unavailable": "Geen model",
+        "unavailableHelp": "Er is geen spraakdetectiemodel beschikbaar in deze build. Stel een VAD-modelpad in bij de instellingen van het privacyfilter, of gebruik een build met een ingesloten model.",
+        "description": "Silero VAD is een gespecialiseerd akoestisch model dat menselijke spraak detecteert. Het stuurt het privacyfilter aan en gooit audio weg wanneer er spraak aanwezig is, zodat stemmen uit uw opnamen worden gehouden.",
+        "threshold": "Drempelwaarde",
+        "speechHits": "Spraaktreffers",
+        "recentTitle": "Recente spraak",
+        "recentEmpty": "Nog geen spraak gedetecteerd",
+        "colWhen": "Tijdstip",
+        "colProbability": "Waarschijnlijkheid",
+        "colSource": "Bron"
+      },
       "sectionHardware": "Hardware",
-      "sectionBackends": "Inference Backends",
-      "sectionModels": "Models",
+      "sectionBackends": "Inferentie Back-ends",
+      "sectionModels": "Modellen",
       "noModels": "No models are currently loaded",
-      "architecture": "Architecture",
+      "architecture": "Architectuur",
       "cpu": "CPU",
-      "environment": "Environment",
+      "environment": "Omgeving",
       "fp16": "FP16",
-      "fp16Supported": "FP16 supported",
-      "fp16Unsupported": "FP16 not supported",
+      "fp16Supported": "FP16 ondersteund",
+      "fp16Unsupported": "FP16 niet ondersteund",
+      "advanced": "Geavanceerd",
+      "capabilities": "Mogelijkheden",
+      "capabilitiesHelp": "Hardware-tags die worden gebruikt om deze machine te koppelen aan de beschikbare model-builds.",
       "backendTflite": "TensorFlow Lite",
       "backendOnnx": "ONNX Runtime",
       "backendOpenvino": "OpenVINO",
-      "available": "Available",
-      "notAvailable": "Not available",
-      "active": "Active",
-      "inactive": "Inactive",
-      "initialized": "Initialized",
-      "version": "Version",
-      "devices": "Devices",
-      "stock": "Stock",
-      "custom": "Custom",
-      "sampleRate": "Sample rate",
+      "available": "Beschikbaar",
+      "notAvailable": "Niet beschikbaar",
+      "active": "Actief",
+      "inactive": "Inactief",
+      "initialized": "Geïnitialiseerd",
+      "version": "Versie",
+      "devices": "Apparaten",
+      "board": "Moederbord",
+      "soc": "SoC",
+      "memory": "Geheugen",
+      "cores": "Kernen",
+      "gpu": "Videokaart",
+      "gpuReachable": "Bereikbaar",
+      "gpuNotReachable": "Niet bereikbaar",
+      "gpuReasonRenderNodeUnavailable": "Er is geen GPU-apparaatknooppunt zichtbaar voor de server.",
+      "gpuReasonRenderNodePermission": "Het GPU-apparaatknooppunt kan niet worden geopend.",
+      "gpuReasonNoRuntime": "BirdNET-Go versnelt momenteel inferentie alleen op Intel graphics, dus deze kaart wordt niet gebruikt.",
+      "gpuReasonUnknown": "Deze GPU kan niet worden gebruikt voor inferentie in deze build.",
+      "stock": "Standaard",
+      "custom": "Aangepast",
+      "sampleRate": "Sample frequentie",
       "clipLength": "Segmentlengte",
-      "species": "Species",
-      "invocations": "Segments analysed",
-      "avgLatency": "Avg latency",
-      "maxLatency": "Max latency",
+      "species": "Soorten",
+      "invocations": "Geanalyseerde segmenten",
+      "avgLatency": "Gem. latentie",
+      "maxLatency": "Max. latentie",
       "rtf": "RTF",
-      "rtfLabel": "Real-time factor",
-      "approxRam": "Approx. host RAM (RSS)",
-      "approxRamTooltip": "Approximate host RAM (RSS) measured at model load. Excludes GPU VRAM, and may be skewed by shared runtime memory arenas and OS page reclamation.",
-      "latencyChart": "Latency (ms)",
-      "rtfChart": "Real-time factor",
-      "sources": "Audio sources",
-      "noSources": "No sources attached",
-      "primaryFallback": "primary (fallback)",
-      "notMeasured": "n/a",
+      "rtfLabel": "Realtime factor",
+      "approxRam": "Geschatte host RAM (RSS)",
+      "approxRamTooltip": "Geschatte host RAM (RSS) gemeten bij laden model.",
+      "latencyChart": "Latentie (ms)",
+      "rtfChart": "Realtime factor",
+      "sources": "Audiobronnen",
+      "noSources": "Geen bronnen verbonden",
+      "primaryFallback": "primair (fallback)",
+      "sourceNotRunning": "analyseert niet",
+      "sourceNotRunningTooltip": "Deze bron is in de instellingen toegewezen aan het model, maar de audio bereikt het model niet, waardoor het geen detecties produceert. Controleer of de audiobron is verbonden en audio verzendt.",
+      "modelNotAnalyzingTooltip": "Eén of meer aan dit model toegewezen audiobronnen verzenden er geen audio naar, waardoor het geen detecties produceert. Zie de hieronder vermelde bronnen.",
+      "sourcesDegraded": "{count} van {total} bronnen offline",
+      "sourcesDegradedTooltip": "Sommige, maar niet alle audiobronnen van dit model zijn offline, dus het analyseert nog steeds via de werkende bronnen. De specifieke offline bron en hoe dit op te lossen staan hieronder vermeld.",
+      "notMeasured": "n/b",
       "unitMs": "ms",
       "unitKhz": "kHz",
       "unitSec": "s",
       "sectionAudio": "Audio",
-      "queueDepth": "Queue depth",
-      "queueDepthChart": "Queue depth",
-      "droppedChunks": "Dropped chunks",
-      "queueCapacity": "Capacity",
-      "lastSeen": "Last seen",
-      "lastSeenNever": "No detections yet",
+      "queueDepth": "Wachtrijdiepte",
+      "queueDepthChart": "Wachtrijdiepte",
+      "droppedChunks": "Gedropte blokken",
+      "queueCapacity": "Capaciteit",
+      "lastSeen": "Laatst gezien",
+      "lastSeenNever": "Nog geen detecties",
       "deviceHelp": "Het rekensysteem waarop dit model inferentie uitvoert (CPU, GPU of onbekend).",
       "paused": "Gepauzeerd",
       "pausedScheduleHelp": "Dit model draait alleen volgens een schema en is momenteel gepauzeerd, dus het verwerkt geen audio.",
@@ -1593,24 +1883,31 @@
       "coDetectedHelp": "Andere modellen die deze soort binnen {seconds}s detecteerden",
       "outOfRangeHelp": "Buiten het bereikfilter (getoond voor diagnostiek, niet opgeslagen als detectie)",
       "peak": "piek",
-      "activityActive": "Inference active",
-      "activityIdle": "Idle",
-      "throughput": "Throughput",
+      "activityActive": "Inferentie actief",
+      "activityIdle": "Inactief",
+      "throughput": "Doorvoer",
       "throughputUnit": "/s",
-      "throughputChart": "Throughput (/s)",
-      "errorRate": "Error rate",
-      "loadFailures": "Load failures",
-      "rtfHelp": "Real-time factor: inference time divided by clip length. Below 1.0 means the model analyses a segment faster than real time (keeping up); above 1.0 means it is falling behind.",
-      "queueDepthHelp": "Audio segments waiting to be analysed. Stays near zero when analysis keeps up; a rising number means it is falling behind.",
-      "queueCapacityHelp": "Maximum number of segments the queue can hold before new audio is dropped.",
-      "droppedChunksHelp": "Audio chunks discarded because the queue was full. Should stay at zero.",
-      "throughputHelp": "Segments analysed per second by this model.",
-      "errorRateHelp": "Share of analysis attempts that failed.",
-      "loadFailuresHelp": "Number of times this model failed to load.",
-      "fp16Help": "16-bit floating point. Hardware that supports it can run some models faster and with less memory.",
-      "invocationsHelp": "Total audio segments this model has analysed since startup.",
-      "noModelsHint": "No audio source configured yet?",
-      "noModelsHintLink": "Configure audio sources"
+      "throughputChart": "Doorvoer (/s)",
+      "errorRate": "Foutmarge",
+      "loadFailures": "Laadfouten",
+      "rtfHelp": "Realtime factor: inferentietijd gedeeld door cliplengte.",
+      "queueDepthHelp": "Audiosegmenten die wachten om geanalyseerd te worden.",
+      "queueCapacityHelp": "Maximaal aantal segmenten in de wachtrij.",
+      "droppedChunksHelp": "Audioblokken weggegooid omdat wachtrij vol is.",
+      "throughputHelp": "Geanalyseerde segmenten per seconde.",
+      "errorRateHelp": "Aandeel mislukte analysepogingen.",
+      "loadFailuresHelp": "Aantal keren dat het model niet kon laden.",
+      "fp16Help": "16-bit floating point.",
+      "invocationsHelp": "Totaal aantal geanalyseerde segmenten.",
+      "noModelsHint": "Nog geen audiobron geconfigureerd?",
+      "noModelsHintLink": "Audiobronnen configureren",
+      "modelFailing": "elke analyse mislukt",
+      "lastSuccess": "Laatste succes",
+      "lastSuccessHelp": "Wanneer dit model voor het laatst audio zonder fout analyseerde.",
+      "lastSuccessNever": "Geen sinds het model is geladen",
+      "modelFailingHelp": "{reason} Probeer een andere versie van dit model via Instellingen > Analyse > Modellen, of controleer de backend en precisie hierboven.",
+      "modelFailingReasonNonFinite": "Alle recente analyses zijn mislukt omdat het model ongeldige scores gaf (NaN of oneindig), dus het detecteert niets.",
+      "modelFailingReasonError": "Alle recente analyses zijn mislukt omdat de inferentie een fout gaf, dus het model detecteert niets."
     },
     "metrics": {
       "cpu": "CPU",
@@ -1667,8 +1964,54 @@
     "reattach": "Opnieuw koppelen"
   },
   "analytics": {
-    "title": "Aantallen",
+    "hub": {
+      "tabs": {
+        "patterns": "Activiteitspatronen",
+        "trends": "Trends",
+        "biodiversity": "Biodiversiteit",
+        "quality": "Controle en nauwkeurigheid",
+        "summary": "Overzicht",
+        "nocturnal": "Nachtelijke activiteit",
+        "weather": "Weer",
+        "soundscape": "Geluidlandschap"
+      },
+      "aria": {
+        "tabs": "Analysesecties"
+      },
+      "controls": {
+        "source": "Bron",
+        "sourceAll": "Alle bronnen",
+        "sourceLoading": "Audiobronnen laden...",
+        "sourceNone": "Nog geen audiobronnen met detecties.",
+        "sourceNotApplicable": "Deze grafieken filteren niet op bron.",
+        "speciesNotApplicable": "De grafieken in deze sectie filteren niet op soort."
+      },
+      "card": {
+        "error": "Kan deze grafiek niet laden",
+        "retry": "Opnieuw proberen",
+        "notEnoughData": "Nog niet genoeg gegevens",
+        "notEnoughDataHint": "Deze grafiek heeft minstens {min} gegevenspunten nodig. Blijf opnemen en kom snel terug.",
+        "export": "Exporteren",
+        "exportComingSoon": "CSV-export komt binnenkort."
+      }
+    },
     "loadingError": "Kon analyse gegevens niet inladen. Probeer het later opnieuw.",
+    "comingSoon": {
+      "badge": "Binnenkort beschikbaar",
+      "plannedTitle": "Geplande mogelijkheden",
+      "weather": {
+        "description": "Vogelactiviteit bijgehouden ten opzichte van lokale weersomstandigheden. Deze weergave correleert detecties met temperatuur, wind en neerslag.",
+        "feature1": "Correleer detecties met temperatuur, wind en neerslag",
+        "feature2": "Bekijk hoe weerfronten de soortactiviteit beïnvloeden",
+        "feature3": "Vergelijk seizoensactiviteit met historische weergegevens"
+      },
+      "soundscape": {
+        "description": "Een blik op het algehele akoestische karakter van de omgeving, met behulp van akoestische indices om de diversiteit van het geluidlandschap in de loop der tijd samen te vatten.",
+        "feature1": "Akoestische indices die de complexiteit van het geluidlandschap samenvatten",
+        "feature2": "Biodiversiteit volgen via omgevingsgeluid door de tijd heen",
+        "feature3": "Dageraad- en schemerchoreussen in het akoestische register opsporen"
+      }
+    },
     "stats": {
       "totalDetections": "Totaal herkend",
       "uniqueSpecies": "Unieke soorten",
@@ -1701,9 +2044,9 @@
       "exportCsv": "CSV Export",
       "species": "soorten",
       "filtered": "(gefilterd)",
-      "audioSource": "Audiobron",
-      "audioSourceAll": "Alle audiobronnen",
-      "audioSourceUnknown": "Onbekende bron"
+      "audioSource": "Audio Source",
+      "audioSourceAll": "All audio sources",
+      "audioSourceUnknown": "Unknown source"
     },
     "timePeriodOptions": {
       "allTime": "Alle herkenningen",
@@ -1779,7 +2122,6 @@
       }
     },
     "advanced": {
-      "title": "Geavanceerde analyse",
       "chartControls": "Grafiekbediening",
       "dateRange": "Datumbereik",
       "chartOptions": "Grafiekopties",
@@ -1803,11 +2145,11 @@
       "charts": {
         "timeOfDay": {
           "title": "Detectiepatronen per dagdeel",
-          "description": "Toont gemiddelde detectieaantallen gedurende de dag voor geselecteerde soorten",
+          "description": "Gemiddeld aantal detecties per dag op elk uur, over het geselecteerde datumbereik en de geselecteerde soorten",
           "noData": "Geen dagdeelgegevens beschikbaar",
           "noDataHint": "Selecteer soorten en een datumbereik om patronen weer te geven",
           "axisTime": "Tijd van de dag",
-          "axisCount": "Aantal detecties"
+          "axisCount": "Gem. detecties / dag"
         },
         "dailyTrend": {
           "title": "Soortdetectietrends",
@@ -1825,6 +2167,126 @@
           "noDataHint": "Selecteer een datumbereik om diversiteitstrends weer te geven",
           "axisDate": "Datum",
           "axisUniqueSpecies": "Unieke soorten"
+        },
+        "accumulation": {
+          "title": "Soortenaccumulatiecurve",
+          "description": "Cumulative number of distinct species detected within the selected period. The curve climbs as new species appear and flattens toward an asymptote once the common ones have been recorded; a still-rising tail means more species are likely waiting to be found.",
+          "noData": "Geen accumulatiedata beschikbaar",
+          "noDataHint": "Kies een groter datumbereik",
+          "ariaLabel": "Soortenaccumulatiecurve: cumulatieve verschillende soorten",
+          "axisDate": "Datum",
+          "axisSpecies": "Cumulatieve soorten",
+          "totalSpecies": "{species} soorten",
+          "tooltipCumulative": "Cumulatieve soorten",
+          "tooltipNew": "Nieuw in periode",
+          "summary": "Cumulatieve soortaccumulatie over {days} dagen, bereikt {species} soorten in totaal."
+        },
+        "yearOverYear": {
+          "title": "Jaar-op-jaar Tracker",
+          "description": "Cumulatieve detecties dit jaar vs. vorig jaar.",
+          "noData": "Geen jaar-op-jaar data beschikbaar",
+          "noDataHint": "Detecties van dit jaar en vorig jaar",
+          "ariaLabel": "Jaar-op-jaar Tracker",
+          "axisDate": "Datum",
+          "axisCount": "Cumulatieve detecties",
+          "legendThis": "{year} (dit jaar)",
+          "legendLast": "{year} (vorig jaar)",
+          "tooltipDelta": "Verschil",
+          "summary": "Jaar op jaar: per {monthDay} telt {currentYear} cumulatief {thisYear} detecties vergeleken met {lastYear} voor {previousYear} (een verschil van {delta})."
+        },
+        "phenology": {
+          "title": "Aankomst- en vertrekfenologie",
+          "description": "Eerste en laatste detectie van elke soort.",
+          "noData": "Geen fenologiedata beschikbaar",
+          "noDataHint": "Kies een groter datumbereik",
+          "ariaLabel": "Aankomst- en vertrekfenologie",
+          "axisDate": "Datum",
+          "summary": "Verblijfsduur voor {species} soorten.",
+          "tooltipFirst": "Eerst gedetecteerd",
+          "tooltipLast": "Laatst gedetecteerd",
+          "tooltipResidency": "Verblijf",
+          "tooltipCount": "Detecties",
+          "residencyDays": "{days} dagen"
+        },
+        "heatmap": {
+          "title": "Seizoensgebonden activiteiten-heatmap",
+          "description": "Detection density by date and time of day, revealing migration waves and dawn-chorus drift",
+          "noData": "Geen activiteitsdata beschikbaar",
+          "noDataHint": "Select a date range to view seasonal activity patterns",
+          "axisDate": "Datum",
+          "axisTime": "Tijdstip",
+          "tooltipTime": "Tijd",
+          "tooltipCount": "Detecties",
+          "legendLess": "Minder",
+          "legendMore": "Meer ({max})",
+          "ariaLabel": "Seizoensgebonden activiteiten-heatmap",
+          "summary": "{total} detecties over {days} dagen. Drukst rond {time} op {date}."
+        },
+        "ridgeline": {
+          "title": "Wie zingt wanneer",
+          "description": "Hour-of-day activity for the most-detected species, sorting dawn singers from all-day and nocturnal birds",
+          "noData": "Geen activiteitsgegevens van soorten beschikbaar",
+          "noDataHint": "Select a wider date range to compare species activity patterns",
+          "ariaLabel": "Activiteitsgrafiek: activiteitsverdeling per uur per soort",
+          "axisTime": "Tijdstip",
+          "note": "Toont de {count} meest gedetecteerde soorten",
+          "tooltipDetections": "Detecties",
+          "tooltipPeak": "Piek",
+          "summary": "Activiteit per uur voor {count} soorten. Meest actief: {species} rond {time}."
+        },
+        "succession": {
+          "title": "Akoestische successie",
+          "description": "How the soundscape's top species hand off through the day, shown as stacked bands of hourly detections from pre-dawn through night",
+          "noData": "Geen akoestische successiedata beschikbaar",
+          "noDataHint": "Select a wider date range to see how species hand off through the day",
+          "ariaLabel": "Acoustic succession streamgraph: stacked hour-of-day detections for the top species",
+          "axisTime": "Tijdstip",
+          "note": "Gecombineerde uurlijkse activiteit van de top {count} soorten op basis van detectievolume.",
+          "tooltipDetections": "Detecties",
+          "tooltipPeak": "Piek",
+          "summary": "Uur-van-de-dag opeenvolging voor {count} soorten. Meest actief: {species} rond {time}."
+        },
+        "dawnOnset": {
+          "title": "Ochtendkoor begin",
+          "description": "Wanneer het ochtendkoor begint t.o.v. de burgerlijke schemering.",
+          "noData": "Geen ochtendkoordata beschikbaar",
+          "noDataHint": "Select a wider date range to track how the dawn chorus shifts across the seasons",
+          "ariaLabel": "Ochtendkoor begin",
+          "axisDate": "Datum",
+          "axisOnset": "Minuten vanaf burgerlijke schemering",
+          "civilDawn": "Burgerlijke schemering",
+          "tooltipOnset": "Begin",
+          "tooltipOnsetAfter": "{minutes} min na burgerlijke schemering",
+          "tooltipOnsetBefore": "{minutes} min voor burgerlijke schemering",
+          "tooltipOnsetAt": "Bij burgerlijke schemering",
+          "tooltipCount": "Detecties",
+          "summary": "Aanvang ochtendkoor relatief t.o.v. burgerlijke schemering over {days} dagen ({plotted} soorten weergegeven)."
+        },
+        "nocturnal": {
+          "title": "Nachtelijke activiteitsklok",
+          "description": "Detecties op de 24-uursklok.",
+          "noData": "Geen activiteitsdata beschikbaar",
+          "noDataHint": "Kies een groter datumbereik",
+          "ariaLabel": "Nachtelijke activiteitsklok",
+          "axisHour": "Uur van de dag",
+          "tooltipHour": "{start} tot {end}",
+          "tooltipCount": "Detecties",
+          "summary": "Detectie-activiteit per uur van de dag ({total} detecties, piekmoment om {peak}:00).",
+          "legendDay": "Dag",
+          "legendTwilight": "Schemering",
+          "legendNight": "Nacht"
+        },
+        "confidence": {
+          "title": "Betrouwbaarheidsverdeling",
+          "description": "Hoe zeker het model per soort is, zodat u de vogels kunt opmerken waaraan het het vaakst twijfelt",
+          "noData": "Geen betrouwbaarheidsgegevens beschikbaar",
+          "noDataHint": "Selecteer een breder datumbereik om te vergelijken hoe zeker het model is voor verschillende soorten",
+          "ariaLabel": "Betrouwbaarheidsverdeling: histogram per soort van detectiebetrouwbaarheid",
+          "axisLabel": "Zekerheid",
+          "note": "Toont de {count} meest gedetecteerde soorten",
+          "tooltipCount": "Detecties",
+          "tooltipPeak": "Hoogste betrouwbaarheid",
+          "summary": "Verdeling van detectiebetrouwbaarheid voor {count} soorten. {species} ligt rond de {time} betrouwbaarheid."
         },
         "tooltips": {
           "date": "Datum",
@@ -1853,12 +2315,12 @@
       "loadFailed": "Analysegegevens konden niet worden geladen. Probeer het opnieuw."
     },
     "timeOfDayPeriods": {
-      "night0to4": "Night (0-4)",
-      "dawn5to8": "Dawn (5-8)",
-      "morning9to11": "Morning (9-11)",
-      "afternoon12to16": "Afternoon (12-16)",
-      "evening17to19": "Evening (17-19)",
-      "night20to23": "Night (20-23)"
+      "night0to4": "Nacht (0-4)",
+      "dawn5to8": "Dageraad (5-8)",
+      "morning9to11": "Ochtend (9-11)",
+      "afternoon12to16": "Middag (12-16)",
+      "evening17to19": "Avond (17-19)",
+      "night20to23": "Nacht (20-23)"
     }
   },
   "settings": {
@@ -1888,11 +2350,14 @@
       "saveAriaLabel": "Wijzigingen bewaren",
       "savingAriaLabel": "Bewaren ...",
       "unsavedChanges": "Niet opgeslagen wijzigingen",
-      "toolbar": "Instellingenacties"
+      "toolbar": "Instellingenacties",
+      "validationBlocked": "Sommige velden vragen aandacht voordat u kunt opslaan.",
+      "noChangesToSave": "Geen wijzigingen om op te slaan."
     },
     "errors": {
       "loadFailed": "Instellingen konden niet worden geladen",
       "saveFailed": "Instellingen konden niet worden opgeslagen",
+      "changedElsewhere": "De instellingen zijn elders gewijzigd. Controleer ze en sla opnieuw op.",
       "databaseStatsFailed": "Databasestatistieken konden niet worden geladen",
       "csvDownloadFailed": "CSV-download mislukt"
     },
@@ -1964,7 +2429,7 @@
           "title": "Vals Positief Filter",
           "description": "Vermindert valse detecties door meerdere bevestigingen te vereisen over overlappende audiosegmenten",
           "level": {
-            "label": "Filterniveau"
+            "label": "Sterkte van Vals Positief Filter"
           },
           "detectionCount": "{count} bevestigingen vereist. {description}",
           "levels": {
@@ -1972,29 +2437,52 @@
             "lenient": "Voor audio van lage kwaliteit (RTSP-camera's, webcammicrofoons)",
             "moderate": "Gebalanceerd voor typische hobbyopstellingen",
             "balanced": "Origineel gedrag van voor september 2025",
-            "strict": "RPi 4+ vereist. Voor hoogwaardige microfoons",
-            "maximum": "RPi 4+ vereist. Voor professionele microfoons"
+            "strict": "Voor hoogwaardige microfoons",
+            "maximum": "Voor professionele microfoons"
           },
-          "hardwareNote": "De niveaus \"Strikt\" en \"Maximum\" vereisen hogere overlap-instellingen en meer CPU-bronnen. RPi 4 of betere hardware is vereist voor deze niveaus.",
           "overlapAdjusted": "Overlap-instelling automatisch aangepast naar {overlap}s om aan de filtervereisten te voldoen",
           "overlapReduced": "Overlap-instelling verlaagd naar {overlap}s om overeen te komen met het filterniveau",
           "levelNames": {
-            "off": "Off",
-            "lenient": "Lenient",
-            "moderate": "Moderate",
-            "balanced": "Balanced",
-            "strict": "Strict",
+            "off": "Uit",
+            "lenient": "Laag",
+            "moderate": "Gemiddeld",
+            "balanced": "Gebalanceerd",
+            "strict": "Streng",
             "maximum": "Maximum",
-            "unknown": "Unknown"
+            "unknown": "Onbekend"
           },
-          "warningOff": "With filtering disabled, any detection above the confidence threshold is accepted immediately. This typically produces several false positives per day. Even lenient filtering significantly improves result quality."
+          "warningOff": "Zonder filtering wordt elke detectie boven de betrouwbaarheidsdrempel onmiddellijk geaccepteerd. Dit levert doorgaans meerdere vals-positieven per dag op. Zelfs lage filtering verbetert de resultaatkwaliteit aanzienlijk.",
+          "readoutTitle": "Nu vereiste bevestigingen",
+          "readoutPreviewTitle": "Vereiste bevestigingen na opslaan (schatting)",
+          "readoutIntro": "Een detectie wordt geaccepteerd wanneer genoeg analysevensters binnen {seconds} seconden overeenkomen.",
+          "readoutLine": "{model}: {count} van {windows} vensters, elke {step} s een nieuw venster",
+          "readoutPreview": "Geschat op basis van uw niet-opgeslagen wijzigingen. De limiet van het apparaat wordt na het opslaan opnieuw gecontroleerd.",
+          "readoutPending": "De opgeslagen instellingen worden toegepast. Tot de bijgewerkte aantallen zijn geladen, zijn deze waarden schattingen.",
+          "capNoticeTitle": "Overlap beperkt tot wat dit apparaat aankan",
+          "capNotice": "Het uitvoeren van {models, plural, one {# model} other {# modellen}} op {sources, plural, one {# audiobron} other {# audiobronnen}} met de ingestelde overlap van {configured} s overschrijdt de gemeten capaciteit van dit apparaat, dus audio wordt geanalyseerd met {effective} s overlap. Het filter kan daardoor minder bevestigingen vereisen. Uw opgeslagen instellingen blijven ongewijzigd.",
+          "overloadedNoticeTitle": "Dit apparaat kan de analyse niet bijhouden",
+          "overloadedNotice": "Het uitvoeren van {models, plural, one {# model} other {# modellen}} op {sources, plural, one {# audiobron} other {# audiobronnen}} overschrijdt de gemeten capaciteit van dit apparaat, zelfs zonder overlap. De analyse kan achterlopen en detecties kunnen worden gemist. Schakel minder modellen of audiobronnen in, of kies een snellere modelvariant.",
+          "unknownLatency": "De verwerkingstijd kon niet worden gemeten voor {models}, dus die telt niet mee bij het beperken van de overlap. De analyse kan nog steeds achterlopen.",
+          "cpuNote": "Een hogere sterkte analyseert overlappende audio vaker, wat CPU-tijd kost voor elk ingeschakeld model en elke audiobron. BirdNET-Go beperkt de overlap automatisch tot wat dit apparaat kan verwerken."
         },
         "rangeFilter": {
           "title": "Bereik Filter",
           "description": "Beperk detectie tot soorten die waarschijnlijk voorkomen in uw geografische regio",
           "stationLocation": {
             "label": "Station Locatie",
-            "helpText": "Station locatie, gebruikt voor weersgegevens en om vogelsoorten te beperken tot diegenen die waarschijnlijk voorkomen in de regio."
+            "helpText": "Station locatie, gebruikt voor weersgegevens en om vogelsoorten te beperken tot diegenen die waarschijnlijk voorkomen in de regio.",
+            "automaticLocation": "Automatische locatie",
+            "useCurrentLocation": "Browserlocatie gebruiken",
+            "locationHelp": "Vult de coördinaten in met de locatie van deze browser.",
+            "locating": "Locatie bepalen...",
+            "accuracy": "Geschatte nauwkeurigheid: binnen {accuracy} m",
+            "locationDetected": "Browserlocatie bepaald.",
+            "geolocationUnsupported": "Deze browser ondersteunt apparaatlocatie niet. Voer coördinaten handmatig in of gebruik de kaart.",
+            "geolocationInsecureHelp": "Vereist HTTPS of localhost. Zoek in plaats daarvan een plaats of gebruik de kaart.",
+            "geolocationDenied": "Toestemming voor locatie is geweigerd. Voer coördinaten handmatig in of gebruik de kaart.",
+            "geolocationUnavailable": "Uw apparaat kon de locatie niet bepalen. Voer coördinaten handmatig in of gebruik de kaart.",
+            "geolocationTimedOut": "Het locatieverzoek duurde te lang. Probeer het opnieuw, voer coördinaten handmatig in of gebruik de kaart.",
+            "geolocationFailed": "De locatie van uw apparaat kon niet worden bepaald. Voer coördinaten handmatig in of gebruik de kaart."
           },
           "latitude": {
             "label": "Breedtegraad",
@@ -2217,7 +2705,7 @@
                 "descriptions": {
                   "highContrast": "Ideaal voor zwakke signalen. Vogelgeluiden komen duidelijk uit boven de achtergrondruis. Aanbevolen voor wetenschappelijke/grijstinten stijlen.",
                   "standard": "Standaard gebalanceerde instelling. Goed voor de meeste toepassingen.",
-                  "extended": "Meer detail zichtbaar maar lager contrast. SoX standaardwaarde."
+                  "extended": "Meer detail zichtbaar maar lager contrast."
                 }
               },
               "enabled": {
@@ -2250,9 +2738,9 @@
           "label": "Taalregio",
           "helpText": "Taalregio voor vertaalde soorten algemene namen."
         },
-        "tensorflowThreads": {
-          "label": "TensorFlow CPU-threads",
-          "helpText": "Aantal CPU threads. Zet op 0 om alle beschikbare threads te gebruiken."
+        "inferenceThreads": {
+          "label": "CPU-threads voor inferentie",
+          "helpText": "Aantal CPU-threads dat wordt gebruikt voor modelinferentie. Zet op 0 om alle beschikbare threads te gebruiken. Heeft geen effect op modellen die op een GPU draaien."
         }
       },
       "errors": {
@@ -2319,7 +2807,7 @@
           "title": "Wat is opgenomen in het rapport:",
           "applicationLogs": "**Applicatie logs** - Recente fouten en debug informatie",
           "configuration": "**Configuratie** - Jouw instellingen met gevoelige gegevens verwijderd",
-          "systemInfo": "**Systeem informatie** - OS versie, geheugen, en runtime details",
+          "systemInfo": "**Systeem informatie** - OS versie, geheugen, hardware, aangesloten USB-apparaten en geluidskaarten, en runtime details",
           "notIncluded": "**NIET opgenomen** - Audio bestanden, vogel herkenningen, of persoonlijke gegevens"
         },
         "userMessage": {
@@ -2416,7 +2904,8 @@
           "detectionPath": "Relatief pad naar detectie (bijv. \"/ui/detections/1234\")",
           "detectionUrl": "Volledige URL naar detectie",
           "imageUrl": "Link naar soortafbeelding",
-          "daysSinceFirstSeen": "Aantal dagen sinds eerste detectie"
+          "daysSinceFirstSeen": "Aantal dagen sinds eerste detectie",
+          "daysSinceLastSeen": "Aantal dagen sinds de laatste detectie"
         }
       },
       "testNotification": {
@@ -2471,6 +2960,11 @@
             "unit": "min",
             "helpText": "Voorkom herhaalde notificaties voor dezelfde soort binnen dit tijdvenster. Stel in op 0 om uit te schakelen."
           }
+        },
+        "rulesNotice": {
+          "message": "Pushmeldingen voor detecties komen van de waarschuwingsregels op het tabblad Regels. De ingebouwde detectieregels melden alleen in de app. Voeg voor pushmeldingen de actie {pushAction} toe aan de regel {ruleName}, of maak een regel voor de gebeurtenis {eventName} met een betrouwbaarheidsvoorwaarde en een wachttijd.",
+          "previousFilters": "Uw instellingen Minimale betrouwbaarheid ({confidence} %) en Soort-afkoeltijd ({minutes} min) hier worden niet gebruikt door waarschuwingsregels.",
+          "openRules": "Regels openen"
         },
         "noProviders": "Geen providers geconfigureerd",
         "noProvidersDescription": "Voeg een provider toe om pushmeldingen te ontvangen",
@@ -2531,6 +3025,7 @@
             "shoutrrrDocs": "https://github.com/nicholas-fedor/shoutrrr?tab=readme-ov-file#supported-services"
           },
           "saveButton": "Provider opslaan",
+          "saveWaitingNtfyCheck": "Wachten tot de ntfy-verbindingscontrole is voltooid",
           "savingButton": "Opslaan...",
           "cancelButton": "Annuleren",
           "testButton": "Test",
@@ -2599,9 +3094,10 @@
             "testConnection": "Verbinding testen",
             "connectionOk": {
               "https": "HTTPS werkt",
-              "http": "HTTP werkt — server gebruikt geen HTTPS"
+              "http": "HTTP werkt - server gebruikt geen HTTPS"
             },
-            "connectionFailed": "Kan geen verbinding maken — controleer hostnaam en serverstatus",
+            "connectionFailed": "Kan geen verbinding maken - controleer hostnaam en serverstatus",
+            "checkError": "Kan de server niet verifiëren - controleer het adres of herlaad de pagina en probeer het opnieuw",
             "auth": {
               "label": "Authenticatie (optioneel)",
               "username": {
@@ -2624,8 +3120,8 @@
             "name": "Gotify",
             "server": {
               "label": "Server-URL",
-              "placeholder": "gotify.example.com",
-              "helpText": "Je Gotify-server hostnaam (zonder https://)"
+              "placeholder": "gotify.example.com:8070",
+              "helpText": "Uw Gotify-server hostnaam en poort"
             },
             "protocol": {
               "label": "Protocol"
@@ -2732,7 +3228,11 @@
         "enable": "Schakel Privacy Filteren in",
         "disabled": "Privacy filteren is uitgeschakeld",
         "confidenceLabel": "Betrouwbaarheids Drempelwaarde voor Menselijke Detectie",
-        "confidenceHelp": "Stel het betrouwbaarheidsniveau in voor menselijke stem detectie, lagere waarde maakt filter gevoeliger"
+        "confidenceHelp": "Stel het betrouwbaarheidsniveau in voor menselijke stem detectie, lagere waarde maakt filter gevoeliger",
+        "vadEnable": "Privacybescherming inschakelen (Silero VAD)",
+        "vadHelp": "Voert een specifiek neuraal spraakdetectiemodel uit naast de classificator voor betrouwbare spraakfiltering. Verbruikt extra systeembronnen (ongeveer 20-30 MB RAM en CPU-inferentie per segment).",
+        "vadThresholdLabel": "Drempelwaarde voor privacybescherming",
+        "vadThresholdHelp": "Gevoeligheidsdrempel voor de spraakactiviteitsdetector (standaard 0.6). Lagere waarden maken het filter gevoeliger voor zachte of verre spraak."
       },
       "falsePositivePrevention": {
         "title": "Vals Positief Preventie",
@@ -2769,14 +3269,14 @@
       "birdweather": {
         "title": "BirdWeather",
         "description": "Upload herkenningen naar BirdWeather",
-        "ffmpegWarning": {
-          "title": "FFmpeg niet gedetecteerd",
-          "message": "Installeer FFmpeg om FLAC encoding ondersteuning in te schakelen, BirdWeather stopt met WAV uploads ten gunste van gecomprimeerde FLAC audio bestanden."
-        },
         "enable": "Schakel BirdWeather Uploads in",
         "token": {
           "label": "BirdWeather-token",
-          "helpText": "Jouw unieke BirdWeather token."
+          "helpText": "Jouw unieke BirdWeather token.",
+          "errors": {
+            "required": "Voer je BirdWeather-token in of zet BirdWeather uit.",
+            "format": "Een BirdWeather-token bestaat uit 24 letters en cijfers."
+          }
         },
         "threshold": {
           "label": "Upload Drempelwaarde",
@@ -2852,7 +3352,7 @@
             "label": "Apparaatnaam",
             "helpText": "De basisnaam voor apparaten zoals ze verschijnen in Home Assistant. Elke audiobron heeft zijn eigen apparaat gekoppeld aan dit hoofd BirdNET-Go apparaat."
           },
-          "sensorsNote": "<strong>Aangemaakte Sensoren:</strong> Voor elke audiobron ontvangt Home Assistant: Laatste Soort, Betrouwbaarheid, Wetenschappelijke Naam en Geluidsniveau (indien ingeschakeld). Het bridge apparaat bevat online/offline beschikbaarheidsstatus.",
+          "sensorsNote": "<strong>Aangemaakte Sensoren:</strong> Voor elke audiobron ontvangt Home Assistant: Laatste Soort, Betrouwbaarheid, Wetenschappelijke Naam en Geluidsniveau (indien ingeschakeld). Het bridge apparaat bevat online/offline beschikbaarheidsstatus. De detectiesensoren van elke bron lezen het eigen MQTT-topic van die bron, &lt;base_topic&gt;/sources/&lt;source_id&gt;, en de Geluidsniveau-sensor leest het subtopic &lt;base_topic&gt;/sources/&lt;source_id&gt;/soundlevel, zodat een detectie van één bron nooit de sensoren van een andere bron reset.",
           "discovery": {
             "button": "Verstuur Discovery",
             "success": "Discovery berichten verzonden naar Home Assistant",
@@ -2898,7 +3398,8 @@
             "none": "Geen",
             "yrno": "Yr.no",
             "openweather": "OpenWeather",
-            "wunderground": "Weather Underground"
+            "wunderground": "Weather Underground",
+            "pirateweather": "Pirate Weather"
           }
         },
         "wunderground": {
@@ -2919,6 +3420,16 @@
             "helpText": "Selecteer eenheden voor temperatuur en wind snelheid (m = Metrisch, e = Imperial, h = UK Hybrid)."
           }
         },
+        "pirateweather": {
+          "apiKey": {
+            "label": "Pirate Weather API Sleutel",
+            "helpText": "Voer jouw Pirate Weather API sleutel in. Vereist voor weer gegevens."
+          },
+          "endpoint": {
+            "label": "API-eindpunt",
+            "helpText": "Overschrijf het standaard Pirate Weather API endpoint indien nodig. Standaard https://api.pirateweather.net/forecast indien leeg gelaten."
+          }
+        },
         "notes": {
           "none": "Geen weer gegevens worden opgehaald.",
           "yrno": {
@@ -2926,7 +3437,8 @@
             "freeService": "Yr is een gratis weer gegevens service. Voor meer informatie, bezoek <a href=\"https://hjelp.yr.no/hc/en-us/articles/206550539-Facts-about-Yr\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Yr.no</a>."
           },
           "openweather": "Gebruik van OpenWeather vereist een API sleutel, registreer voor een gratis API sleutel bij <a href=\"https://home.openweathermap.org/users/sign_up\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">OpenWeather</a>.",
-          "wunderground": "Vereist een Weather Underground API sleutel en een geldig PWS station ID. Zie <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a> voor details."
+          "wunderground": "Vereist een Weather Underground API sleutel en een geldig PWS station ID. Zie <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a> voor details.",
+          "pirateweather": "Gebruik van Pirate Weather vereist een API sleutel, registreer bij <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a>."
         },
         "apiKey": {
           "label": "API Sleutel",
@@ -3121,7 +3633,7 @@
         "endTime": "Eindtijd",
         "startEvent": "Startgebeurtenis",
         "endEvent": "Eindgebeurtenis",
-        "offsetMinutes": "Offset (min)",
+        "offsetMinutes": "Verschuiving (min)",
         "sunrise": "Zonsopgang",
         "sunset": "Zonsondergang",
         "fixedHint": "Opname wordt dagelijks gepauzeerd tussen start- en eindtijden. Nachtelijke vensters (bijv. 22:00 tot 06:00) worden ondersteund.",
@@ -3146,6 +3658,13 @@
         "typeLabel": "Streamtype",
         "typeHelp": "Streamprotocol - automatisch gedetecteerd uit URL",
         "transportLabel": "Protocol",
+        "mediaModeLabel": "Mediamodus",
+        "mediaModeHelp": "Volledige stream vraagt om audio en video (video wordt na het decoderen weggegooid) en werkt met de meeste camera's. Auto probeert eerst alleen audio en schakelt over naar de volledige stream als de camera geen audio alleen kan leveren. Alleen audio opent nooit een videoslot van de camera, maar mislukt als de camera het audiospoor niet zelfstandig kan leveren.",
+        "mediaMode": {
+          "auto": "Auto",
+          "audioOnly": "Alleen audio",
+          "fullStream": "Volledige stream"
+        },
         "summary": "{count} stream(s) geconfigureerd",
         "healthy": "gezond",
         "unhealthy": "ongezond",
@@ -3261,6 +3780,8 @@
         "frequencyResponse": "Frequentie Respons",
         "cutoffFrequency": "Afsnij Frequentie",
         "cutoffFrequencyHelp": "Frequentie waarbij de filter signalen begint te verzwakken. Vogelroepen variëren typisch van 1-10 kHz.",
+        "centerFrequency": "Middenfrequentie",
+        "bandwidth": "Bandbreedte",
         "qFactor": "Q-factor",
         "qFactorHelp": "Kwaliteits factor bepaalt de scherpte van de filter. Lagere waarden (0.1-1) creëren zachtere hellingen, hogere waarden (1-10) creëren steilere afsnijdingen.",
         "gain": "Versterking",
@@ -3268,17 +3789,31 @@
         "attenuation": "Verzwakking",
         "attenuationHelp": "Filter rolloff snelheid. Hogere waarden geven steilere verzwakking van gefilterde frequenties.",
         "attenuationLevels": {
-          "0db": "0dB",
+          "off": "Uit",
           "12db": "12dB",
           "24db": "24dB",
           "36db": "36dB",
-          "48db": "48dB"
+          "48db": "48dB",
+          "custom": "{db} dB"
         },
         "filterHelp": "Voeg meerdere filters toe om de frequentie respons te vormen voor optimale vogel detectie in jouw omgeving.",
+        "emptyEntryRestored": "Voer een getal in. De vorige waarde is behouden.",
         "graph": {
           "flatResponse": "Vlakke respons (Geen filters toegepast)",
           "frequency": "Frequentie (Hz)",
-          "gain": "Versterking (dB)"
+          "gain": "Versterking (dB)",
+          "loading": "Frequentierespons berekenen...",
+          "updating": "Frequentierespons bijwerken...",
+          "error": "De frequentierespons kon niet worden berekend. Deze wordt bijgewerkt wanneer je een filter wijzigt of Opnieuw proberen kiest.",
+          "sampleRate": "Berekend voor een samplefrequentie van {rate} Hz.",
+          "clipped": "De respons piekt op {peak} dB, boven de bovenkant van de grafiek.",
+          "skippedHeading": "{count, plural, one {# filter wordt niet op de audio toegepast} other {# filters worden niet op de audio toegepast}}",
+          "skippedReasons": {
+            "unknown_type": "Filter {number} ({type}, {frequency} Hz) wordt overgeslagen: dit filtertype wordt niet ondersteund.",
+            "invalid_parameters": "Filter {number} ({type}, {frequency} Hz) wordt overgeslagen: de instellingen zijn niet geldig bij {rate} Hz.",
+            "add_failed": "Filter {number} ({type}, {frequency} Hz) wordt overgeslagen: het kon niet aan de filterketen worden toegevoegd.",
+            "unknown": "Filter {number} ({type}, {frequency} Hz) wordt overgeslagen."
+          }
         }
       },
       "soundLevelMonitoring": {
@@ -3292,6 +3827,7 @@
         "dataOutputTitle": "Geluidsniveau Gegevens Output",
         "dataOutputDescription": "Wanneer ingeschakeld, worden geluidsniveau metingen gepubliceerd via:",
         "mqttTopic": "MQTT-topic:",
+        "mqttSourceTopic": "MQTT-topic per bron (met Home Assistant discovery):",
         "sseEndpoint": "SSE-eindpunt:",
         "prometheusMetrics": "Prometheus-metrics:"
       },
@@ -3318,8 +3854,6 @@
         "normalizationDisabled": "Audionormalisatie is uitgeschakeld",
         "targetLUFSLabel": "Doel Luidheid (LUFS)",
         "targetLUFSHelp": "Geïntegreerd luidheid doel in LUFS (Loudness Units relative to Full Scale). -23 LUFS is de EBU R128 uitzend standaard. Bereik: -40 tot -10 LUFS.",
-        "loudnessRangeLabel": "Luidheid Bereik (LU)",
-        "loudnessRangeHelp": "Maximum variatie in luidheid binnen de clip (0-20 LU). Lagere waarden creëren meer consistent volume maar kunnen dynamiek verminderen.",
         "truePeakLabel": "Ware Piek Limiet (dBTP)",
         "truePeakHelp": "Maximum ware piek niveau om digitale clipping te voorkomen (-10 tot 0 dBTP). -2 dBTP geeft veilige headroom voor de meeste afspeel systemen.",
         "normalizationNote": "EBU R128 Standaard",
@@ -3355,8 +3889,11 @@
         "pathHelp": "Map waar audio clips worden opgeslagen. Relatieve paden zijn vanaf de applicatie map. Voorbeeld: 'clips/' of '/var/audio/birds/'",
         "typeLabel": "Audio Formaat",
         "typeHelp": "Audio formaat voor opgeslagen clips. WAV en FLAC zijn lossless (beste kwaliteit, grotere bestanden). MP3, AAC, en Opus zijn lossy (kleinere bestanden, lichte kwaliteitsverlies).",
+        "ultrasonicTypeLabel": "Ultrasoon Formaat",
+        "ultrasonicTypeHelp": "Lossless formaat (WAV of FLAC) dat alleen wordt gebruikt voor vleermuis- en ultrasone opnames boven 48 kHz. Deze worden opgeslagen op hun volledige bronsamplerate in plaats van het bovenstaande formaat, zodat er geen ultrasone details verloren gaan.",
         "bitrateLabel": "Bitrate",
         "bitrateHelp": "Audio compressie bitrate voor lossy formaten. Bereik: {min}-{max} kbps. Hogere waarden geven betere kwaliteit maar grotere bestanden.",
+        "losslessBitrateValue": "N.v.t. - Verliesvrij",
         "losslessNote": "Lossless formaten behouden originele audio kwaliteit zonder compressie artefacten."
       },
       "audioNormalization": {
@@ -3368,8 +3905,6 @@
         "requiresRecording": "Schakel clip opname in op het Opname tabblad om audio normalisatie te gebruiken.",
         "targetLUFSLabel": "Doel Luidheid (LUFS)",
         "targetLUFSHelp": "Geïntegreerd luidheid doel in LUFS (Loudness Units relative to Full Scale). -23 LUFS is de EBU R128 uitzend standaard. Bereik: -40 tot -10 LUFS.",
-        "loudnessRangeLabel": "Luidheid Bereik (LU)",
-        "loudnessRangeHelp": "Maximum variatie in luidheid binnen de clip (0-20 LU). Lagere waarden creëren meer consistent volume maar kunnen dynamiek verminderen.",
         "truePeakLabel": "Ware Piek Limiet (dBTP)",
         "truePeakHelp": "Maximum ware piek niveau om digitale clipping te voorkomen (-10 tot 0 dBTP). -2 dBTP geeft veilige headroom voor de meeste afspeel systemen.",
         "noteTitle": "EBU R128 Standaard",
@@ -3424,7 +3959,17 @@
       },
       "models": {
         "recommendBoth": "Voor de beste soortdetectie wordt aanbevolen om zowel BirdNET als Perch samen te gebruiken.",
-        "perchOnlyWarning": "Perch alleen produceert minder detecties. Verlaag de betrouwbaarheidsdrempel naar 0.50 voor zinvolle resultaten, of activeer BirdNET erbij voor een betere dekking."
+        "perchOnlyWarning": "Perch alleen produceert minder detecties. Verlaag de betrouwbaarheidsdrempel naar 0.50 voor zinvolle resultaten, of activeer BirdNET erbij voor een betere dekking.",
+        "loading": "Detectiemodellen laden...",
+        "noneEnabledTitle": "Geen detectiemodel ingeschakeld.",
+        "noneEnabledHelp": "Je kunt deze bron nog steeds bewaren. De audio wordt geanalyseerd door de standaardmodellen zodra er een is ingeschakeld.",
+        "noneEnabledLink": "Modellengalerij openen",
+        "noneAvailable": "Er zijn geen detectiemodellen ingeschakeld op deze server.",
+        "loadFailedWarning": "Een detectiemodel kon niet worden geladen, dus deze bron wordt pas geanalyseerd als het is hersteld.",
+        "loadFailedLink": "Bekijk de status van AI-modellen",
+        "defaultBadge": "{models} (standaard)",
+        "defaultPendingBadge": "Standaardmodellen",
+        "noneBadge": "Geen model geladen"
       }
     },
     "security": {
@@ -3437,7 +3982,7 @@
       "allowSubnetBypassLabel": "Sta Toegang vanaf Subnet toe om Authenticatie te Omzeilen",
       "subnetBypassLocalNote": "Wanneer ingeschakeld worden clients in hetzelfde lokale netwerk als deze server automatisch vertrouwd en slaan ze de login over. Gebruik het onderstaande veld alleen om dat vertrouwen uit te breiden naar aanvullende netwerken (bijvoorbeeld een apart VLAN of een gerouteerd subnet).",
       "allowedSubnetsLabel": "Toegestane Subnets",
-      "allowedSubnetsHelp": "Aanvullende netwerkbereiken die de login mogen omzeilen, naast het eigen lokale netwerk van deze server. CIDR-notatie, gescheiden door komma's.",
+      "allowedSubnetsHelp": "Aanvullende netwerkbereiken die de login mogen omzeilen, naast het eigen lokale netwerk van deze server. Gebruik CIDR-notatie, zoals 192.168.10.0/24.",
       "securityWarningTitle": "Beveiligings Waarschuwing:",
       "subnetWarningText": "Het lokale netwerk van deze server en alle hier vermelde subnetten krijgen volledige toegang zonder in te loggen. Voeg alleen netwerken toe die u volledig vertrouwt.",
       "httpsSettingsTitle": "HTTPS Instellingen",
@@ -3532,7 +4077,7 @@
           "userIdLabel": "Gebruikers-ID"
         },
         "line": {
-          "title": "LINE Login",
+          "title": "LINE-login",
           "enableLabel": "OAuth2-aanmelding via LINE toestaan",
           "redirectUriTitle": "Omleidings-URI voor LINE Developers Console:",
           "getCredentialsLabel": "Haal uw referenties op uit de LINE Developers Console",
@@ -3543,7 +4088,7 @@
           "userIdLabel": "Gebruikers-ID"
         },
         "kakao": {
-          "title": "Kakao Login",
+          "title": "Kakao-login",
           "enableLabel": "OAuth2-aanmelding via Kakao toestaan",
           "redirectUriTitle": "Omleidings-URI voor Kakao Developers Console:",
           "getCredentialsLabel": "Haal uw referenties op uit de Kakao Developers Console",
@@ -3589,8 +4134,8 @@
         "warningText": "Het inschakelen van openbare toegangsfuncties maakt ze beschikbaar voor iedereen die deze server kan bereiken. Schakel alleen in als je je netwerkomgeving vertrouwt."
       },
       "privateMode": {
-        "label": "Require login for all UI pages (private mode)",
-        "help": "When enabled, the dashboard, detections, analytics, search, about, and notifications pages all require authentication. Settings and system pages are always protected regardless of this setting. The Public Live Audio toggle below is honoured independently — leaving it on still allows unauthenticated playback. Default is off so guests can browse the read-only UI."
+        "label": "Inloggen verplicht voor alle UI-pagina's (privémodus)",
+        "help": "Vereist authenticatie voor vrijwel alle pagina's."
       },
       "placeholders": {
         "baseUrl": "https://birdnet.example.com:5500",
@@ -3665,11 +4210,81 @@
         "downloadCertificate": "Certificaat downloaden",
         "downloadCertificateHelp": "Installeer dit certificaat in het vertrouwensarchief van je besturingssysteem om beveiligingswaarschuwingen van de browser te voorkomen.",
         "fileReadError": "Kan het geselecteerde bestand niet lezen"
+      },
+      "reverseProxy": {
+        "title": "Omgekeerde proxy",
+        "description": "Voor toegang via nginx, Caddy, Traefik, Cloudflare of een andere proxy",
+        "listLabel": "Vertrouwde proxy's",
+        "listHelp": "Voeg het adres toe van elke proxy vóór BirdNET-Go. Bij Docker is dit vaak het Docker-gatewayadres, zoals 172.17.0.1.",
+        "placeholder": "Bijvoorbeeld 172.17.0.1",
+        "emptyState": "Geen vertrouwde proxy's. BirdNET-Go gebruikt het adres dat ermee verbindt.",
+        "emptyStateCloudflareOnly": "Alleen de gepubliceerde edge-adressen van Cloudflare worden vertrouwd. Er zijn geen andere proxy's opgegeven.",
+        "rangeBadge": "Bereik",
+        "ruleOwnAddress": "Vermeld het eigen adres van elke proxy. Vermeld nooit een bereik dat ook de computers bevat waarmee u browst.",
+        "ruleHeaders": "De proxy moet het clientadres toevoegen aan X-Forwarded-For of X-Real-IP overschrijven.",
+        "cloudflareLabel": "Cloudflare vertrouwen",
+        "cloudflareHelp": "Schakel dit in wanneer uw site via Cloudflare wordt aangeboden. BirdNET-Go vertrouwt dan de gepubliceerde edge-adressen van Cloudflare.",
+        "check": {
+          "title": "Uw verbinding",
+          "recheck": "Opnieuw controleren",
+          "checking": "Uw verbinding wordt gecontroleerd",
+          "error": "Kon uw verbinding niet controleren.",
+          "stale": "Deze controle toont de opgeslagen instellingen. Sla op om uw wijzigingen te controleren.",
+          "trust": "{peer} vertrouwen",
+          "trustWarning": "Vertrouw {peer} alleen als dit uw reverse proxy is, niet de computer waarmee u browst.",
+          "trustWithCloudflare": "{peer} en Cloudflare vertrouwen",
+          "cloudflareInFront": "Cloudflare bevindt zich vóór {peer}. Vertrouw beide om uw adres te verifiëren.",
+          "cloudflareEdge": "{peer} is van Cloudflare. Schakel hieronder Cloudflare vertrouwen in.",
+          "chainHint": "Als er zich nog een proxy vóór {peer} bevindt, vermeld deze dan ook.",
+          "added": "Aan de lijst toegevoegd. Sla op om toe te passen.",
+          "coveredBy": "Al gedekt door {range} in de lijst. Sla op om toe te passen.",
+          "selfClientCause": "De proxy stuurt mogelijk zijn eigen adres door als client, vaak omdat het publiceren van containerpoorten de echte client verbergt. Los dit op in de netwerkinstellingen van de container of proxy."
+        },
+        "status": {
+          "direct": {
+            "title": "Rechtstreeks verbonden",
+            "body": "Uw browser verbindt rechtstreeks met BirdNET-Go vanaf {peer}.",
+            "bodyNoPeer": "Uw browser verbindt rechtstreeks met BirdNET-Go.",
+            "hint": "Als u een reverse proxy gebruikt en {peer} is het adres ervan, stel de proxy dan in om X-Forwarded-For te verzenden."
+          },
+          "trusted_proxy": {
+            "title": "Verbonden via een vertrouwde proxy",
+            "body": "Uw verbinding verloopt via {peer}, die wordt vertrouwd. Uw adres {client} is geverifieerd.",
+            "hint": "Als {client} een andere proxy is in plaats van uw computer, vermeld die proxy dan ook."
+          },
+          "trusted_proxy_unverified": {
+            "title": "Uw adres kon niet worden geverifieerd",
+            "body": "{peer} wordt vertrouwd, maar het adres dat deze doorstuurt kon niet worden geverifieerd. Veelvoorkomende oorzaken:",
+            "causeRange": "Een vermeld bereik bevat ook uw computer, waardoor geen enkel adres in de keten als het uwe telt.",
+            "causeHeaders": "De proxy voegt X-Forwarded-For niet toe en overschrijft X-Real-IP niet.",
+            "causeConflict": "De proxy verzendt conflicterende of herhaalde adresheaders, of alleen een Forwarded-header."
+          },
+          "untrusted_public_proxy": {
+            "title": "Verbonden via een openbare proxy",
+            "body": "Uw verbinding verloopt via {peer}, een openbaar adres. Openbare adressen worden nooit aangeboden om met één klik te vertrouwen. Voeg er alleen handmatig een toe als u zeker weet dat het uw proxy is."
+          },
+          "untrusted_proxy": {
+            "title": "Verbonden via een niet-vertrouwde proxy",
+            "body": "Uw verbinding verloopt via een proxy op {peer} die niet wordt vertrouwd, waardoor BirdNET-Go uw adres niet kan verifiëren."
+          },
+          "untrusted_proxy_unverifiable": {
+            "title": "Proxyheaders kunnen niet worden geverifieerd",
+            "body": "Uw verbinding verloopt via {peer}, maar de verzonden adresheaders konden niet worden geverifieerd, zelfs als deze werd vertrouwd.",
+            "bodyNoPeer": "Uw verbinding verloopt via een proxy, maar het adres ervan kon niet worden gelezen.",
+            "fix": "Stel de proxy in om X-Forwarded-For toe te voegen of X-Real-IP te overschrijven."
+          }
+        }
+      },
+      "bypassProxyNote": "Achter een reverse proxy werkt deze omzeiling alleen wanneer de proxy als vertrouwd is vermeld.",
+      "bypassProxyLink": "Vertrouwde proxy's instellen",
+      "allowedSubnetsEmpty": "Geen aanvullende subnetten. Alleen het eigen lokale netwerk van deze server mag de login omzeilen.",
+      "validation": {
+        "invalidEntry": "{tab}: {field} bevat een ongeldige invoer.",
+        "pendingEntry": "{tab}: {field} bevat tekst die niet is toegevoegd. Druk op Enter of Toevoegen, of wis de tekst."
       }
     },
     "species": {
       "pageLabel": "Soortinstellingen",
-      "saveError": "Opslaan van configuratie voor \"{species}\" mislukt. Probeer het opnieuw.",
       "configUpdated": "Configuratie voor \"{species}\" bijgewerkt",
       "configAdded": "Configuratie voor \"{species}\" toegevoegd",
       "duplicateConfigError": "Soort \"{species}\" heeft al een configuratie. Kies een andere naam.",
@@ -3935,6 +4550,18 @@
             "hemisphereNote": "Seizoensdatums worden automatisch geconfigureerd op basis van uw breedtegraad. Het noordelijk halfrond gebruikt standaard seizoenen, het zuidelijk halfrond heeft verschoven datums, en equatoriale regio's gebruiken natte/droge seizoenen."
           }
         },
+        "infrequent": {
+          "title": "Volgen van zeldzame soorten",
+          "description": "Markeert soorten die terugkeren na een lange afwezigheid (zeldzame terugkerende bezoekers)",
+          "enabled": {
+            "label": "Volgen van zeldzame soorten inschakelen",
+            "helpText": "Houd bij en meld wanneer een soort opnieuw wordt gedetecteerd na een lange afwezigheid"
+          },
+          "absenceDays": {
+            "label": "Afwezigheidsdrempel (dagen)",
+            "helpText": "Minimumaantal dagen sinds de laatste detectie voordat een terugkerende soort als 'zeldzaam' wordt gemarkeerd (1-365)"
+          }
+        },
         "months": {
           "january": "Januari",
           "february": "Februari",
@@ -3947,7 +4574,7 @@
           "september": "September",
           "october": "Oktober",
           "november": "November",
-          "december": "December"
+          "december": "december"
         },
         "units": {
           "days": "dagen",
@@ -3958,7 +4585,7 @@
       "dynamicThreshold": {
         "tabLabel": "Geleerd",
         "title": "Geleerde drempels",
-        "description": "Deze pagina toont runtime data van dynamische drempels. Wanneer ingeschakeld in Hoofdinstellingen → Detectie, worden drempels automatisch aangepast door meerdere detecties met hoge betrouwbaarheid. Soorten die hier worden getoond, worden verondersteld op deze locatie te bestaan.",
+        "description": "Deze pagina toont runtime data van dynamische drempels. Wanneer ingeschakeld, worden drempels automatisch aangepast door meerdere detecties met hoge betrouwbaarheid. Soorten die hier worden getoond, worden verondersteld op deze locatie te bestaan.",
         "stats": {
           "active": "Actief",
           "atMinimum": "Op minimum",
@@ -4107,8 +4734,8 @@
         "templateTitlePlaceholder": "Laat leeg voor standaard",
         "templateMessage": "Berichtsjabloon",
         "templateMessagePlaceholder": "Laat leeg voor standaard",
-        "noConditionsEvent": "Geen voorwaarden — regel wordt bij elke gebeurtenis geactiveerd",
-        "noConditionsMetric": "Geen voorwaarden — regel wordt bij elke metriekupdate geactiveerd",
+        "noConditionsEvent": "Geen voorwaarden - regel wordt bij elke gebeurtenis geactiveerd",
+        "noConditionsMetric": "Geen voorwaarden - regel wordt bij elke metriekupdate geactiveerd",
         "eventsCount": "gebeurtenissen",
         "metricsCount": "metrieken",
         "durationFor": "gedurende",
@@ -4132,6 +4759,7 @@
           "stream_disconnected": "Stream verbroken",
           "stream_error": "Stream-fout",
           "detection_new_species": "Nieuwe soort gedetecteerd",
+          "detection_infrequent_species": "Zeldzame soort gedetecteerd",
           "detection_occurred": "Detectie uitgevoerd",
           "application_started": "Applicatie gestart",
           "application_stopped": "Applicatie gestopt",
@@ -4181,6 +4809,10 @@
         "newSpecies": {
           "name": "Nieuwe soort gedetecteerd",
           "description": "Meldt wanneer een soort voor het eerst wordt gedetecteerd"
+        },
+        "infrequentSpecies": {
+          "name": "Zeldzame soort gedetecteerd",
+          "description": "Meldt wanneer een soort terugkeert na een lange afwezigheid"
         },
         "streamDisconnected": {
           "name": "Audiostream verbroken",
@@ -4407,6 +5039,28 @@
         "edit": "Bewerk soort",
         "remove": "Verwijder soort"
       }
+    },
+    "networkAddressList": {
+      "add": "Toevoegen",
+      "remove": "Verwijder {address}",
+      "empty": "Nog geen adressen toegevoegd.",
+      "pendingHint": "Druk op Enter of Toevoegen om dit adres toe te voegen.",
+      "limitReached": "De lijst is vol ({max} vermeldingen).",
+      "rowDuplicate": "Duplicaat",
+      "rowInvalid": {
+        "cidr": "Geen geldig bereik",
+        "ip": "Geen geldig IP-adres",
+        "ipOrCidr": "Geen geldig adres of bereik"
+      },
+      "errors": {
+        "invalid": {
+          "cidr": "Geen geldig bereik: {values}. Gebruik een bereik zoals 192.168.1.0/24.",
+          "ip": "Geen geldig IP-adres: {values}. Gebruik een adres zoals 192.168.1.10.",
+          "ipOrCidr": "Geen geldig adres of bereik: {values}. Gebruik een adres zoals 192.168.1.10 of een bereik zoals 192.168.1.0/24."
+        },
+        "duplicate": "Staat al in de lijst: {values}.",
+        "limit": "De lijst bevat maximaal {max} vermeldingen. Niet toegevoegd: {values}."
+      }
     }
   },
   "media": {
@@ -4433,6 +5087,7 @@
       "loop": "Herhaling aan/uit",
       "player": "Audiospeler",
       "autoplayBlocked": "Klik om af te spelen (autoplay geblokkeerd)",
+      "hlsLoadFailed": "De audiospeler kon niet worden geladen, laad de pagina opnieuw en probeer het nogmaals",
       "hlsNotSupported": "HLS-weergave wordt niet ondersteund in deze browser",
       "streamStarting": "Audiostream wordt gestart...",
       "levelFor": "Audioniveau voor {source}",
@@ -4455,7 +5110,16 @@
       "streamTitleDefault": "Vogelaudiostream",
       "streamArtist": "BirdNET-Go",
       "streamAlbum": "Livestream",
-      "playbackError": "Afspeelfout: {details}"
+      "playbackError": "Afspeelfout: {details}",
+      "audibleBats": {
+        "title": "Hoorbare vleermuisweergave",
+        "subtitle": "Vertraag ultrasone roepen naar het menselijke gehoorbereik.",
+        "timeExpansion": "Tijdsexpansie",
+        "enable": "Inschakelen",
+        "disable": "Uitschakelen",
+        "generating": "Afgeleide audio genereren…",
+        "error": "Kan hoorbare vleermuisaudio niet genereren"
+      }
     },
     "spectrogram": {
       "notGenerated": "Spectrogram nog niet beschikbaar",
@@ -4473,8 +5137,10 @@
       "spectrogramLoaded": "Spectrogram geladen",
       "spectrogramLoadingAria": "Spectrogram laden",
       "spectrogramAlt": "Audiospectogram",
+      "spectrogramForSpecies": "Spectrogram voor {species}",
       "spectrogramGeneratingAria": "Spectrogram genereren",
       "generating": "Genereren...",
+      "waiting": "Wachten...",
       "queuePosition": "Wachtrij: {position}",
       "loadError": "Kan audio niet laden"
     },
@@ -4495,8 +5161,8 @@
       "species": {
         "loadingSpecies": "Soorten laden...",
         "typePlaceholder": "Typ soorten naam...",
-        "suggestionsAvailable": "{count} soortsuggessies beschikbaar. Gebruik pijltoetsen om te navigeren.",
-        "noSuggestions": "Geen soortsuggessies beschikbaar."
+        "suggestionsAvailable": "{count} soortsuggesties beschikbaar. Gebruik pijltoetsen om te navigeren.",
+        "noSuggestions": "Geen soortsuggesties beschikbaar."
       },
       "select": {
         "searchPlaceholder": "Zoeken...",
@@ -4546,7 +5212,7 @@
         "extracting": "Fragment extraheren...",
         "extractError": "Kan fragment niet extraheren",
         "formatLabel": "Formaat",
-        "rangeLabel": "{start}s – {end}s"
+        "rangeLabel": "{start}s - {end}s"
       },
       "processing": {
         "playSelection": "Selectie afspelen",
@@ -4587,9 +5253,36 @@
       "loading": "Certificaatinformatie laden..."
     },
     "birdThumbnail": {
-      "viewDetections": "View {name} detections",
-      "largeView": "Large view of {name}",
-      "clickToView": "Click to view detections"
+      "viewDetections": "Bekijk {name} detecties",
+      "largeView": "Grote weergave van {name}",
+      "clickToView": "Klik om detecties te bekijken"
+    },
+    "locationMap": {
+      "mapLabel": "Kaart voor het kiezen van de stationslocatie",
+      "expandedMapLabel": "Kaart op volledig scherm voor het kiezen van de stationslocatie",
+      "zoomIn": "Inzoomen",
+      "zoomOut": "Uitzoomen",
+      "expand": "Kaart op volledig scherm weergeven",
+      "search": {
+        "label": "Een plaats zoeken",
+        "placeholder": "Plaats of adres",
+        "submit": "Zoeken",
+        "disclosure": "Zoekopdrachten worden naar Photon (photon.komoot.io) gestuurd, dat OpenStreetMap-gegevens gebruikt.",
+        "openPhoton": "Photon openen in een nieuw tabblad",
+        "searching": "Bezig met zoeken...",
+        "results": "{count, plural, one {# plaats gevonden} other {# plaatsen gevonden}}",
+        "noResults": "Geen plaatsen gevonden. Probeer een andere naam of klik op de kaart.",
+        "errorNetwork": "Plaatsen zoeken is niet beschikbaar. Controleer de internetverbinding. U kunt nog steeds op de kaart klikken of coördinaten invoeren.",
+        "errorRateLimited": "Te veel zoekopdrachten. Wacht even en probeer het opnieuw.",
+        "errorUnavailable": "De zoekdienst reageerde niet. U kunt nog steeds op de kaart klikken of coördinaten invoeren.",
+        "kind": {
+          "city": "Stad",
+          "town": "Plaats",
+          "village": "Dorp",
+          "station": "Treinstation",
+          "airport": "Luchthaven"
+        }
+      }
     }
   },
   "connectivity": {
@@ -4604,7 +5297,7 @@
   },
   "quietHours": {
     "indicator": {
-      "tooltip": "Stille uren actief — {count} bron(nen) gepauzeerd"
+      "tooltip": "Stille uren actief - {count} bron(nen) gepauzeerd"
     }
   },
   "errors": {
@@ -4627,7 +5320,11 @@
       "typesRequired": "Objecttype en triggertype zijn vereist",
       "duplicateName": "Er bestaat al een regel met deze naam",
       "invalidJSON": "Ongeldige JSON",
-      "invalidEscalation": "Escalatiestappen zijn ongeldig"
+      "invalidEscalation": "Escalatiestappen zijn ongeldig",
+      "engineUnavailable": "Alerting-engine is niet beschikbaar"
+    },
+    "insights": {
+      "v2Required": "Inzichten vereisen de uitgebreide (v2) database"
     },
     "detection": {
       "invalidDate": "Ongeldig {paramName}-formaat, gebruik JJJJ-MM-DD"
@@ -4641,7 +5338,7 @@
       "createFailed": "Kan back-uptaak niet aanmaken",
       "notFound": "Back-uptaak niet gevonden of verlopen",
       "notReady": "Back-up is nog niet klaar om te downloaden",
-      "fileNotFound": "Back-upbestand niet gevonden — taak is mogelijk verlopen",
+      "fileNotFound": "Back-upbestand niet gevonden - taak is mogelijk verlopen",
       "sqliteOnly": "Back-up alleen beschikbaar voor SQLite-databases",
       "dbNotConfigured": "Database niet geconfigureerd",
       "unsupportedType": "Kan geen back-up maken van dit type gegevensopslag",
@@ -4660,7 +5357,7 @@
       "noLegacyDB": "Geen oude database gevonden",
       "accessFailed": "Kan geen toegang krijgen tot de oude database",
       "restartRequired": "De applicatie moet opnieuw worden gestart na de migratie voordat opschonen beschikbaar is",
-      "safetyCheck": "Het doelbestand lijkt een V2-database te zijn — opschonen niet toegestaan voor de veiligheid",
+      "safetyCheck": "Het doelbestand lijkt een V2-database te zijn - opschonen niet toegestaan voor de veiligheid",
       "noLegacyTables": "Geen oude tabellen gevonden",
       "restartNeeded": "Kan niet opschonen: applicatie moet opnieuw worden gestart na de migratie",
       "alreadyRunning": "Opschonen is al bezig"
@@ -4675,6 +5372,7 @@
       "birdweatherClientFailed": "Kan BirdWeather-client niet aanmaken",
       "noWeatherProvider": "Geen weerprovider geselecteerd",
       "openWeatherKeyRequired": "OpenWeather API-sleutel is vereist",
+      "pirateWeatherKeyRequired": "Pirate Weather API-sleutel is vereist",
       "processorUnavailable": "Processor niet beschikbaar",
       "discoveryFailed": "Kan Home Assistant-detectie niet activeren"
     },
@@ -4684,6 +5382,7 @@
       "notFound": "Melding niet gevonden",
       "hostRequired": "Hostparameter is vereist",
       "invalidHost": "Ongeldige hostparameter",
+      "invalidBody": "Ongeldige aanvraaginhoud",
       "rateLimit": "Te veel verbindingspogingen met de meldingsstream, wacht even voor u het opnieuw probeert"
     },
     "streams": {
@@ -4732,18 +5431,43 @@
       "waningCrescent": "Afnemende Sikkel"
     },
     "birding": {
-      "excellent": "Windstil — uitstekend om vogelgeluiden te horen",
-      "moderate": "Matige wind — sommige vogelgeluiden moeilijker te horen",
-      "poor": "Harde wind — vogelgeluiden nauwelijks hoorbaar"
+      "excellent": "Windstil - uitstekend om vogelgeluiden te horen",
+      "moderate": "Matige wind - sommige vogelgeluiden moeilijker te horen",
+      "poor": "Harde wind - vogelgeluiden nauwelijks hoorbaar"
     }
   },
   "wizard": {
+    "actions": {
+      "reloadPage": "Pagina opnieuw laden"
+    },
     "skip": "Overslaan",
     "back": "Terug",
     "next": "Volgende",
     "done": "Gereed",
     "progress": "Stap {current} van {total}",
     "progressLabel": "Wizard-voortgang",
+    "status": {
+      "saving": "Opslaan...",
+      "loadingStep": "Stap laden..."
+    },
+    "errors": {
+      "saveFailed": "Deze stap kon niet worden opgeslagen. Controleer de verbinding en probeer het opnieuw, of sla de installatie over en wijzig dit later in Instellingen.",
+      "saveRejected": "De instellingen in deze stap zijn niet geaccepteerd. Controleer de waarden en probeer het opnieuw, of sla de installatie over en wijzig dit later in Instellingen.",
+      "stepLoadFailed": "Deze stap kon niet worden geladen. Druk op Opnieuw proberen of laad de pagina opnieuw.",
+      "stepLoadFailedReload": "Deze stap kon nog steeds niet worden geladen. Laad de pagina opnieuw om het nogmaals te proberen; keuzes die in eerdere stappen zijn opgeslagen blijven behouden.",
+      "audioSourceSaveUnfinished": "De wijziging van de audiobron is niet voltooid. Controleer de audiobronnen via Instellingen > Audio.",
+      "saveUnfinished": "Sommige wijzigingen uit de installatie zijn niet opgeslagen. Controleer ze in Instellingen."
+    },
+    "reasons": {
+      "completeStep": "Voltooi deze stap om verder te gaan."
+    },
+    "leaveConfirm": {
+      "title": "Installatie verlaten?",
+      "message": "De installatie wordt niet opnieuw geopend. Keuzes die in eerdere stappen zijn opgeslagen blijven behouden; wijzigingen in deze stap worden niet opgeslagen. Je kunt later alles wijzigen in Instellingen.",
+      "messageSaving": "De installatie wordt niet opnieuw geopend. Keuzes die in eerdere stappen zijn opgeslagen blijven behouden. Deze stap wordt nog opgeslagen en een deel van de wijzigingen of alle wijzigingen blijft mogelijk niet behouden. Je kunt later alles wijzigen in Instellingen.",
+      "stay": "Doorgaan met installatie",
+      "leave": "Installatie verlaten"
+    },
     "whatsNew": {
       "title": "Nieuw in {version}"
     },
@@ -4766,13 +5490,6 @@
         "locationHelp": "Je locatie helpt om soorten te filteren naar die waarschijnlijk in je omgeving voorkomen",
         "latitudeLabel": "Breedtegraad",
         "longitudeLabel": "Lengtegraad",
-        "useMyLocation": "Gebruik mijn locatie",
-        "locationDetected": "Locatie gedetecteerd",
-        "locationError": "Locatie kon niet worden gedetecteerd. Voer de coördinaten handmatig in.",
-        "locationDenied": "Locatietoegang geweigerd. Voer de coördinaten handmatig in.",
-        "geolocationRequiresHttps": "Browserlocatie vereist HTTPS. Voer de coördinaten handmatig in of gebruik de kaart.",
-        "geolocationDenied": "Locatietoestemming is geweigerd. Voer de coördinaten handmatig in of gebruik de kaart.",
-        "geolocationFailed": "Uw locatie kon niet worden bepaald. Voer de coördinaten handmatig in of gebruik de kaart.",
         "localesLoading": "Talen laden...",
         "localesLoadFailed": "Kon de taalopties niet laden. Engels wordt standaard gebruikt."
       },
@@ -4788,7 +5505,19 @@
         "rtspUrlPlaceholder": "rtsp://user:password@host:port/stream",
         "rtspUrlHelp": "Voer de URL van je RTSP-audiostream in",
         "additionalSourcesHint": "Je kunt later meer audiobronnen toevoegen in Instellingen.",
-        "configureLater": "Overslaan — later configureren"
+        "devicesLoadFailed": "De audioapparaten van dit systeem konden niet worden opgesomd.",
+        "useStreamInstead": "Gebruik in plaats daarvan een RTSP-stream",
+        "setUpLater": "Audio later instellen",
+        "setUpLaterChosen": "Audio wordt nu niet ingesteld. Voeg later in Instellingen een geluidskaart of stream toe.",
+        "streamReplacesSoundCards": "Geluidskaarten nemen niet meer op wanneer je een stream gebruikt. Je kunt ze opnieuw toevoegen in Instellingen.",
+        "soundCardReplacesStream": "De stream die bij de streamoptie wordt getoond, wordt uitgeschakeld wanneer je een geluidskaart gebruikt. Je kunt hem opnieuw inschakelen in Instellingen.",
+        "reasons": {
+          "chooseDevice": "Kies een audioapparaat, of stel audio later in.",
+          "devicesFailed": "De audioapparaten konden niet worden opgesomd. Probeer opnieuw, gebruik een stream, of stel audio later in.",
+          "noDevices": "Geen audioapparaat gevonden. Gebruik een stream, of stel audio later in.",
+          "enterUrl": "Voer de stream-URL in, of stel audio later in.",
+          "urlScheme": "Voer een volledige stream-URL in die begint met rtsp:// of rtsps:// en geen spaties bevat."
+        }
       },
       "detection": {
         "title": "Detectiedrempel",
@@ -4800,6 +5529,7 @@
         "highAccuracyDesc": "Minder fout-positieven, kan sommige vogels missen",
         "highSensitivity": "Hoge gevoeligheid",
         "highSensitivityDesc": "Meer detecties, meer fout-positieven",
+        "descriptionStored": "Kies hoe streng de vogelidentificatie moet zijn. Huidig: {threshold}, geen preset.",
         "threshold": "Betrouwbaarheidsdrempel",
         "fpFilterNote": "Zodra je systeem draait en bewezen is, kun je het fout-positievenfilter inschakelen in Instellingen om onjuiste detecties verder te verminderen."
       },
@@ -4809,10 +5539,12 @@
         "privacyFilterHelp": "Filtert detecties uit wanneer menselijke stemmen worden gedetecteerd bij de microfoon",
         "birdweatherLabel": "Detecties delen met BirdWeather",
         "birdweatherHelp": "Draag je vogeldetecties bij aan het BirdWeather-gemeenschapsnetwerk",
-        "birdweatherIdLabel": "BirdWeather Station-ID",
-        "birdweatherIdPlaceholder": "Voer je BirdWeather station-ID in",
         "errorReportingLabel": "Anonieme foutrapporten verzenden",
-        "errorReportingHelp": "Help BirdNET-Go te verbeteren door anonieme foutrapporten te verzenden wanneer er iets misgaat"
+        "errorReportingHelp": "Help BirdNET-Go te verbeteren door anonieme foutrapporten te verzenden wanneer er iets misgaat",
+        "reasons": {
+          "enterToken": "Voer het BirdWeather-token in of schakel het delen met BirdWeather uit.",
+          "tokenFormat": "Een BirdWeather-token bestaat uit 24 letters en cijfers."
+        }
       },
       "responsibleUse": {
         "title": "Verantwoord gebruik van BirdNET-Go",
@@ -4833,8 +5565,8 @@
   "analysis": {
     "title": "Analyse",
     "tabs": {
-      "settings": "Settings",
-      "models": "Models"
+      "settings": "Instellingen",
+      "models": "Modellen"
     },
     "detection": {
       "title": "Detectie-instellingen",
@@ -4844,64 +5576,161 @@
         "helpText": "Minimale betrouwbaarheidsscore (0.0 - 1.0) vereist om een detectie vast te leggen."
       },
       "batThreshold": {
-        "label": "Bat Detection Threshold",
-        "helpText": "Minimum confidence score for bat species detections. Only applies to bat classifier models."
+        "label": "Vleermuis-detectiedrempel",
+        "helpText": "Minimale betrouwbaarheidsscore voor vleermuissoortdetecties. Geldt alleen voor vleermuisclassificatiemodellen."
       },
       "batFilter": {
-        "label": "Bat Audio High-Pass Filter",
-        "helpText": "Filters out human-audible frequencies before bat analysis to reduce false positives from bird songs and ambient noise."
+        "label": "Vleermuis audio hoogdoorlaatfilter",
+        "helpText": "Filtert hoorbare frequenties vóór de vleermuisanalyse om valse detecties door vogelzang en omgevingsgeluid te verminderen."
       },
       "batNighttimeOnly": {
-        "label": "Nighttime Only",
-        "helpText": "When enabled, bat detection runs only between civil dusk and civil dawn. Requires location to be configured. Disable to run bat detection around the clock."
+        "label": "Alleen 's nachts",
+        "helpText": "Wanneer ingeschakeld, werkt de vleermuisdetectie alleen tussen de burgerlijke schemering en de burgerlijke dageraad. Vereist dat de locatie is geconfigureerd. Schakel uit om vleermuisdetectie de klok rond uit te voeren."
       },
       "batUltrasonicFilter": {
-        "label": "Post Detection Validation",
-        "helpText": "When enabled, bat detections are validated by analyzing ultrasonic energy patterns in the source audio. Detections that lack bat echolocation characteristics are tagged as unlikely."
+        "label": "Validatie na detectie",
+        "helpText": "Indien ingeschakeld worden vleermuisdetecties gevalideerd door analyse van ultrasone energiepatronen in de bronaudio. Detecties zonder echolocatiekenmerken worden gemarkeerd als onwaarschijnlijk."
       },
       "batFalsePositiveFilter": {
-        "label": "Bat False Positive Filter",
-        "helpText": "Requires multiple confirmations of a bat detection within a sliding window before accepting it. Higher levels require more confirmations, reducing false positives. The bat model uses a fixed 50% overlap, so no overlap adjustment is needed.",
+        "label": "Vleermuis vals-positief filter",
+        "helpText": "Vereist meerdere bevestigingen van een vleermuisdetectie binnen een schuifvenster voordat deze wordt geaccepteerd. Hogere niveaus vereisen meer bevestigingen, waardoor valse positieven worden verminderd. Het vleermuismodel gebruikt een vaste overlap van 50%, dus er is geen overlapaanpassing nodig.",
         "levels": {
-          "off": "No filtering; accepts any bat detection immediately.",
-          "moderate": "Good balance for most setups. Significantly reduces false positives.",
-          "strict": "Maximum filtering for highest accuracy."
+          "off": "Geen filtering; accepteert elke vleermuisdetectie onmiddellijk.",
+          "moderate": "Goede balans voor de meeste opstellingen. Vermindert vals-positieven aanzienlijk.",
+          "strict": "Maximale filtering voor de hoogste nauwkeurigheid."
         },
-        "detectionCount": "{count} confirmations required. {description}",
-        "warningOff": "Without filtering there is a high probability of false positives. Enabling filtering significantly improves accuracy."
+        "detectionCount": "{count} bevestigingen vereist. {description}",
+        "warningOff": "Zonder filtering is er een grote kans op vals-positieven. Het inschakelen van filtering verbetert de nauwkeurigheid aanzienlijk."
       },
       "locale": {
-        "label": "Species Language",
-        "helpText": "Language used for species common names in the interface."
+        "label": "Soortentaal",
+        "helpText": "Taal voor de gangbare soortnamen in de interface."
+      },
+      "secondaryThresholdOverride": {
+        "label": "Override confidence threshold",
+        "helpText": "When enabled, this model uses its own confidence threshold below. When disabled, it follows the main BirdNET confidence threshold."
+      },
+      "secondaryThreshold": {
+        "helpText": "Minimum confidence score (0.01 - 0.99) required for a detection from this model to be recorded.",
+        "followsBirdnet": "Enable the override above to set a custom value. This model currently follows the main BirdNET confidence threshold."
+      },
+      "perchThreshold": {
+        "label": "Perch v2 Confidence Threshold"
+      },
+      "birdnetv3Threshold": {
+        "label": "BirdNET v3.0 Confidence Threshold"
       }
     },
     "rangeFilter": {
-      "birdOnlyNote": "Range filter applies to bird classifiers only. Bat models use their own species lists.",
+      "birdOnlyNote": "Bereikfilter geldt alleen voor vogelclassificatoren. Vleermuismodellen gebruiken hun eigen soortenlijsten.",
       "status": {
-        "title": "Actief gebiedsfilter",
-        "geomodelInfo": "BirdNET Geomodel {version} - {species} known species",
+        "title": "Gebiedsfilter overzicht",
+        "geomodelInfo": "BirdNET Geomodel {version} - {species} bekende soorten",
         "autoSelected": "Automatisch geselecteerd",
         "manual": "Handmatig",
-        "classifier": "Classifier",
+        "classifier": "Classificator",
         "totalSpecies": "Totaal aantal soorten",
-        "withRangeData": "With Range Data",
-        "withoutRangeData": "Without Range Data",
-        "withRangeDataTooltip": "Species that the geomodel can evaluate for geographic probability at your location",
-        "withoutRangeDataTooltip": "Species without geographic data in the geomodel, handled by the unmapped species setting below",
+        "withRangeData": "Met gebiedsgegevens",
+        "withoutRangeData": "Zonder gebiedsgegevens",
+        "withRangeDataTooltip": "Soorten waarvoor het geomodel de geografische waarschijnlijkheid op uw locatie kan evalueren",
+        "withoutRangeDataTooltip": "Soorten zonder geografische gegevens in het geomodel, afgehandeld door de instelling voor niet-gekoppelde soorten hieronder",
         "noFilter": "Geen gebiedsfilter actief",
         "passUnmapped": {
-          "label": "Allow species without range data",
-          "helpText": "Allow detections of species the geomodel has no geographic data for. When disabled, these species are always filtered out."
+          "label": "Soorten zonder gebiedsgegevens toestaan",
+          "helpText": "Detecties toestaan van soorten waarvoor het geomodel geen geografische gegevens heeft. Wanneer uitgeschakeld, worden deze soorten altijd uitgefilterd."
         }
       }
     },
     "advanced": {
-      "title": "Advanced",
-      "description": "Processing and custom model configuration."
+      "title": "Geavanceerd",
+      "description": "Verwerking en aangepaste modelconfiguratie."
+    },
+    "downloadSource": {
+      "title": "Downloadbron",
+      "description": "Waar modelbestanden vandaan worden gedownload.",
+      "note": "Laat dit veld leeg tenzij huggingface.co geblokkeerd of traag is op uw netwerk. De omgevingsvariabele HF_ENDPOINT wordt gebruikt wanneer dit veld leeg is, en huggingface.co wanneer geen van beide is ingesteld. Een waarde die geen geldig http- of https-adres is, wordt genegeerd en in plaats daarvan wordt de standaardwaarde gebruikt.",
+      "endpoint": {
+        "label": "HuggingFace-eindpunt",
+        "helpText": "Spiegelserver waarvan modellen worden gedownload, bijvoorbeeld https://hf-mirror.com. Van toepassing op de volgende download; opnieuw opstarten is niet nodig.",
+        "validationMessage": "Voer een volledig adres in dat begint met http:// of https://, of laat het veld leeg."
+      }
     },
     "gallery": {
       "title": "Modellengalerij",
       "description": "Beheer classificatiemodellen voor vogel- en vleermuisdetectie.",
+      "region": {
+        "title": "Modelregio",
+        "modeAuto": "Automatisch",
+        "modeAutoHint": "Kies de beste regionale variant op basis van de stationslocatie",
+        "modeManual": "Manual region select",
+        "modeManualHint": "Choose a region yourself, or the worldwide model",
+        "worldwideTitle": "Worldwide",
+        "worldwideSubtitle": "Every region, all species",
+        "worldwideResourceNote": "Largest model, uses the most RAM and CPU",
+        "selectedBadge": "Selected",
+        "orSpecificRegion": "Or a specific region",
+        "search": "Search regions or countries",
+        "searchNoResults": "No regions match \"{query}\"",
+        "manualPrompt": "Choose a region below, or the worldwide model.",
+        "countriesOverflow": "+{count}",
+        "coreCoverage": "Core coverage:",
+        "partialCoverage": "Partial coverage:",
+        "pinAction": "{region} vastzetten",
+        "switchToAuto": "Overschakelen naar automatisch",
+        "loading": "Regio's laden...",
+        "loadFailed": "Kan regiogegevens niet laden",
+        "mapUnavailable": "Dekkingskaart niet beschikbaar",
+        "mapAria": "Dekkingskaart van {region}",
+        "why": {
+          "noLocation": "Automatische selectie vereist een stationslocatie. Stel deze in bij Hoofdinstellingen; tot die tijd wordt het globale model gebruikt.",
+          "outsideCoverage": "Uw locatie valt buiten de dekking van alle regionale modellen, dus wordt het globale model gebruikt.",
+          "ambiguous": "Uw locatie ligt dicht bij de grens tussen {region} en {runnerUp}. Automatische selectie gebruikt {region}; zet er een vast om de keuze expliciet te maken.",
+          "resolved": "Gedetecteerde regio op basis van uw locatie: {region}.",
+          "global": "Het globale model wordt altijd gebruikt, ongeacht de stationslocatie.",
+          "pinned": "Vastgezet op {region}. De stationslocatie heeft geen invloed op de modelselectie.",
+          "pinnedMismatch": "Uw locatie komt momenteel overeen met {resolved}.",
+          "pinnedUnknown": "De vastgezette regio \"{region}\" is niet beschikbaar in de huidige modelcatalogus. Modelfamilies vallen terug op uw locatie of het globale model."
+        }
+      },
+      "variants": {
+        "title": "Modelvariant",
+        "recommended": "Aanbevolen",
+        "recommendedForHardware": "Beste voor jouw hardware",
+        "installed": "Geïnstalleerd",
+        "default": "Standaard",
+        "incompatible": "Niet beschikbaar voor uw hardware",
+        "showAll": "Toon alle varianten ({count})",
+        "showRegion": "Toon varianten voor {region} en jouw hardware ({count})",
+        "showHardware": "Toon hardwarevarianten ({count})",
+        "showAllRegions": "Toon alle varianten, inclusief andere regio's ({count})",
+        "regionContext": "Regionale varianten getoond voor {region}, ingesteld door de modelregioselectie hierboven",
+        "regionContextNone": "Er zijn regionale varianten beschikbaar. Kies een regio in de modelregioselectie hierboven, of toon alle varianten.",
+        "otherRegions": "Andere regio's",
+        "filterPlaceholder": "Regio's filteren",
+        "filterAria": "Filter op regio afgestemde versies",
+        "filterNoMatch": "Geen regio's komen overeen met \"{query}\"",
+        "latency": "~{ms} ms",
+        "precisionInfo": "About precision and variants",
+        "precisionHelp": "Precision (FP32, FP16, INT8) trades accuracy for size and speed: FP32 is most accurate, INT8 is smallest and fastest. Recommended is the best match for your detected hardware; Default is the model's standard build."
+      },
+      "actionInProgress": "Wacht tot de huidige installatie, herinstallatie of verwijdering van het model is voltooid",
+      "removeSuccess": "Removed {name}",
+      "reasons": {
+        "backendRecommended": "Draait op {backend}, de aanbevolen backend voor jouw hardware",
+        "backendSupported": "Draait op {backend}",
+        "regionMatched": "Afgestemd op jouw regio ({region})",
+        "regionGlobalFallback": "Globaal model voor jouw locatie",
+        "precisionFp16Native": "Halve-precisie versie afgestemd op je processor",
+        "precisionFp16GpuPreferred": "Halve-precisie versie: halve downloadgrootte, draait op jouw GPU",
+        "ramConstrainedFit": "Gekwantiseerde versie aangepast aan je beschikbare geheugen",
+        "benchmarkMeasured": "Snelste op jouw apparaat in gemeten benchmarks",
+        "variantLegacy": "Vervangen door een nieuwere versie",
+        "archUnsupported": "Vereist een {required} processor",
+        "backendMissing": "Heeft een inference backend nodig die je installatie niet kan bereiken ({required})",
+        "ramInsufficient": "Heeft minimaal {requiredMb} MB geheugen nodig",
+        "hardwareExcluded": "Niet ondersteund op jouw hardware ({token})",
+        "backendOnnxUnavailable": "Vereist ONNX Runtime, dat niet beschikbaar is op dit systeem. Docker-images en release-archieven bevatten dit; zie de ONNX Runtime-installatiehandleiding."
+      },
       "tabs": {
         "installed": "Geïnstalleerd",
         "available": "Beschikbaar"
@@ -4909,7 +5738,6 @@
       "loading": "Modellen laden...",
       "retry": "Opnieuw proberen",
       "builtIn": "Ingebouwd",
-      "builtInDescription": "Ingebouwde vogelsoortclassificator van het BirdNET-team.",
       "species": "{count} soorten",
       "install": "Installeren",
       "installing": "Installeren...",
@@ -4918,8 +5746,8 @@
       "noInstalledModels": "Geen extra modellen geïnstalleerd. Blader door het tabblad Beschikbaar om meer classificatoren toe te voegen.",
       "noAvailableModels": "Geen extra modellen beschikbaar voor uw platform.",
       "sections": {
-        "acoustic": "Acoustic Classifiers",
-        "geomodel": "Geomodels"
+        "acoustic": "Akoestische classificatoren",
+        "geomodel": "Geomodellen"
       },
       "categories": {
         "wildlife": "Wildlifeclassificatoren",
@@ -4954,7 +5782,15 @@
       "errors": {
         "catalogLoadFailed": "Kan modelcatalogus niet laden",
         "installFailed": "Kan modelinstallatie niet starten",
-        "removeFailed": "Kan model niet verwijderen"
+        "removeFailed": "Kan model niet verwijderen",
+        "removeHasDependents": "{name} is nodig voor {models}. Verwijder eerst die modellen.",
+        "operationInProgress": "Er wordt al een model geïnstalleerd, opnieuw geïnstalleerd of verwijderd ({name}). Probeer het opnieuw wanneer dit klaar is.",
+        "actionFailed": "Er is een probleem opgetreden met {name}",
+        "downloadSourceHint": "Als huggingface.co geblokkeerd of traag is op uw netwerk, stel dan een spiegelserver in bij de sectie Downloadbron hieronder.",
+        "goToDownloadSource": "Ga naar Downloadbron",
+        "dismiss": "Negeren",
+        "details": "Details",
+        "removeRetryHint": "To try again, use the Remove button on the model's card."
       },
       "regionLabel": "Regio",
       "speciesLabel": "Soorten",
@@ -4962,20 +5798,59 @@
       "reinstalling": "Opnieuw installeren...",
       "reinstallComplete": "Bestanden succesvol geverifieerd",
       "geomodelBadge": "Bevat BirdNET v3.0 geomodel",
-      "onnxRuntimeRequired": "Vereist ONNX Runtime dat niet beschikbaar is op dit systeem.",
-      "onnxRuntimeMissing": "ONNX Runtime is niet beschikbaar. Dit model kan niet worden uitgevoerd.",
-      "unavailable": "Niet beschikbaar"
+      "preview": {
+        "badge": "Voorvertoning",
+        "buildLabel": "{version} · {build}",
+        "cardNotice": "Voorvertoning voor ontwikkelaars, niet de definitieve versie. Dit is een vroege versie om te testen; resultaten kunnen veranderen voor de stabiele versie.",
+        "dialogNotice": "Je installeert een voorvertoning voor ontwikkelaars ({build}). Handig om uit te proberen, maar nog niet aanbevolen als je enige classificator."
+      },
+      "entryIncompatible": "Dit model is niet beschikbaar op dit systeem.",
+      "regionGlobal": "Globaal",
+      "hardwareLabel": "Hardware",
+      "hardware": {
+        "gpuNvidia": "GPU (NVIDIA)",
+        "gpuIntel": "GPU (Intel)",
+        "armCpu": "ARM CPU",
+        "amd64Cpu": "AMD64 CPU",
+        "arm64Cpu": "ARM64 CPU",
+        "cpu": "CPU"
+      },
+      "optimize": {
+        "bannerTitle": "{count, plural, one {# model kan sneller werken op jouw hardware} other {# modellen kunnen sneller werken op jouw hardware}}",
+        "review": "Controleren",
+        "dismiss": "Afwijzen",
+        "badgeTitle": "Er is een snellere build beschikbaar voor jouw hardware",
+        "swap": "Optimaliseren",
+        "dialogTitle": "Optimaliseer jouw modellen",
+        "installedBuild": "Installed build",
+        "fromTo": "{from} naar {to}",
+        "apply": "Toepassen",
+        "applyAll": "Alles toepassen",
+        "applying": "Toepassen...",
+        "applied": "Toegepast",
+        "applyFailed": "Toepassen mislukt",
+        "upToDate": "Al jouw modellen zijn al geoptimaliseerd voor deze hardware.",
+        "licenseNote": "Het wisselen blijft binnen hetzelfde model, dus de licentie verandert niet."
+      }
     },
     "bird": {
-      "title": "Bird Detection",
-      "description": "Configure confidence threshold, species language, and false positive filtering for bird classifiers."
+      "title": "Vogeldetectie",
+      "description": "Configureer betrouwbaarheidsdrempel, soortentaal en vals-positief filtering voor vogelclassificatoren."
     },
     "bat": {
-      "title": "Bat Detection",
-      "description": "Configure threshold, scheduling, and false positive filtering for bat classifiers."
+      "title": "Vleermuisdetectie",
+      "description": "Configureer drempel, planning en vals-positief filtering voor vleermuisclassificatoren."
     },
     "dynamicThreshold": {
-      "birdOnlyNote": "Dynamic threshold applies to bird classifiers only."
+      "birdOnlyNote": "Dynamische drempel geldt alleen voor vogelclassificatoren."
+    },
+    "perch": {
+      "title": "Perch v2 Detection",
+      "description": "Set a dedicated confidence threshold for Google Perch v2 detections, independent of the BirdNET threshold."
+    },
+    "birdnetv3": {
+      "title": "BirdNET v3.0 Detection",
+      "description": "Set a dedicated confidence threshold for BirdNET v3.0 detections, independent of the main BirdNET threshold."
     }
   },
   "restart": {
@@ -4990,10 +5865,11 @@
     "bannerAction": "Nu herstarten",
     "restartFailed": "Kan herstart niet starten",
     "reasons": {
-      "webserver": "Web server / network settings",
-      "database": "Database settings",
-      "logging": "Logging settings",
-      "tlsCertificate": "TLS certificate"
+      "webserver": "Webserver / netwerkinstellingen",
+      "oauth": "Instellingen authenticatieprovider",
+      "database": "Database-instellingen",
+      "logging": "Logboek-instellingen",
+      "tlsCertificate": "TLS-certificaat"
     }
   },
   "help": {
@@ -5059,20 +5935,20 @@
     }
   },
   "health": {
-    "title": "System Health",
-    "running": "Running diagnostics...",
-    "lastRun": "Last run",
+    "title": "Systeemstatus",
+    "running": "Diagnostiek uitvoeren...",
+    "lastRun": "Laatste run",
     "refresh": "Vernieuwen",
-    "exportText": "Copy Report",
+    "exportText": "Rapport kopiëren",
     "exportJSON": "Download JSON",
-    "copied": "Report copied to clipboard",
-    "duration": "Duration",
+    "copied": "Rapport naar klembord gekopieerd",
+    "duration": "Duur",
     "summary": {
-      "healthy": "Healthy",
-      "warnings": "Warnings",
-      "critical": "Critical",
-      "skipped": "Skipped",
-      "total": "Total checks"
+      "healthy": "Gezond",
+      "warnings": "Waarschuwingen",
+      "critical": "Kritiek",
+      "skipped": "Overgeslagen",
+      "total": "Totaal aantal controles"
     },
     "metricFooter": {
       "allPassing": "Alles in orde",
@@ -5084,33 +5960,33 @@
     },
     "diagnostics": "Diagnostiek",
     "categories": {
-      "system": "System",
-      "audio": "Audio Pipeline",
-      "analysis": "Analysis",
-      "streams": "Audio Streams",
+      "system": "Systeem",
+      "audio": "Audiopijplijn",
+      "analysis": "Analyse",
+      "streams": "Audiostreams",
       "database": "Database",
-      "network": "Network",
-      "config": "Configuration",
-      "logs": "Logs"
+      "network": "Netwerk",
+      "config": "Configuratie",
+      "logs": "Logboeken"
     },
     "status": {
-      "healthy": "Healthy",
-      "warning": "Warning",
-      "critical": "Critical",
-      "unknown": "Unknown",
-      "skipped": "Skipped"
+      "healthy": "Gezond",
+      "warning": "Waarschuwing",
+      "critical": "Kritiek",
+      "unknown": "Onbekend",
+      "skipped": "Overgeslagen"
     },
     "errors": {
-      "title": "Recent Errors",
-      "noErrors": "No recent errors",
-      "fetchFailed": "Failed to load diagnostics"
+      "title": "Recente fouten",
+      "noErrors": "Geen recente fouten",
+      "fetchFailed": "Kan diagnostiek niet laden"
     },
     "export": {
-      "reportTitle": "BirdNET-Go System Health Report",
+      "reportTitle": "BirdNET-Go Systeemstatus Rapport",
       "statusLabel": "Status",
-      "timeLabel": "Time",
-      "durationLabel": "Duration",
-      "checksLabel": "Checks"
+      "timeLabel": "Tijd",
+      "durationLabel": "Duur",
+      "checksLabel": "Controles"
     },
     "logs": {
       "topErrors": "Meest voorkomende fouten",
@@ -5123,9 +5999,9 @@
       "label": "Evaluatievenster",
       "15m": "15m",
       "30m": "30m",
-      "1h": "1h",
-      "6h": "6h",
-      "24h": "24h",
+      "1h": "1u",
+      "6h": "6u",
+      "24h": "24u",
       "7d": "7d"
     },
     "detail": {

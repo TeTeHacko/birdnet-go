@@ -13,6 +13,7 @@ import (
 	"github.com/tphakala/birdnet-go/internal/datastore/v2/repository"
 	"github.com/tphakala/birdnet-go/internal/errors"
 	"github.com/tphakala/birdnet-go/internal/logger"
+	"github.com/tphakala/birdnet-go/internal/suncalc"
 )
 
 // InitializeFreshInstall creates a new v2-only datastore for fresh installations.
@@ -124,7 +125,7 @@ func InitializeFreshInstall(settings *conf.Settings, log logger.Logger, speciesC
 	sourceRepo := repository.NewAudioSourceRepository(db, nil, useV2Prefix, isMySQL)
 	weatherRepo := repository.NewWeatherRepository(db, nil, useV2Prefix, isMySQL)
 	imageCacheRepo := repository.NewImageCacheRepository(db, nil, labelRepo, useV2Prefix, isMySQL)
-	thresholdRepo := repository.NewDynamicThresholdRepository(db, nil, labelRepo, useV2Prefix, isMySQL)
+	thresholdRepo := repository.NewDynamicThresholdRepository(db, nil, useV2Prefix, isMySQL)
 	notificationRepo := repository.NewNotificationHistoryRepository(db, nil, labelRepo, useV2Prefix, isMySQL)
 	appEventRepo := repository.NewAppEventRepository(db, nil, useV2Prefix, isMySQL)
 	labelTypeRepo := repository.NewLabelTypeRepository(db, nil, useV2Prefix)
@@ -132,7 +133,7 @@ func InitializeFreshInstall(settings *conf.Settings, log logger.Logger, speciesC
 
 	// Get or create required lookup table entries and cache their IDs
 	ctx := context.Background()
-	speciesLabelType, err := labelTypeRepo.GetOrCreate(ctx, "species")
+	speciesLabelType, err := labelTypeRepo.GetOrCreate(ctx, entities.LabelTypeSpecies)
 	if err != nil {
 		_ = manager.Close()
 		return nil, errors.New(err).
@@ -185,6 +186,9 @@ func InitializeFreshInstall(settings *conf.Settings, log logger.Logger, speciesC
 		AvesClassID:        &avesClassID,
 		Labels:             settings.BirdNET.Labels, // Required for locale-specific common name resolution
 		SpeciesCodeMap:     speciesCodeMap,
+		// Sun calculator for civil dawn (dawn-chorus onset) and time-of-day classification,
+		// matching the legacy datastore.New wiring. It follows the live station location.
+		SunCalc: suncalc.NewSunCalcWithSource(conf.LiveLocation(settings)),
 	})
 	if err != nil {
 		_ = manager.Close()

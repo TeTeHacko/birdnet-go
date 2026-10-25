@@ -1,14 +1,10 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { get } from 'svelte/store';
-import {
-  settingsStore,
-  settingsActions,
-  type SettingsFormData,
-  type SpeciesConfig,
-} from './settings';
+import { settingsStore, settingsActions, type SpeciesConfig } from './settings';
 import { settingsAPI } from '$lib/utils/settingsApi';
 import { toastActions } from './toast';
 import { createEmptySettings } from '../../types/test-helpers';
+import { serveConfirmedSettings } from '../../test/settings-store-helpers';
 
 // Mock the settingsAPI
 vi.mock('$lib/utils/settingsApi', () => ({
@@ -130,6 +126,17 @@ describe('Species Settings Store', () => {
   });
 
   describe('Save Operation', () => {
+    beforeEach(() => {
+      // saveSettings refuses until a load has succeeded
+      settingsStore.update(state => ({ ...state, dataLoaded: true }));
+      // The server holds what the store last confirmed, which a save's rebase GET reads
+      serveConfirmedSettings();
+    });
+
+    afterEach(() => {
+      vi.mocked(settingsAPI.load).mockReset();
+    });
+
     it('should send zero values to API when saving', async () => {
       const mockSave = vi.mocked(settingsAPI.save);
       mockSave.mockResolvedValueOnce({ success: true });
@@ -170,7 +177,7 @@ describe('Species Settings Store', () => {
       expect(toastActions.error).not.toHaveBeenCalled();
 
       // Get the data that was sent to save
-      const savedData = mockSave.mock.calls[0][0] as SettingsFormData;
+      const savedData = mockSave.mock.calls[0][0];
       const speciesConfig = savedData.realtime?.species?.config['Zero Test'];
 
       // Verify zero values were included in save
@@ -229,7 +236,7 @@ describe('Species Settings Store', () => {
       await settingsActions.saveSettings();
 
       // Verify both birds are in saved data and other fields are preserved
-      const savedData = mockSave.mock.calls[0][0] as SettingsFormData;
+      const savedData = mockSave.mock.calls[0][0];
       const realtime = savedData.realtime;
       const species = realtime?.species;
 

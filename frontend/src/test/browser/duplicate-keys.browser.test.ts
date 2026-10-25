@@ -16,8 +16,14 @@
  * - Tests PASS when rendering succeeds without Svelte errors
  * - Tests FAIL when Svelte throws each_key_duplicate errors
  *
+ * vitest-browser-svelte v3 made render() async: it returns a Promise that
+ * resolves once the component mounts, or rejects if mounting throws. So every
+ * render() is awaited, and duplicate-key cases assert on the rejected promise
+ * with `.rejects.toThrow(...)` instead of a synchronous `expect(() => ...).toThrow`.
+ *
  * Related components and their issues:
- * - SubnetInput.svelte:179       → {#each subnets as subnet, index (subnet)}
+ * - a value-keyed string list   → {#each values as value (value)} (why address
+ *   list editors such as NetworkAddressListInput key rows by index)
  * - SelectDropdown.svelte:477    → {#each options as option (option.value)}
  * - SelectField.svelte:103       → {#each options as option (option.value)}
  * - SpeciesSelector.svelte:413   → {#each filteredSpecies as group (group.category)}
@@ -38,13 +44,13 @@ import IndexKey from './wrappers/IndexKey.svelte';
 import IndexKeyFixed from './wrappers/IndexKeyFixed.svelte';
 
 // ============================================================================
-// Pattern: String value as key — {#each items as item (item)}
+// Pattern: String value as key: {#each items as item (item)}
 // Affected: any {#each items as item (item)} list that uses a bare string as the key
 // ============================================================================
 
-describe('Duplicate Key: String value as key — (item)', () => {
+describe('Duplicate Key: String value as key (item)', () => {
   it('renders unique string items without error', async () => {
-    render(StringListKey, {
+    await render(StringListKey, {
       items: ['Parus major', 'Turdus merula', 'Erithacus rubecula'],
     });
 
@@ -58,44 +64,46 @@ describe('Duplicate Key: String value as key — (item)', () => {
 
   it('throws on duplicate string items', async () => {
     // Reproduces the {#each items as item (item)} pattern: when a list contains the
-    // same string twice, Svelte throws each_key_duplicate at runtime.
-    expect(() => {
+    // same string twice, Svelte throws each_key_duplicate at runtime. In
+    // vitest-browser-svelte v3 render() is async, so the mount error surfaces as a
+    // rejected promise rather than a synchronous throw.
+    await expect(
       render(StringListKey, {
         items: ['Parus major', 'Turdus merula', 'Parus major'],
-      });
-    }).toThrow(/each_key_duplicate|duplicate key/i);
+      })
+    ).rejects.toThrow(/each_key_duplicate|duplicate key/i);
   });
 
-  it('throws on duplicate subnet strings (SubnetInput bug)', async () => {
-    // Reproduces SubnetInput.svelte:179 — {#each subnets as subnet, index (subnet)}
-    // When the subnets array has identical CIDR blocks
-    expect(() => {
+  it('throws on duplicate subnet strings in a value-keyed list', async () => {
+    // A list keyed by value, {#each subnets as subnet (subnet)}, throws when the
+    // array has identical CIDR blocks
+    await expect(
       render(StringListKey, {
         items: ['192.168.1.0/24', '10.0.0.0/8', '192.168.1.0/24'],
-      });
-    }).toThrow(/each_key_duplicate|duplicate key/i);
+      })
+    ).rejects.toThrow(/each_key_duplicate|duplicate key/i);
   });
 
   it('renders empty list without error', async () => {
-    render(StringListKey, { items: [] });
-    // Empty <ul> renders but may not be "visible" (no height) — just check it's in the DOM
+    await render(StringListKey, { items: [] });
+    // Empty <ul> renders but may not be "visible" (no height), so just check it's in the DOM
     await expect.element(page.getByTestId('string-list')).toBeInTheDocument();
   });
 
   it('renders single item without error', async () => {
-    render(StringListKey, { items: ['Parus major'] });
+    await render(StringListKey, { items: ['Parus major'] });
     await expect.element(page.getByTestId('string-list')).toBeVisible();
   });
 });
 
 // ============================================================================
-// Pattern: Object property as key — {#each options as option (option.value)}
+// Pattern: Object property as key: {#each options as option (option.value)}
 // Affected: SelectDropdown, SelectField
 // ============================================================================
 
-describe('Duplicate Key: Object property as key — (option.value)', () => {
+describe('Duplicate Key: Object property as key (option.value)', () => {
   it('renders unique option values without error', async () => {
-    render(OptionValueKey, {
+    await render(OptionValueKey, {
       options: [
         { value: 'wav', label: 'WAV' },
         { value: 'mp3', label: 'MP3' },
@@ -110,38 +118,38 @@ describe('Duplicate Key: Object property as key — (option.value)', () => {
     // Reproduces SelectDropdown.svelte:477 and SelectField.svelte:103
     // When two options share the same value (e.g., multiple audio devices
     // reporting the same ID, or a device list with duplicate "default" entries)
-    expect(() => {
+    await expect(
       render(OptionValueKey, {
         options: [
           { value: 'default', label: 'System Default' },
           { value: 'hdmi', label: 'HDMI Output' },
           { value: 'default', label: 'Default (Speakers)' },
         ],
-      });
-    }).toThrow(/each_key_duplicate|duplicate key/i);
+      })
+    ).rejects.toThrow(/each_key_duplicate|duplicate key/i);
   });
 
   it('throws when all options have the same value', async () => {
-    expect(() => {
+    await expect(
       render(OptionValueKey, {
         options: [
           { value: 'true', label: 'Yes' },
           { value: 'true', label: 'Enabled' },
           { value: 'true', label: 'On' },
         ],
-      });
-    }).toThrow(/each_key_duplicate|duplicate key/i);
+      })
+    ).rejects.toThrow(/each_key_duplicate|duplicate key/i);
   });
 });
 
 // ============================================================================
-// Pattern: Group category as key — {#each groups as group (group.category)}
+// Pattern: Group category as key: {#each groups as group (group.category)}
 // Affected: SpeciesSelector
 // ============================================================================
 
-describe('Duplicate Key: Group category as key — (group.category)', () => {
+describe('Duplicate Key: Group category as key (group.category)', () => {
   it('renders unique category names without error', async () => {
-    render(GroupCategoryKey, {
+    await render(GroupCategoryKey, {
       groups: [
         {
           category: 'songbirds',
@@ -162,10 +170,10 @@ describe('Duplicate Key: Group category as key — (group.category)', () => {
   });
 
   it('throws on duplicate category names (SpeciesSelector bug)', async () => {
-    // Reproduces SpeciesSelector.svelte:413 — {#each filteredSpecies as group (group.category)}
+    // Reproduces SpeciesSelector.svelte:413: {#each filteredSpecies as group (group.category)}
     // When filteredSpecies contains multiple groups with the same category
     // (e.g., when filtering produces duplicate category groupings)
-    expect(() => {
+    await expect(
       render(GroupCategoryKey, {
         groups: [
           {
@@ -181,13 +189,13 @@ describe('Duplicate Key: Group category as key — (group.category)', () => {
             items: [{ id: '3', name: 'Wren' }],
           },
         ],
-      });
-    }).toThrow(/each_key_duplicate|duplicate key/i);
+      })
+    ).rejects.toThrow(/each_key_duplicate|duplicate key/i);
   });
 
   it('throws on empty string categories (uncategorized fallback)', async () => {
     // When uncategorized species all get category: '' they produce duplicate keys
-    expect(() => {
+    await expect(
       render(GroupCategoryKey, {
         groups: [
           {
@@ -199,21 +207,21 @@ describe('Duplicate Key: Group category as key — (group.category)', () => {
             items: [{ id: '2', name: 'Unknown Bird B' }],
           },
         ],
-      });
-    }).toThrow(/each_key_duplicate|duplicate key/i);
+      })
+    ).rejects.toThrow(/each_key_duplicate|duplicate key/i);
   });
 });
 
 // ============================================================================
-// Pattern: Index as key — {#each items as item, index (index)}
+// Pattern: Index as key: {#each items as item, index (index)}
 // Affected: RTSPUrlInput
 // ============================================================================
 
-describe('Index as Key: DOM recycling issue — (index)', () => {
+describe('Index as Key: DOM recycling issue (index)', () => {
   it('renders all items correctly with index keys', async () => {
     // Index keys don't cause duplicate key errors (indices are unique)
     // but they cause incorrect DOM recycling on remove/reorder
-    render(IndexKey, {
+    await render(IndexKey, {
       items: ['rtsp://cam1/stream', 'rtsp://cam2/stream', 'rtsp://cam3/stream'],
     });
 
@@ -231,7 +239,7 @@ describe('Index as Key: DOM recycling issue — (index)', () => {
     // - It keeps DOM for keys 0 and 1, removes key 2
     // - DOM for key 1 still has old value (cam2) but data says cam3
     // This tests that rerender with the correct data works
-    const { rerender } = render(IndexKey, {
+    const { rerender } = await render(IndexKey, {
       items: ['rtsp://cam1/stream', 'rtsp://cam2/stream', 'rtsp://cam3/stream'],
     });
 
@@ -248,7 +256,7 @@ describe('Index as Key: DOM recycling issue — (index)', () => {
   it('value key: rerender after middle removal shows correct items', async () => {
     // The fixed version uses (item) instead of (index) as key
     // This correctly associates DOM elements with their data values
-    const { rerender } = render(IndexKeyFixed, {
+    const { rerender } = await render(IndexKeyFixed, {
       items: ['rtsp://cam1/stream', 'rtsp://cam2/stream', 'rtsp://cam3/stream'],
     });
 
@@ -275,7 +283,7 @@ describe('Index as Key: DOM recycling issue — (index)', () => {
 describe('Duplicate Key Edge Cases', () => {
   it('case-different strings are unique keys (no error)', async () => {
     // Keys are case-sensitive, so "parus major" and "Parus major" are different
-    render(StringListKey, {
+    await render(StringListKey, {
       items: ['Parus major', 'parus major', 'PARUS MAJOR'],
     });
 
@@ -284,31 +292,31 @@ describe('Duplicate Key Edge Cases', () => {
 
   it('throws on empty string duplicate keys', async () => {
     // Empty strings as keys will collide
-    expect(() => {
+    await expect(
       render(StringListKey, {
         items: ['', 'valid', ''],
-      });
-    }).toThrow(/each_key_duplicate|duplicate key/i);
+      })
+    ).rejects.toThrow(/each_key_duplicate|duplicate key/i);
   });
 
   it('throws on empty string duplicate option values', async () => {
     // Options where value is empty string can duplicate
-    expect(() => {
+    await expect(
       render(OptionValueKey, {
         options: [
           { value: '', label: 'None' },
           { value: 'valid', label: 'Valid' },
           { value: '', label: 'Unset' },
         ],
-      });
-    }).toThrow(/each_key_duplicate|duplicate key/i);
+      })
+    ).rejects.toThrow(/each_key_duplicate|duplicate key/i);
   });
 
   it('handles large list with unique items without error', async () => {
     // Ensure no false positives with many items
     const items = Array.from({ length: 100 }, (_, i) => `Species ${i}`);
 
-    render(StringListKey, { items });
+    await render(StringListKey, { items });
 
     await expect.element(page.getByTestId('string-list')).toBeVisible();
   });
@@ -318,8 +326,8 @@ describe('Duplicate Key Edge Cases', () => {
     const items = Array.from({ length: 100 }, (_, i) => `Species ${i}`);
     items[99] = 'Species 0'; // Duplicate of first item
 
-    expect(() => {
-      render(StringListKey, { items });
-    }).toThrow(/each_key_duplicate|duplicate key/i);
+    await expect(render(StringListKey, { items })).rejects.toThrow(
+      /each_key_duplicate|duplicate key/i
+    );
   });
 });

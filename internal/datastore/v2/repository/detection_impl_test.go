@@ -132,6 +132,57 @@ func TestSearch_QueryAndCommonLabelIDs(t *testing.T) {
 	})
 }
 
+// TestGetSpeciesFirstDetectionInPeriod characterizes the per-species first-detection
+// query: period filtering, aggregation across multiple labels of the same scientific
+// name, MIN(detected_at) selection, and ascending order. It must hold for any
+// implementation (window function or GROUP BY+MIN).
+func TestGetSpeciesFirstDetectionInPeriod(t *testing.T) {
+	db := setupDetectionTestDBWithLabels(t)
+	ctx := t.Context()
+	repo := &detectionRepository{db: db}
+
+	// Two species with a single label, plus one species with two labels (two models)
+	// to verify aggregation across labels by scientific_name.
+	corone := createTestLabel(t, db, "Corvus corone", 1)
+	robin := createTestLabel(t, db, "Erithacus rubecula", 1)
+	merulaM1 := createTestLabel(t, db, "Turdus merula", 1)
+	merulaM2 := createTestLabel(t, db, "Turdus merula", 2)
+
+	const start, end int64 = 2000, 4000
+
+	// Corvus corone: two detections in period -> first is 2000.
+	createDetectionForLabel(t, db, corone.ID, 2000)
+	createDetectionForLabel(t, db, corone.ID, 2500)
+	// Erithacus rubecula: one BEFORE the period (excluded), one inside -> first is 3000.
+	createDetectionForLabel(t, db, robin.ID, 1000)
+	createDetectionForLabel(t, db, robin.ID, 3000)
+	// Turdus merula: detections under two different labels; first across both is 2100.
+	createDetectionForLabel(t, db, merulaM1.ID, 2200)
+	createDetectionForLabel(t, db, merulaM2.ID, 2100)
+	// A detection AFTER the period end is excluded (end is exclusive).
+	createDetectionForLabel(t, db, corone.ID, 5000)
+
+	results, err := repo.GetSpeciesFirstDetectionInPeriod(ctx, start, end, 100, 0)
+	require.NoError(t, err)
+
+	// Build a name->firstDetected map for order-independent value checks.
+	got := make(map[string]int64, len(results))
+	for _, r := range results {
+		got[r.ScientificName] = r.FirstDetected
+	}
+	assert.Equal(t, int64(2000), got["Corvus corone"], "corone first detection in period")
+	assert.Equal(t, int64(3000), got["Erithacus rubecula"], "robin first in-period detection (pre-period excluded)")
+	assert.Equal(t, int64(2100), got["Turdus merula"], "merula first across both labels")
+	assert.Len(t, results, 3, "exactly the three species detected within the period")
+
+	// Results are ordered by first_detected ascending.
+	firsts := make([]int64, len(results))
+	for i, r := range results {
+		firsts[i] = r.FirstDetected
+	}
+	assert.Equal(t, []int64{2000, 2100, 3000}, firsts, "ascending by first_detected")
+}
+
 // TestSearch_ScientificLikeNotTruncated guards against the prior 100-row cap: the scientific
 // LIKE runs in SQL and must return all matches, not a capped subset. See issue #3378.
 func TestSearch_ScientificLikeNotTruncated(t *testing.T) {
@@ -693,7 +744,7 @@ func TestGetByHour_PaginationHonored(t *testing.T) {
 	repo := &detectionRepository{db: db}
 
 	const hourStart = int64(1_700_000_000)
-	for i := int64(0); i < 5; i++ {
+	for i := range int64(5) {
 		createTestDetection(t, db, hourStart+i*60)
 	}
 
@@ -701,4 +752,242 @@ func TestGetByHour_PaginationHonored(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(5), total, "total must count all rows in the hour")
 	assert.Len(t, dets, 2, "LIMIT must be honored; query reuse after Count would return all 5")
+}
+
+func TestGetTopSpecies_DeterministicOrder(t *testing.T) {
+	db := setupDetectionTestDBWithLabels(t)
+	ctx := t.Context()
+	repo := &detectionRepository{db: db}
+
+	labelA := createTestLabel(t, db, "Species A", 1)
+	labelB := createTestLabel(t, db, "Species B", 1)
+	labelC := createTestLabel(t, db, "Species C", 1)
+
+	// Create equal detection count
+	for i := range 5 {
+		createDetectionForLabel(t, db, labelA.ID, int64(1000+i))
+		createDetectionForLabel(t, db, labelB.ID, int64(1000+i))
+		createDetectionForLabel(t, db, labelC.ID, int64(1000+i))
+	}
+
+	results, err := repo.GetTopSpecies(ctx, 900, 1100, 0.0, nil, nil, 3)
+	require.NoError(t, err)
+	require.Len(t, results, 3)
+
+	assert.Equal(t, labelA.ID, results[0].LabelID)
+	assert.Equal(t, labelB.ID, results[1].LabelID)
+	assert.Equal(t, labelC.ID, results[2].LabelID)
+}
+
+// TestGetTopSpecies_SpeciesFilter verifies the optional scientific-name filter narrows the ranking
+// to the selected species (applied before ORDER BY count / LIMIT) while an empty filter ranks all.
+func TestGetTopSpecies_SpeciesFilter(t *testing.T) {
+	db := setupDetectionTestDBWithLabels(t)
+	ctx := t.Context()
+	repo := &detectionRepository{db: db}
+
+	labelA := createTestLabel(t, db, "Species A", 1)
+	labelB := createTestLabel(t, db, "Species B", 1)
+	labelC := createTestLabel(t, db, "Species C", 1)
+
+	for i := range 5 {
+		createDetectionForLabel(t, db, labelA.ID, int64(1000+i))
+		createDetectionForLabel(t, db, labelB.ID, int64(1000+i))
+		createDetectionForLabel(t, db, labelC.ID, int64(1000+i))
+	}
+
+	t.Run("restricts to the selected species", func(t *testing.T) {
+		results, err := repo.GetTopSpecies(ctx, 900, 1100, 0.0, nil, []string{"Species B"}, 3)
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+		assert.Equal(t, labelB.ID, results[0].LabelID)
+		assert.Equal(t, "Species B", results[0].ScientificName)
+	})
+
+	t.Run("empty filter ranks every species", func(t *testing.T) {
+		results, err := repo.GetTopSpecies(ctx, 900, 1100, 0.0, nil, []string{}, 3)
+		require.NoError(t, err)
+		require.Len(t, results, 3)
+	})
+}
+
+// TestGetTopSpecies_ExcludesFalsePositives verifies the ranking counts only non-false-positive
+// detections, matching GetSpeciesSummary (the species selector's ranking) and the hourly/confidence
+// data these species are then charted from. A species whose detections are all false positives must
+// drop out of the ranking entirely -- the mechanism behind the who-sings-when "N selected, fewer
+// drawn" symptom when the selector (false-positive-excluded) and this ranking disagreed.
+func TestGetTopSpecies_ExcludesFalsePositives(t *testing.T) {
+	db := setupDetectionTestDBWithLabels(t)
+	ctx := t.Context()
+	repo := &detectionRepository{db: db}
+
+	labelA := createTestLabel(t, db, "Species A", 1)
+	labelB := createTestLabel(t, db, "Species B", 1)
+	labelC := createTestLabel(t, db, "Species C", 1)
+
+	markFalsePositive := func(detectionID uint) {
+		t.Helper()
+		require.NoError(t, repo.SaveReview(ctx, &entities.DetectionReview{
+			DetectionID: detectionID,
+			Verified:    entities.VerificationFalsePositive,
+		}))
+	}
+
+	// A: 5 clean detections -> counts 5.
+	// B: 5 detections, 3 flagged false positive -> counts 2.
+	// C: 5 detections, all flagged false positive -> counts 0, so it must not appear at all.
+	for i := range 5 {
+		createDetectionForLabel(t, db, labelA.ID, int64(1000+i))
+
+		detB := createDetectionForLabel(t, db, labelB.ID, int64(1000+i))
+		if i < 3 {
+			markFalsePositive(detB.ID)
+		}
+
+		detC := createDetectionForLabel(t, db, labelC.ID, int64(1000+i))
+		markFalsePositive(detC.ID)
+	}
+
+	results, err := repo.GetTopSpecies(ctx, 900, 1100, 0.0, nil, nil, 10)
+	require.NoError(t, err)
+
+	// C is gone (all false positives); A outranks B on non-false-positive volume.
+	require.Len(t, results, 2)
+	assert.Equal(t, labelA.ID, results[0].LabelID)
+	assert.Equal(t, int64(5), results[0].Count)
+	assert.Equal(t, labelB.ID, results[1].LabelID)
+	assert.Equal(t, int64(2), results[1].Count)
+
+	// Even named explicitly, an all-false-positive species yields no row -- so a species the selector
+	// picked can be absent here, which is exactly what the client-side diagnostic surfaces.
+	filtered, err := repo.GetTopSpecies(ctx, 900, 1100, 0.0, nil, []string{"Species C"}, 10)
+	require.NoError(t, err)
+	assert.Empty(t, filtered)
+}
+
+// TestGetTopSpecies_NoLimitWhenNonPositive verifies limit <= 0 disables the LIMIT clause so every
+// matching label row is returned. Callers with an explicit species selection pass 0 to avoid
+// truncating a species that owns several model labels to fewer rows than selected species.
+func TestGetTopSpecies_NoLimitWhenNonPositive(t *testing.T) {
+	db := setupDetectionTestDBWithLabels(t)
+	ctx := t.Context()
+	repo := &detectionRepository{db: db}
+
+	labelA := createTestLabel(t, db, "Species A", 1)
+	labelB := createTestLabel(t, db, "Species B", 1)
+	labelC := createTestLabel(t, db, "Species C", 1)
+
+	// Distinct volumes so ordering is unambiguous: A(3) > B(2) > C(1).
+	for i := range 3 {
+		createDetectionForLabel(t, db, labelA.ID, int64(1000+i))
+	}
+	for i := range 2 {
+		createDetectionForLabel(t, db, labelB.ID, int64(1000+i))
+	}
+	createDetectionForLabel(t, db, labelC.ID, 1000)
+
+	// A positive limit still truncates (existing behavior).
+	limited, err := repo.GetTopSpecies(ctx, 900, 1100, 0.0, nil, nil, 2)
+	require.NoError(t, err)
+	require.Len(t, limited, 2)
+
+	// limit == 0 returns every row, volume-ordered.
+	all, err := repo.GetTopSpecies(ctx, 900, 1100, 0.0, nil, nil, 0)
+	require.NoError(t, err)
+	require.Len(t, all, 3)
+	assert.Equal(t, labelA.ID, all[0].LabelID)
+	assert.Equal(t, labelC.ID, all[2].LabelID)
+}
+
+// TestCountSearch_MatchesSearchTotal pins CountSearch to the total Search reports and
+// to the number of rows an unpaginated Search returns, across the label, time range,
+// hours, confidence, text query, review and lock filters, and checks that sorting and
+// pagination fields do not change the count.
+func TestCountSearch_MatchesSearchTotal(t *testing.T) {
+	db := setupDetectionTestDBWithLabels(t)
+	ctx := t.Context()
+	repo := &detectionRepository{db: db}
+
+	parus := createTestLabel(t, db, "Parus major", 1)
+	turdus := createTestLabel(t, db, "Turdus merula", 1)
+
+	// Hour-aligned timestamps so the IncludedHours filter (UTC, offset 0) splits them.
+	const hour = int64(3600)
+	base := int64(1_700_000_000) / (24 * hour) * (24 * hour) // a UTC midnight
+	const (
+		parusCount  = 6
+		turdusCount = 4
+		// lowConfidence is below the confidence threshold used by the cases below,
+		// while createDetectionForLabel's default confidence is above it.
+		lowConfidence = 0.3
+	)
+	parusIDs := make([]uint, 0, parusCount)
+	for i := range int64(parusCount) {
+		parusIDs = append(parusIDs, createDetectionForLabel(t, db, parus.ID, base+i*hour).ID)
+	}
+	for i := range int64(turdusCount) {
+		createDetectionForLabel(t, db, turdus.ID, base+i*hour+1)
+	}
+	lowConfidenceIDs := []uint{parusIDs[3], parusIDs[4]}
+	require.NoError(t, db.Table(tableDetections).Where("id IN ?", lowConfidenceIDs).
+		Update("confidence", lowConfidence).Error)
+	require.NoError(t, db.Table(tableDetectionReviews).Create(&entities.DetectionReview{
+		DetectionID: parusIDs[0], Verified: entities.VerificationFalsePositive,
+	}).Error)
+	require.NoError(t, db.Table(tableDetectionReviews).Create(&entities.DetectionReview{
+		DetectionID: parusIDs[1], Verified: entities.VerificationCorrect,
+	}).Error)
+	require.NoError(t, db.Table(tableDetectionLocks).Create(&entities.DetectionLock{
+		DetectionID: parusIDs[2],
+	}).Error)
+
+	start, end := base+hour, base+4*hour
+	confidenceThreshold := 0.5
+	falsePositive := VerificationFilter(entities.VerificationFalsePositive)
+	yes, no := true, false
+
+	tests := []struct {
+		name    string
+		filters *SearchFilters
+		want    int64
+	}{
+		{name: "nil filters", filters: nil, want: 10},
+		{name: "no filters", filters: &SearchFilters{}, want: 10},
+		{name: "label", filters: &SearchFilters{LabelIDs: []uint{parus.ID}}, want: 6},
+		{name: "half-open time range", filters: &SearchFilters{StartTime: &start, EndTime: &end}, want: 6},
+		{name: "label and time range", filters: &SearchFilters{LabelIDs: []uint{turdus.ID}, StartTime: &start, EndTime: &end}, want: 3},
+		{name: "included hours", filters: &SearchFilters{IncludedHours: []int{0, 5}}, want: 3},
+		{name: "min confidence", filters: &SearchFilters{MinConfidence: &confidenceThreshold}, want: 8},
+		{name: "max confidence", filters: &SearchFilters{MaxConfidence: &confidenceThreshold}, want: 2},
+		{name: "text query joins labels", filters: &SearchFilters{Query: "Turdus"}, want: 4},
+		{name: "verified joins reviews", filters: &SearchFilters{Verified: &falsePositive}, want: 1},
+		{name: "reviewed", filters: &SearchFilters{IsReviewed: &yes}, want: 2},
+		{name: "locked joins locks", filters: &SearchFilters{IsLocked: &yes}, want: 1},
+		{name: "unlocked", filters: &SearchFilters{IsLocked: &no}, want: 9},
+		{
+			name: "sorting and pagination are ignored",
+			filters: &SearchFilters{
+				LabelIDs: []uint{parus.ID}, SortBy: SortFieldSpecies, SortDesc: true, Limit: 2, Offset: 1,
+			},
+			want: 6,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := repo.CountSearch(ctx, tt.filters)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+
+			var unpaged *SearchFilters
+			if tt.filters != nil {
+				f := *tt.filters
+				f.Limit, f.Offset = 0, 0
+				unpaged = &f
+			}
+			rows, total, err := repo.Search(ctx, unpaged)
+			require.NoError(t, err)
+			assert.Equal(t, total, got, "CountSearch must equal the Search total")
+			assert.Len(t, rows, int(got), "CountSearch must equal the unpaginated row count")
+		})
+	}
 }

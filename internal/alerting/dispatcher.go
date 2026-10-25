@@ -281,7 +281,7 @@ func errorMessage(event *AlertEvent) (key string, params map[string]any, fallbac
 
 	params = map[string]any{
 		"source_name": sourceName,
-		"error":       errMsg,
+		"error":       errMsg, //nolint:goconst // ad-hoc param key, not the PropertyError condition-property constant
 	}
 
 	// Try to classify the error for a user-friendly message.
@@ -342,7 +342,9 @@ func formatMetricValue(v float64) string {
 }
 
 func isDetectionEvent(eventName string) bool {
-	return eventName == EventDetectionNewSpecies || eventName == EventDetectionOccurred
+	return eventName == EventDetectionNewSpecies ||
+		eventName == EventDetectionInfrequentSpecies ||
+		eventName == EventDetectionOccurred
 }
 
 func isErrorEvent(eventName string) bool {

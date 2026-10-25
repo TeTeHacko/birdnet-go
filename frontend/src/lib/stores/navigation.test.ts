@@ -1,6 +1,7 @@
 // frontend/src/lib/stores/navigation.test.ts
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createNavigation } from './navigation.svelte';
+import { buildAppUrl, getAppBasePath } from '$lib/utils/urlHelpers';
 
 // Mock the urlHelpers module
 vi.mock('$lib/utils/urlHelpers', () => ({
@@ -26,7 +27,7 @@ describe('navigation store', () => {
     vi.spyOn(window.history, 'replaceState').mockImplementation(() => {});
     // Reset location mock
     Object.defineProperty(window, 'location', {
-      value: { pathname: '/ui/dashboard' },
+      value: { pathname: '/ui/dashboard', search: '', hash: '' },
       writable: true,
       configurable: true,
     });
@@ -42,6 +43,16 @@ describe('navigation store', () => {
   });
 
   describe('navigate', () => {
+    it('exposes same-page query changes independently of the route', () => {
+      const nav = createNavigation();
+      nav.navigate('/ui/settings/main?tab=general');
+      nav.navigate('/ui/settings/main?tab=location&source=species#map');
+      expect(nav.currentPath).toBe('/ui/settings/main');
+      expect(nav.currentSearch).toBe('?tab=location&source=species');
+      nav.navigate('/ui/settings/main#map');
+      expect(nav.currentSearch).toBe('');
+    });
+
     it('should update currentPath', () => {
       const nav = createNavigation();
       nav.navigate('/ui/settings');
@@ -147,11 +158,57 @@ describe('navigation store', () => {
     });
   });
 
+  describe('redirect', () => {
+    it('updates reactive search on query-only redirects', () => {
+      const nav = createNavigation();
+      nav.navigate('/ui/settings/main?tab=general');
+      nav.redirect('/ui/settings/main?tab=location#map');
+      expect(nav.currentSearch).toBe('?tab=location');
+      expect(nav.currentPath).toBe('/ui/settings/main');
+    });
+
+    it('should update currentPath and replace (not push) the history entry', () => {
+      const nav = createNavigation();
+      nav.redirect('/ui/analytics?tab=patterns');
+      // currentPath strips the query, matching window.location.pathname behavior.
+      expect(nav.currentPath).toBe('/ui/analytics');
+      // A redirect replaces the current entry so the dead URL does not linger.
+      expect(window.history.replaceState).toHaveBeenCalledWith(
+        {},
+        '',
+        '/ui/analytics?tab=patterns'
+      );
+      expect(window.history.pushState).not.toHaveBeenCalled();
+    });
+
+    it('should normalize paths without the /ui/ prefix', () => {
+      const nav = createNavigation();
+      nav.redirect('/analytics');
+      expect(nav.currentPath).toBe('/ui/analytics');
+    });
+  });
+
   describe('handlePopState', () => {
+    it('restores query-only history entries and bare URLs', () => {
+      const nav = createNavigation();
+      nav.navigate('/ui/settings/main?tab=location');
+      Object.defineProperty(window, 'location', {
+        value: { pathname: '/ui/settings/main', search: '?tab=database', hash: '#details' },
+        writable: true,
+        configurable: true,
+      });
+      nav.handlePopState();
+      expect(nav.currentPath).toBe('/ui/settings/main');
+      expect(nav.currentSearch).toBe('?tab=database');
+      window.location.search = '';
+      nav.handlePopState();
+      expect(nav.currentSearch).toBe('');
+    });
+
     it('should update currentPath from window.location', () => {
       const nav = createNavigation();
       Object.defineProperty(window, 'location', {
-        value: { pathname: '/ui/about' },
+        value: { pathname: '/ui/about', search: '', hash: '' },
         writable: true,
         configurable: true,
       });
@@ -162,7 +219,7 @@ describe('navigation store', () => {
     it('should normalize root path on popstate', () => {
       const nav = createNavigation();
       Object.defineProperty(window, 'location', {
-        value: { pathname: '/' },
+        value: { pathname: '/', search: '', hash: '' },
         writable: true,
         configurable: true,
       });
@@ -173,7 +230,7 @@ describe('navigation store', () => {
     it('should handle /ui path on popstate', () => {
       const nav = createNavigation();
       Object.defineProperty(window, 'location', {
-        value: { pathname: '/ui' },
+        value: { pathname: '/ui', search: '', hash: '' },
         writable: true,
         configurable: true,
       });
@@ -183,9 +240,41 @@ describe('navigation store', () => {
   });
 
   describe('initial state', () => {
+    it('restores the query on load and preserves suffixes when normalizing', () => {
+      Object.defineProperty(window, 'location', {
+        value: { pathname: '/settings/main', search: '?tab=location', hash: '#map' },
+        writable: true,
+        configurable: true,
+      });
+      const nav = createNavigation();
+      expect(nav.currentPath).toBe('/ui/settings/main');
+      expect(nav.currentSearch).toBe('?tab=location');
+      expect(window.history.replaceState).toHaveBeenCalledWith(
+        {},
+        '',
+        '/ui/settings/main?tab=location#map'
+      );
+    });
+
+    it('maps the backend login redirect to the login route and keeps the query', () => {
+      Object.defineProperty(window, 'location', {
+        value: { pathname: '/login', search: '?redirect=%2Fui%2Fsettings', hash: '' },
+        writable: true,
+        configurable: true,
+      });
+      const nav = createNavigation();
+      expect(nav.currentPath).toBe('/ui/login');
+      expect(nav.currentSearch).toBe('?redirect=%2Fui%2Fsettings');
+      expect(window.history.replaceState).toHaveBeenCalledWith(
+        {},
+        '',
+        '/ui/login?redirect=%2Fui%2Fsettings'
+      );
+    });
+
     it('should initialize with normalized path', () => {
       Object.defineProperty(window, 'location', {
-        value: { pathname: '/ui/dashboard' },
+        value: { pathname: '/ui/dashboard', search: '', hash: '' },
         writable: true,
         configurable: true,
       });
@@ -195,7 +284,7 @@ describe('navigation store', () => {
 
     it('should normalize root path on initialization', () => {
       Object.defineProperty(window, 'location', {
-        value: { pathname: '/' },
+        value: { pathname: '/', search: '', hash: '' },
         writable: true,
         configurable: true,
       });
@@ -221,6 +310,9 @@ describe('navigation store with proxy prefix', () => {
       writable: true,
       configurable: true,
     });
+    // clearAllMocks keeps implementations, so restore the prefix a test may have set.
+    vi.mocked(getAppBasePath).mockImplementation(() => '');
+    vi.mocked(buildAppUrl).mockImplementation((path: string) => path);
     vi.resetModules();
   });
 
@@ -231,7 +323,7 @@ describe('navigation store with proxy prefix', () => {
     vi.mocked(buildAppUrl).mockImplementation((path: string) => `/proxy${path}`);
 
     Object.defineProperty(window, 'location', {
-      value: { pathname: '/proxy/ui/dashboard' },
+      value: { pathname: '/proxy/ui/dashboard', search: '', hash: '' },
       writable: true,
       configurable: true,
     });
@@ -250,7 +342,7 @@ describe('navigation store with proxy prefix', () => {
     vi.mocked(buildAppUrl).mockImplementation((path: string) => `/proxy${path}`);
 
     Object.defineProperty(window, 'location', {
-      value: { pathname: '/proxy/ui/dashboard' },
+      value: { pathname: '/proxy/ui/dashboard', search: '', hash: '' },
       writable: true,
       configurable: true,
     });
@@ -268,5 +360,151 @@ describe('navigation store with proxy prefix', () => {
       '',
       '/proxy/ui/detections/123?tab=review'
     );
+  });
+  it('maps a prefixed login redirect to the prefixed login route', async () => {
+    const { buildAppUrl, getAppBasePath } = await import('$lib/utils/urlHelpers');
+    vi.mocked(getAppBasePath).mockImplementation(() => '/proxy');
+    vi.mocked(buildAppUrl).mockImplementation((path: string) => `/proxy${path}`);
+    Object.defineProperty(window, 'location', {
+      value: { pathname: '/proxy/login', search: '?redirect=%2Fui%2Fsettings', hash: '' },
+      writable: true,
+      configurable: true,
+    });
+
+    const nav = createNavigation();
+
+    expect(nav.currentPath).toBe('/ui/login');
+    expect(window.history.replaceState).toHaveBeenCalledWith(
+      {},
+      '',
+      '/proxy/ui/login?redirect=%2Fui%2Fsettings'
+    );
+  });
+});
+
+const PAGES = ['/ui/settings/audio', '/ui/system/database', '/ui/detections/123'];
+const ROOTS = ['/ui', '/ui/', '/ui//'];
+const TRAILING_SLASH_VARIANTS = ['', '/', '//'];
+const QUERY_AND_HASH = '?tab=recording#details';
+const PROXY_PREFIX = '/proxy';
+const DEFAULT_PATH = '/ui/dashboard';
+
+type PrefixCase = { name: string; prefix: string };
+const PREFIX_CASES: PrefixCase[] = [
+  { name: 'without a base path', prefix: '' },
+  { name: 'with a configured base path', prefix: PROXY_PREFIX },
+];
+
+function setLocation(pathname: string, search = '', hash = ''): void {
+  Object.defineProperty(window, 'location', {
+    value: { pathname, search, hash },
+    writable: true,
+    configurable: true,
+  });
+}
+
+type Nav = ReturnType<typeof createNavigation>;
+
+// Each entry point receives a URL (proxy prefix and trailing slashes included) and
+// returns the store it ended up in.
+const ENTRY_POINTS: [string, (url: string) => Nav][] = [
+  [
+    'initial load',
+    url => {
+      setLocation(url);
+      return createNavigation();
+    },
+  ],
+  [
+    'navigate',
+    url => {
+      const nav = createNavigation();
+      nav.navigate(url);
+      return nav;
+    },
+  ],
+  [
+    'redirect',
+    url => {
+      const nav = createNavigation();
+      nav.redirect(url);
+      return nav;
+    },
+  ],
+  [
+    'popstate',
+    url => {
+      const nav = createNavigation();
+      setLocation(url);
+      nav.handlePopState();
+      return nav;
+    },
+  ],
+];
+
+describe('navigation store canonical paths', () => {
+  const originalLocation = window.location;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(window.history, 'pushState').mockImplementation(() => {});
+    vi.spyOn(window.history, 'replaceState').mockImplementation(() => {});
+    setLocation(DEFAULT_PATH);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, 'location', {
+      value: originalLocation,
+      writable: true,
+      configurable: true,
+    });
+    vi.mocked(getAppBasePath).mockImplementation(() => '');
+    vi.mocked(buildAppUrl).mockImplementation((path: string) => path);
+  });
+
+  describe.each(PREFIX_CASES)('$name', ({ prefix }) => {
+    beforeEach(() => {
+      vi.mocked(getAppBasePath).mockImplementation(() => prefix);
+      vi.mocked(buildAppUrl).mockImplementation((path: string) => `${prefix}${path}`);
+    });
+
+    describe.each(ENTRY_POINTS)('%s', (_entry, enter) => {
+      it.each(PAGES.flatMap(page => TRAILING_SLASH_VARIANTS.map(slashes => [page, slashes])))(
+        'canonicalizes %s with trailing %j',
+        (page, slashes) => {
+          expect(enter(`${prefix}${page}${slashes}`).currentPath).toBe(page);
+        }
+      );
+
+      it.each(ROOTS)('gives the default path for %s', root => {
+        expect(enter(`${prefix}${root}`).currentPath).toBe(DEFAULT_PATH);
+      });
+    });
+
+    it('drops trailing slashes from the address bar and keeps query and hash', () => {
+      const page = PAGES[0];
+      setLocation(`${prefix}${page}//`, '?tab=recording', '#details');
+      createNavigation();
+      expect(window.history.replaceState).toHaveBeenCalledWith(
+        {},
+        '',
+        `${prefix}${page}${QUERY_AND_HASH}`
+      );
+
+      const nav = createNavigation();
+      nav.navigate(`${prefix}${page}/${QUERY_AND_HASH}`);
+      expect(nav.currentSearch).toBe('?tab=recording');
+      expect(window.history.pushState).toHaveBeenCalledWith(
+        {},
+        '',
+        `${prefix}${page}${QUERY_AND_HASH}`
+      );
+    });
+  });
+
+  it('gives the default path for a bare root with extra slashes', () => {
+    const nav = createNavigation();
+    nav.navigate('//');
+    expect(nav.currentPath).toBe(DEFAULT_PATH);
   });
 });

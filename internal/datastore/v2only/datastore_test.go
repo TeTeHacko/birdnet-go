@@ -3,18 +3,23 @@ package v2only
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	speciestracker "github.com/tphakala/birdnet-go/internal/analysis/species"
+	"github.com/tphakala/birdnet-go/internal/conf"
 	"github.com/tphakala/birdnet-go/internal/datastore"
 	v2 "github.com/tphakala/birdnet-go/internal/datastore/v2"
 	"github.com/tphakala/birdnet-go/internal/datastore/v2/entities"
 	"github.com/tphakala/birdnet-go/internal/datastore/v2/repository"
+	"github.com/tphakala/birdnet-go/internal/detection"
 	"github.com/tphakala/birdnet-go/internal/errors"
 	"github.com/tphakala/birdnet-go/internal/logger"
+	"github.com/tphakala/birdnet-go/internal/speciesindex"
 )
 
 // buildTestConfig constructs the shared repositories and Config for in-memory test datastores.
@@ -29,9 +34,9 @@ func buildTestConfig(t *testing.T, labels []string) (cfg *Config, cleanup func()
 
 	// Create SQLite manager
 	manager, err := v2.NewSQLiteManager(v2.Config{
-		DataDir: tempDir,
-		Debug:   false,
-		Logger:  testLogger,
+		ConfiguredPath: filepath.Join(tempDir, "birdnet.db"),
+		Debug:          false,
+		Logger:         testLogger,
 	})
 	require.NoError(t, err)
 
@@ -83,7 +88,7 @@ func buildConfigForManager(t *testing.T, manager v2.Manager, testLogger logger.L
 	sourceRepo := repository.NewAudioSourceRepository(db, nil, false, isMySQL)
 	weatherRepo := repository.NewWeatherRepository(db, nil, false, isMySQL)
 	imageCacheRepo := repository.NewImageCacheRepository(db, nil, labelRepo, false, isMySQL)
-	thresholdRepo := repository.NewDynamicThresholdRepository(db, nil, labelRepo, false, isMySQL)
+	thresholdRepo := repository.NewDynamicThresholdRepository(db, nil, false, isMySQL)
 	notificationRepo := repository.NewNotificationHistoryRepository(db, nil, labelRepo, false, isMySQL)
 
 	return &Config{
@@ -111,7 +116,7 @@ func setupTestDatastore(t *testing.T) (ds *Datastore, cleanup func()) {
 	cfg, cfgCleanup := buildTestConfig(t, nil)
 	ds, err := New(cfg)
 	require.NoError(t, err)
-	return ds, func() { _ = ds.Close(); cfgCleanup() }
+	return ds, func() { assert.NoError(t, ds.Close()); cfgCleanup() } // nolint:testifylint // assert not require: cfgCleanup must still run if Close errors; require would Goexit and skip it
 }
 
 // setupTestDatastoreWithLabels creates a V2OnlyDatastore with species label mappings for testing.
@@ -122,7 +127,7 @@ func setupTestDatastoreWithLabels(t *testing.T, labels []string) (ds *Datastore,
 	cfg, cfgCleanup := buildTestConfig(t, labels)
 	ds, err := New(cfg)
 	require.NoError(t, err)
-	return ds, func() { _ = ds.Close(); cfgCleanup() }
+	return ds, func() { assert.NoError(t, ds.Close()); cfgCleanup() } // nolint:testifylint // assert not require: cfgCleanup must still run if Close errors; require would Goexit and skip it
 }
 
 // seedDetection creates (or reuses) a label for sciName and inserts one detection
@@ -228,10 +233,176 @@ func TestV2OnlyDatastore_GetSpeciesLastDetectionDateBefore(t *testing.T) {
 		assert.Empty(t, got)
 	})
 
+	t.Run("sound class name does not prefix-match a longer class", func(t *testing.T) {
+		seedDetection(t, ds, "Car", day(9))
+		seedDetection(t, ds, "Car_passing_by", day(12))
+
+		got, err := ds.GetSpeciesLastDetectionDateBefore(ctx, "Car", cutoff)
+		require.NoError(t, err)
+		assert.Equal(t, "2024-06-09", got)
+
+		got, err = ds.GetSpeciesLastDetectionDateBefore(ctx, "Car_passing_by", cutoff)
+		require.NoError(t, err)
+		assert.Equal(t, "2024-06-12", got)
+	})
+
+	t.Run("single-token class without a longer sibling keeps the legacy prefix match", func(t *testing.T) {
+		seedDetection(t, ds, "Dog_Dog", day(8))
+
+		got, err := ds.GetSpeciesLastDetectionDateBefore(ctx, "Dog", cutoff)
+		require.NoError(t, err)
+		assert.Equal(t, "2024-06-08", got)
+	})
+
 	t.Run("returns empty for an unknown species", func(t *testing.T) {
 		got, err := ds.GetSpeciesLastDetectionDateBefore(ctx, "Nonexistent species", cutoff)
 		require.NoError(t, err)
 		assert.Empty(t, got)
+	})
+}
+
+// TestV2OnlyDatastore_GetSpeciesFirstAndLastDetectionTimeBefore pins the
+// first/last previous-detection query used by the MQTT payload: the strict
+// before bound (the current detection is excluded), the legacy
+// concatenated-label match, false-positive exclusion, and the nil semantics
+// for a species with no prior detections.
+func TestV2OnlyDatastore_GetSpeciesFirstAndLastDetectionTimeBefore(t *testing.T) {
+	t.Parallel()
+
+	ds, cleanup := setupTestDatastore(t)
+	defer cleanup()
+	ds.timezone = time.UTC
+	ctx := t.Context()
+
+	before := time.Date(2024, 6, 15, 12, 0, 0, 0, time.UTC)
+	day := func(d int, h int) time.Time { return time.Date(2024, 6, d, h, 30, 0, 0, time.UTC) }
+
+	t.Run("returns earliest and most-recent prior detections", func(t *testing.T) {
+		seedDetection(t, ds, "Turdus merula", day(10, 8))
+		seedDetection(t, ds, "Turdus merula", day(13, 18))
+		seedDetection(t, ds, "Turdus merula", day(20, 9)) // on/after before: excluded
+
+		first, last, err := ds.GetSpeciesFirstAndLastDetectionTimeBefore(ctx, "Turdus merula", before)
+		require.NoError(t, err)
+		require.NotNil(t, first)
+		require.NotNil(t, last)
+		assert.Equal(t, day(10, 8), *first)
+		assert.Equal(t, day(13, 18), *last)
+	})
+
+	t.Run("first and last are equal with a single prior detection", func(t *testing.T) {
+		seedDetection(t, ds, "Erithacus rubecula", day(11, 6))
+
+		first, last, err := ds.GetSpeciesFirstAndLastDetectionTimeBefore(ctx, "Erithacus rubecula", before)
+		require.NoError(t, err)
+		require.NotNil(t, first)
+		require.NotNil(t, last)
+		assert.Equal(t, *first, *last)
+		assert.Equal(t, day(11, 6), *first)
+	})
+
+	t.Run("returns nils when the only detection is on or after the bound", func(t *testing.T) {
+		seedDetection(t, ds, "Strix aluco", day(20, 9))
+
+		first, last, err := ds.GetSpeciesFirstAndLastDetectionTimeBefore(ctx, "Strix aluco", before)
+		require.NoError(t, err)
+		assert.Nil(t, first)
+		assert.Nil(t, last)
+	})
+
+	t.Run("excludes a detection at exactly the bound instant", func(t *testing.T) {
+		seedDetection(t, ds, "Cyanistes caeruleus", before)
+
+		first, last, err := ds.GetSpeciesFirstAndLastDetectionTimeBefore(ctx, "Cyanistes caeruleus", before)
+		require.NoError(t, err)
+		assert.Nil(t, first)
+		assert.Nil(t, last)
+	})
+
+	t.Run("matches a legacy concatenated label via the LIKE prefix", func(t *testing.T) {
+		seedDetection(t, ds, "Passer domesticus_tikataikka", day(11, 7))
+
+		first, last, err := ds.GetSpeciesFirstAndLastDetectionTimeBefore(ctx, "Passer domesticus", before)
+		require.NoError(t, err)
+		require.NotNil(t, first)
+		require.NotNil(t, last)
+		assert.Equal(t, day(11, 7), *first)
+		assert.Equal(t, day(11, 7), *last)
+	})
+
+	t.Run("excludes detections reviewed as false positive", func(t *testing.T) {
+		det := seedDetection(t, ds, "Fringilla coelebs", day(10, 8))
+		require.NoError(t, ds.manager.DB().Create(&entities.DetectionReview{
+			DetectionID: det.ID,
+			Verified:    entities.VerificationFalsePositive,
+		}).Error)
+
+		first, last, err := ds.GetSpeciesFirstAndLastDetectionTimeBefore(ctx, "Fringilla coelebs", before)
+		require.NoError(t, err)
+		assert.Nil(t, first)
+		assert.Nil(t, last)
+	})
+
+	t.Run("each bound skips false positives but keeps reviewed-correct detections", func(t *testing.T) {
+		// Both ends of the range are false positives, so each bound must skip
+		// its own end. The newest genuine detection carries a "correct" review,
+		// which must not be excluded along with the false positives.
+		review := func(ts time.Time, status entities.VerificationStatus) {
+			t.Helper()
+			det := seedDetection(t, ds, "Sylvia atricapilla", ts)
+			require.NoError(t, ds.manager.DB().Create(&entities.DetectionReview{
+				DetectionID: det.ID,
+				Verified:    status,
+			}).Error)
+		}
+		review(day(9, 8), entities.VerificationFalsePositive)
+		seedDetection(t, ds, "Sylvia atricapilla", day(10, 8))
+		seedDetection(t, ds, "Sylvia atricapilla", day(12, 8))
+		review(day(13, 8), entities.VerificationCorrect)
+		review(day(14, 8), entities.VerificationFalsePositive)
+
+		first, last, err := ds.GetSpeciesFirstAndLastDetectionTimeBefore(ctx, "Sylvia atricapilla", before)
+		require.NoError(t, err)
+		require.NotNil(t, first)
+		require.NotNil(t, last)
+		assert.Equal(t, day(10, 8), *first)
+		assert.Equal(t, day(13, 8), *last)
+	})
+
+	t.Run("sound class name does not prefix-match a longer class", func(t *testing.T) {
+		seedDetection(t, ds, "Car", day(9, 7))
+		seedDetection(t, ds, "Car_passing_by", day(12, 7))
+
+		first, last, err := ds.GetSpeciesFirstAndLastDetectionTimeBefore(ctx, "Car", before)
+		require.NoError(t, err)
+		require.NotNil(t, first)
+		require.NotNil(t, last)
+		assert.Equal(t, day(9, 7), *first)
+		assert.Equal(t, day(9, 7), *last)
+
+		first, last, err = ds.GetSpeciesFirstAndLastDetectionTimeBefore(ctx, "Car_passing_by", before)
+		require.NoError(t, err)
+		require.NotNil(t, first)
+		require.NotNil(t, last)
+		assert.Equal(t, day(12, 7), *first)
+		assert.Equal(t, day(12, 7), *last)
+	})
+
+	t.Run("single-token class without a longer sibling keeps the legacy prefix match", func(t *testing.T) {
+		seedDetection(t, ds, "Dog_Dog", day(8, 7))
+
+		first, last, err := ds.GetSpeciesFirstAndLastDetectionTimeBefore(ctx, "Dog", before)
+		require.NoError(t, err)
+		require.NotNil(t, first)
+		require.NotNil(t, last)
+		assert.Equal(t, day(8, 7), *first)
+	})
+
+	t.Run("returns nils for an unknown species", func(t *testing.T) {
+		first, last, err := ds.GetSpeciesFirstAndLastDetectionTimeBefore(ctx, "Nonexistent species", before)
+		require.NoError(t, err)
+		assert.Nil(t, first)
+		assert.Nil(t, last)
 	})
 }
 
@@ -246,21 +417,6 @@ func (r nilInjectingLabelRepository) GetByIDs(ctx context.Context, ids []uint) (
 	}
 	labels[0] = nil
 	return labels, nil
-}
-
-// errInjectingThresholdRepository wraps a DynamicThresholdRepository and forces
-// GetThresholdEvents to fail for one species, used to prove the second
-// (scientific-name) query error is propagated rather than swallowed.
-type errInjectingThresholdRepository struct {
-	repository.DynamicThresholdRepository
-	failOnSpecies string
-}
-
-func (r errInjectingThresholdRepository) GetThresholdEvents(ctx context.Context, speciesName string, limit int) ([]entities.ThresholdEvent, error) {
-	if speciesName == r.failOnSpecies {
-		return nil, fmt.Errorf("injected DB failure for %q", speciesName)
-	}
-	return r.DynamicThresholdRepository.GetThresholdEvents(ctx, speciesName, limit)
 }
 
 func TestV2OnlyDatastore_Open(t *testing.T) {
@@ -400,11 +556,9 @@ func TestV2OnlyDatastore_DynamicThreshold(t *testing.T) {
 	ds, cleanup := setupTestDatastore(t)
 	defer cleanup()
 
-	// Note: With LabelID normalization, lookups are now by scientific name.
-	// The SpeciesName field is still populated from the Label for compatibility.
 	threshold := &datastore.DynamicThreshold{
-		SpeciesName:    "Passer domesticus", // Will be derived from Label
-		ScientificName: "Passer domesticus",
+		SpeciesName:    "great tit",
+		ScientificName: "Parus major",
 		Level:          1,
 		CurrentValue:   0.7,
 		BaseThreshold:  0.6,
@@ -421,11 +575,11 @@ func TestV2OnlyDatastore_DynamicThreshold(t *testing.T) {
 	err := ds.SaveDynamicThreshold(threshold)
 	require.NoError(t, err)
 
-	// Get threshold by scientific name
-	retrieved, err := ds.GetDynamicThreshold("Passer domesticus", "")
+	// Get threshold by common name
+	retrieved, err := ds.GetDynamicThreshold("great tit")
 	require.NoError(t, err)
-	assert.Equal(t, "passer domesticus", retrieved.SpeciesName)
-	assert.Equal(t, "Passer domesticus", retrieved.ScientificName)
+	assert.Equal(t, "great tit", retrieved.SpeciesName)
+	assert.Equal(t, "Parus major", retrieved.ScientificName)
 	assert.Equal(t, 1, retrieved.Level)
 	assert.InDelta(t, 0.7, retrieved.CurrentValue, 0.001)
 
@@ -433,9 +587,11 @@ func TestV2OnlyDatastore_DynamicThreshold(t *testing.T) {
 	all, err := ds.GetAllDynamicThresholds()
 	require.NoError(t, err)
 	assert.Len(t, all, 1)
+	assert.Equal(t, "great tit", all[0].SpeciesName)
+	assert.Equal(t, "Parus major", all[0].ScientificName)
 
-	// Delete threshold by scientific name
-	err = ds.DeleteDynamicThreshold("Passer domesticus")
+	// Delete threshold by common name
+	err = ds.DeleteDynamicThreshold("great tit")
 	require.NoError(t, err)
 
 	// Verify deletion
@@ -445,19 +601,14 @@ func TestV2OnlyDatastore_DynamicThreshold(t *testing.T) {
 }
 
 // TestV2OnlyDatastore_DynamicThreshold_CommonNameDisplay verifies that
-// GetDynamicThreshold and GetAllDynamicThresholds return common names
-// in SpeciesName when a label mapping exists (Bug 1 fix).
+// SpeciesName round-trips as the stored lowercase common name and
+// ScientificName round-trips as stored metadata.
 func TestV2OnlyDatastore_DynamicThreshold_CommonNameDisplay(t *testing.T) {
-	labels := []string{
-		"Parus major_Great Tit",
-		"Turdus merula_Eurasian Blackbird",
-	}
-	ds, cleanup := setupTestDatastoreWithLabels(t, labels)
+	ds, cleanup := setupTestDatastore(t)
 	defer cleanup()
 
-	// Save threshold using scientific name (as the processor does)
 	threshold := &datastore.DynamicThreshold{
-		SpeciesName:    "Parus major",
+		SpeciesName:    "great tit",
 		ScientificName: "Parus major",
 		Level:          2,
 		CurrentValue:   0.5,
@@ -473,35 +624,29 @@ func TestV2OnlyDatastore_DynamicThreshold_CommonNameDisplay(t *testing.T) {
 	err := ds.SaveDynamicThreshold(threshold)
 	require.NoError(t, err)
 
-	// GetDynamicThreshold should return common name in SpeciesName
-	retrieved, err := ds.GetDynamicThreshold("Parus major", "")
+	// GetDynamicThreshold should return lowercase common name and stored scientific name
+	retrieved, err := ds.GetDynamicThreshold("great tit")
 	require.NoError(t, err)
-	assert.Equal(t, "great tit", retrieved.SpeciesName, "SpeciesName should be common name")
-	assert.Equal(t, "Parus major", retrieved.ScientificName, "ScientificName should stay scientific")
+	assert.Equal(t, "great tit", retrieved.SpeciesName)
+	assert.Equal(t, "Parus major", retrieved.ScientificName)
 
-	// GetAllDynamicThresholds should also return common name
+	// GetAllDynamicThresholds should also return lowercase common name and stored scientific name
 	all, err := ds.GetAllDynamicThresholds()
 	require.NoError(t, err)
 	require.Len(t, all, 1)
-	assert.Equal(t, "great tit", all[0].SpeciesName, "SpeciesName should be common name in list")
-	assert.Equal(t, "Parus major", all[0].ScientificName, "ScientificName should stay scientific in list")
+	assert.Equal(t, "great tit", all[0].SpeciesName)
+	assert.Equal(t, "Parus major", all[0].ScientificName)
 }
 
-// TestV2OnlyDatastore_DynamicThreshold_ModelName verifies that
-// GetAllDynamicThresholds and GetDynamicThreshold return ModelName
-// constructed from the Label's AIModel (e.g., "BirdNET_V2.4").
-// Regression test for GitHub issue #2902.
-func TestV2OnlyDatastore_DynamicThreshold_ModelName(t *testing.T) {
-	labels := []string{
-		"Parus major_Great Tit",
-	}
-	ds, cleanup := setupTestDatastoreWithLabels(t, labels)
+// TestV2OnlyDatastore_DynamicThreshold_SpeciesNameRetrieval verifies that
+// GetAllDynamicThresholds and GetDynamicThreshold return lowercase common names.
+func TestV2OnlyDatastore_DynamicThreshold_SpeciesNameRetrieval(t *testing.T) {
+	ds, cleanup := setupTestDatastore(t)
 	defer cleanup()
 
 	threshold := &datastore.DynamicThreshold{
-		SpeciesName:    "Parus major",
+		SpeciesName:    "great tit",
 		ScientificName: "Parus major",
-		ModelName:      "BirdNET_V2.4",
 		Level:          2,
 		CurrentValue:   0.5,
 		BaseThreshold:  0.8,
@@ -516,38 +661,30 @@ func TestV2OnlyDatastore_DynamicThreshold_ModelName(t *testing.T) {
 	err := ds.SaveDynamicThreshold(threshold)
 	require.NoError(t, err)
 
-	// GetAllDynamicThresholds must return non-empty ModelName
+	// GetAllDynamicThresholds must return lowercase common name
 	all, err := ds.GetAllDynamicThresholds()
 	require.NoError(t, err)
 	require.Len(t, all, 1)
-	assert.Equal(t, "BirdNET_V2.4", all[0].ModelName,
-		"ModelName must be constructed from Label's Model (Name_VVersion)")
 	assert.Equal(t, "great tit", all[0].SpeciesName,
-		"SpeciesName must be lowercase to match processor convention")
+		"SpeciesName must be lowercase")
+	assert.Equal(t, "Parus major", all[0].ScientificName)
 
-	// GetDynamicThreshold (single lookup) must also return ModelName
-	single, err := ds.GetDynamicThreshold("Parus major", "")
+	// GetDynamicThreshold (single lookup) must also return lowercase common name
+	single, err := ds.GetDynamicThreshold("great tit")
 	require.NoError(t, err)
-	assert.Equal(t, "BirdNET_V2.4", single.ModelName,
-		"Single lookup must also return ModelName")
 	assert.Equal(t, "great tit", single.SpeciesName,
 		"Single lookup SpeciesName must be lowercase")
+	assert.Equal(t, "Parus major", single.ScientificName)
 }
 
 // TestV2OnlyDatastore_DynamicThreshold_DeleteByCommonName verifies that
-// DeleteDynamicThreshold works when called with a common name (Bug 2 fix).
-// The processor uses lowercase common names as map keys and passes them
-// to the datastore's delete method.
+// DeleteDynamicThreshold deletes by common name.
 func TestV2OnlyDatastore_DynamicThreshold_DeleteByCommonName(t *testing.T) {
-	labels := []string{
-		"Parus major_Great Tit",
-	}
-	ds, cleanup := setupTestDatastoreWithLabels(t, labels)
+	ds, cleanup := setupTestDatastore(t)
 	defer cleanup()
 
-	// Save threshold with scientific name
 	threshold := &datastore.DynamicThreshold{
-		SpeciesName:    "Parus major",
+		SpeciesName:    "great tit",
 		ScientificName: "Parus major",
 		Level:          1,
 		CurrentValue:   0.6,
@@ -566,7 +703,7 @@ func TestV2OnlyDatastore_DynamicThreshold_DeleteByCommonName(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, all, 1)
 
-	// Delete using lowercase common name (what the processor sends after Bug 1 fix)
+	// Delete using common name
 	err = ds.DeleteDynamicThreshold("great tit")
 	require.NoError(t, err)
 
@@ -576,18 +713,14 @@ func TestV2OnlyDatastore_DynamicThreshold_DeleteByCommonName(t *testing.T) {
 	assert.Empty(t, all, "threshold should be deleted when using common name")
 }
 
-// TestV2OnlyDatastore_DynamicThreshold_GetByCommonName verifies that
-// GetDynamicThreshold works when called with a common name.
+// TestV2OnlyDatastore_DynamicThreshold_GetByCommonName verifies case-insensitive
+// retrieval of dynamic thresholds.
 func TestV2OnlyDatastore_DynamicThreshold_GetByCommonName(t *testing.T) {
-	labels := []string{
-		"Parus major_Great Tit",
-	}
-	ds, cleanup := setupTestDatastoreWithLabels(t, labels)
+	ds, cleanup := setupTestDatastore(t)
 	defer cleanup()
 
-	// Save threshold with scientific name
 	threshold := &datastore.DynamicThreshold{
-		SpeciesName:    "Parus major",
+		SpeciesName:    "great tit",
 		ScientificName: "Parus major",
 		Level:          1,
 		CurrentValue:   0.6,
@@ -601,23 +734,44 @@ func TestV2OnlyDatastore_DynamicThreshold_GetByCommonName(t *testing.T) {
 	err := ds.SaveDynamicThreshold(threshold)
 	require.NoError(t, err)
 
-	// Retrieve using lowercase common name
-	retrieved, err := ds.GetDynamicThreshold("great tit", "")
+	// Retrieve using mixed-case common name
+	retrieved, err := ds.GetDynamicThreshold("Great Tit")
 	require.NoError(t, err)
 	assert.Equal(t, "great tit", retrieved.SpeciesName)
 	assert.Equal(t, "Parus major", retrieved.ScientificName)
 }
 
 // TestV2OnlyDatastore_DynamicThreshold_FallbackWithoutMapping verifies that
-// when no label mapping exists, SpeciesName falls back to scientific name
-// (existing behavior preserved).
+// with no name maps configured, a stored empty ScientificName stays empty,
+// while a stored non-empty ScientificName round-trips.
 func TestV2OnlyDatastore_DynamicThreshold_FallbackWithoutMapping(t *testing.T) {
-	// No labels - empty maps
 	ds, cleanup := setupTestDatastore(t)
 	defer cleanup()
 
-	threshold := &datastore.DynamicThreshold{
-		SpeciesName:    "Passer domesticus",
+	// Case 1: Stored empty ScientificName stays empty
+	emptySci := &datastore.DynamicThreshold{
+		SpeciesName:    "great tit",
+		ScientificName: "",
+		Level:          1,
+		CurrentValue:   0.7,
+		BaseThreshold:  0.6,
+		ValidHours:     24,
+		ExpiresAt:      time.Now().Add(24 * time.Hour),
+		LastTriggered:  time.Now(),
+		FirstCreated:   time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	err := ds.SaveDynamicThreshold(emptySci)
+	require.NoError(t, err)
+
+	retrievedEmpty, err := ds.GetDynamicThreshold("great tit")
+	require.NoError(t, err)
+	assert.Equal(t, "great tit", retrievedEmpty.SpeciesName)
+	assert.Empty(t, retrievedEmpty.ScientificName, "stored empty scientific name should stay empty without name maps")
+
+	// Case 2: Stored non-empty ScientificName round-trips
+	withSci := &datastore.DynamicThreshold{
+		SpeciesName:    "house sparrow",
 		ScientificName: "Passer domesticus",
 		Level:          1,
 		CurrentValue:   0.7,
@@ -628,25 +782,23 @@ func TestV2OnlyDatastore_DynamicThreshold_FallbackWithoutMapping(t *testing.T) {
 		FirstCreated:   time.Now(),
 		UpdatedAt:      time.Now(),
 	}
-	err := ds.SaveDynamicThreshold(threshold)
+	err = ds.SaveDynamicThreshold(withSci)
 	require.NoError(t, err)
 
-	// Without label mapping, should fall back to scientific name
-	retrieved, err := ds.GetDynamicThreshold("Passer domesticus", "")
+	retrievedWith, err := ds.GetDynamicThreshold("house sparrow")
 	require.NoError(t, err)
-	assert.Equal(t, "passer domesticus", retrieved.SpeciesName, "should fallback to scientific name")
-	assert.Equal(t, "Passer domesticus", retrieved.ScientificName)
+	assert.Equal(t, "house sparrow", retrievedWith.SpeciesName)
+	assert.Equal(t, "Passer domesticus", retrievedWith.ScientificName)
 }
 
 // TestV2OnlyDatastore_DynamicThreshold_UpdateExpiryByCommonName verifies that
 // UpdateDynamicThresholdExpiry works when called with a common name.
 func TestV2OnlyDatastore_DynamicThreshold_UpdateExpiryByCommonName(t *testing.T) {
-	labels := []string{"Parus major_Great Tit"}
-	ds, cleanup := setupTestDatastoreWithLabels(t, labels)
+	ds, cleanup := setupTestDatastore(t)
 	defer cleanup()
 
 	threshold := &datastore.DynamicThreshold{
-		SpeciesName:    "Parus major",
+		SpeciesName:    "great tit",
 		ScientificName: "Parus major",
 		Level:          1,
 		CurrentValue:   0.6,
@@ -666,7 +818,7 @@ func TestV2OnlyDatastore_DynamicThreshold_UpdateExpiryByCommonName(t *testing.T)
 	require.NoError(t, err, "UpdateDynamicThresholdExpiry should work with common name")
 
 	// Verify the expiry was updated
-	retrieved, err := ds.GetDynamicThreshold("Parus major", "")
+	retrieved, err := ds.GetDynamicThreshold("great tit")
 	require.NoError(t, err)
 	assert.WithinDuration(t, newExpiry, retrieved.ExpiresAt, time.Second, "expiry should be updated")
 }
@@ -674,27 +826,9 @@ func TestV2OnlyDatastore_DynamicThreshold_UpdateExpiryByCommonName(t *testing.T)
 // TestV2OnlyDatastore_DynamicThreshold_DeleteEventsByCommonName verifies that
 // DeleteThresholdEvents works when called with a common name.
 func TestV2OnlyDatastore_DynamicThreshold_DeleteEventsByCommonName(t *testing.T) {
-	labels := []string{"Parus major_Great Tit"}
-	ds, cleanup := setupTestDatastoreWithLabels(t, labels)
+	ds, cleanup := setupTestDatastore(t)
 	defer cleanup()
 
-	// Save a threshold first (needed for event's label resolution)
-	threshold := &datastore.DynamicThreshold{
-		SpeciesName:    "Parus major",
-		ScientificName: "Parus major",
-		Level:          1,
-		CurrentValue:   0.6,
-		BaseThreshold:  0.8,
-		ValidHours:     12,
-		ExpiresAt:      time.Now().Add(12 * time.Hour),
-		LastTriggered:  time.Now(),
-		FirstCreated:   time.Now(),
-		UpdatedAt:      time.Now(),
-	}
-	err := ds.SaveDynamicThreshold(threshold)
-	require.NoError(t, err)
-
-	// Save an event using scientific name (as the processor does after #1907)
 	event := &datastore.ThresholdEvent{
 		SpeciesName:    "great tit",
 		ScientificName: "Parus major",
@@ -706,11 +840,11 @@ func TestV2OnlyDatastore_DynamicThreshold_DeleteEventsByCommonName(t *testing.T)
 		Confidence:     0.95,
 		CreatedAt:      time.Now(),
 	}
-	err = ds.SaveThresholdEvent(event)
+	err := ds.SaveThresholdEvent(event)
 	require.NoError(t, err)
 
 	// Verify event exists
-	events, err := ds.GetThresholdEvents("Parus major", 10)
+	events, err := ds.GetThresholdEvents("great tit", 10)
 	require.NoError(t, err)
 	require.NotEmpty(t, events, "event should exist before delete")
 
@@ -719,61 +853,62 @@ func TestV2OnlyDatastore_DynamicThreshold_DeleteEventsByCommonName(t *testing.T)
 	require.NoError(t, err, "DeleteThresholdEvents should work with common name")
 
 	// Verify events are deleted
-	events, err = ds.GetThresholdEvents("Parus major", 10)
+	events, err = ds.GetThresholdEvents("great tit", 10)
 	require.NoError(t, err)
 	assert.Empty(t, events, "events should be deleted when using common name")
 }
 
-// TestV2OnlyDatastore_DeleteThresholdEvents_LegacyCommonNameLabel pins the read/delete
-// symmetry: an event saved under a legacy common-name-shaped label (its scientific_name
-// column actually holds the common name, mimicking pre-#1907 mis-saved data) must
-// be deleted, not just the post-#1907 scientific-name-shaped event. On the pre-fix
-// code DeleteThresholdEvents resolved only to the scientific name, so the legacy
-// event survived and GetThresholdEvents resurfaced it on the next read.
-func TestV2OnlyDatastore_DeleteThresholdEvents_LegacyCommonNameLabel(t *testing.T) {
-	ds, cleanup := setupTestDatastoreWithLabels(t, []string{"Parus major_Great Tit"})
+// TestV2OnlyDatastore_DynamicThreshold_FirstCreatedPreservedOnUpsert verifies that
+// first_created timestamp is preserved across upsert conflicts.
+func TestV2OnlyDatastore_DynamicThreshold_FirstCreatedPreservedOnUpsert(t *testing.T) {
+	ds, cleanup := setupTestDatastore(t)
 	defer cleanup()
 
-	// Legacy mis-saved event: an empty ScientificName forces SaveThresholdEvent's
-	// fallback to use the common name, creating a label whose scientific_name = "great tit".
-	legacy := &datastore.ThresholdEvent{
-		SpeciesName:   "great tit",
-		PreviousLevel: 0,
-		NewLevel:      1,
-		PreviousValue: 0.8,
-		NewValue:      0.6,
-		ChangeReason:  "high_confidence",
-		Confidence:    0.95,
-		CreatedAt:     time.Now(),
-	}
-	require.NoError(t, ds.SaveThresholdEvent(legacy))
+	t0 := time.Now().Add(-72 * time.Hour)
+	t1 := time.Now().Add(-1 * time.Hour)
 
-	// Correctly-shaped event (post-#1907): label scientific_name = "Parus major".
-	correct := &datastore.ThresholdEvent{
-		SpeciesName:    "great tit",
-		ScientificName: "Parus major",
-		PreviousLevel:  1,
-		NewLevel:       2,
-		PreviousValue:  0.6,
-		NewValue:       0.5,
-		ChangeReason:   "high_confidence",
-		Confidence:     0.97,
-		CreatedAt:      time.Now().Add(time.Second),
-	}
-	require.NoError(t, ds.SaveThresholdEvent(correct))
-
-	// The dual-read by common name surfaces both label shapes before delete.
-	events, err := ds.GetThresholdEvents("great tit", 10)
+	err := ds.BatchSaveDynamicThresholds([]datastore.DynamicThreshold{
+		{
+			SpeciesName:    "great tit",
+			ScientificName: "Parus major",
+			Level:          1,
+			CurrentValue:   0.7,
+			BaseThreshold:  0.8,
+			HighConfCount:  1,
+			ValidHours:     24,
+			ExpiresAt:      time.Now().Add(24 * time.Hour),
+			FirstCreated:   t0,
+			LastTriggered:  t1,
+			TriggerCount:   1,
+		},
+	})
 	require.NoError(t, err)
-	require.Len(t, events, 2, "both legacy and correct events should be visible before delete")
 
-	// Delete by common name must remove BOTH shapes (the read/delete symmetry fix).
-	require.NoError(t, ds.DeleteThresholdEvents("great tit"))
+	t2 := time.Now()
+	t3 := time.Now()
 
-	// Nothing should reappear on the next read.
-	events, err = ds.GetThresholdEvents("great tit", 10)
+	err = ds.BatchSaveDynamicThresholds([]datastore.DynamicThreshold{
+		{
+			SpeciesName:    "great tit",
+			ScientificName: "Parus major",
+			Level:          2,
+			CurrentValue:   0.7,
+			BaseThreshold:  0.8,
+			HighConfCount:  1,
+			ValidHours:     24,
+			ExpiresAt:      time.Now().Add(24 * time.Hour),
+			FirstCreated:   t2,
+			LastTriggered:  t3,
+			TriggerCount:   1,
+		},
+	})
 	require.NoError(t, err)
-	assert.Empty(t, events, "legacy common-name event must not survive the delete")
+
+	retrieved, err := ds.GetDynamicThreshold("great tit")
+	require.NoError(t, err)
+	assert.WithinDuration(t, t0, retrieved.FirstCreated, time.Second, "first_created must be preserved across upsert")
+	assert.Equal(t, 2, retrieved.Level)
+	assert.WithinDuration(t, t3, retrieved.LastTriggered, time.Second, "last_triggered must be updated across upsert")
 }
 
 func TestV2OnlyDatastore_ImageCache(t *testing.T) {
@@ -848,17 +983,17 @@ func TestV2OnlyDatastore_NotificationHistory(t *testing.T) {
 	}
 
 	// Save history
-	err := ds.SaveNotificationHistory(history)
+	err := ds.SaveNotificationHistory(t.Context(), history)
 	require.NoError(t, err)
 
 	// Get history
-	retrieved, err := ds.GetNotificationHistory("Passer domesticus", "new_species")
+	retrieved, err := ds.GetNotificationHistory(t.Context(), "Passer domesticus", "new_species")
 	require.NoError(t, err)
 	assert.Equal(t, "Passer domesticus", retrieved.ScientificName)
 	assert.Equal(t, "new_species", retrieved.NotificationType)
 
 	// Get active history
-	active, err := ds.GetActiveNotificationHistory(time.Now().Add(-1 * time.Hour))
+	active, err := ds.GetActiveNotificationHistory(t.Context(), time.Now().Add(-1*time.Hour))
 	require.NoError(t, err)
 	assert.Len(t, active, 1)
 }
@@ -912,12 +1047,12 @@ func TestV2OnlyDatastore_ThresholdReads_ErrorTelemetry(t *testing.T) {
 		// reachable via errors.Is (EnhancedError.Unwrap) and the CategoryNotFound
 		// "dynamic threshold not found" message is suppressed from Sentry, so it is never
 		// surfaced as a database error (#1019).
-		_, err := ds.GetDynamicThreshold("Parus major", "")
+		_, err := ds.GetDynamicThreshold("Parus major")
 		require.Error(t, err)
 		require.ErrorIs(t, err, repository.ErrDynamicThresholdNotFound,
 			"not-found sentinel must propagate so callers can distinguish a benign miss from a genuine DB fault")
-		var ee *errors.EnhancedError
-		require.True(t, errors.As(err, &ee),
+		ee, ok := errors.AsType[*errors.EnhancedError](err)
+		require.True(t, ok,
 			"not-found must be a CategoryNotFound EnhancedError so the API maps it to 404")
 		assert.Equal(t, string(errors.CategoryNotFound), ee.GetCategory(),
 			"not-found must be CategoryNotFound, never CategoryDatabase (which would be Sentry noise)")
@@ -933,13 +1068,13 @@ func TestV2OnlyDatastore_ThresholdReads_ErrorTelemetry(t *testing.T) {
 		assertDatastoreWrapped := func(t *testing.T, err error, op string) {
 			t.Helper()
 			require.Error(t, err, "%s should surface the DB error", op)
-			var ee *errors.EnhancedError
-			require.True(t, errors.As(err, &ee), "%s error must be an EnhancedError", op)
+			ee, ok := errors.AsType[*errors.EnhancedError](err)
+			require.True(t, ok, "%s error must be an EnhancedError", op)
 			assert.Equal(t, "datastore", ee.GetComponent(), "%s must tag datastore component", op)
 			assert.Equal(t, string(errors.CategoryDatabase), ee.GetCategory(), "%s must tag database category", op)
 		}
 
-		_, errGet := ds.GetDynamicThreshold("Parus major", "")
+		_, errGet := ds.GetDynamicThreshold("Parus major")
 		assertDatastoreWrapped(t, errGet, "GetDynamicThreshold")
 
 		_, errAll := ds.GetAllDynamicThresholds()
@@ -953,17 +1088,14 @@ func TestV2OnlyDatastore_ThresholdReads_ErrorTelemetry(t *testing.T) {
 	})
 }
 
-// TestV2OnlyDatastore_ThresholdEvent_ModelName verifies that GetThresholdEvents and
-// GetRecentThresholdEvents return ModelName constructed from the event Label's AIModel
-// (e.g., "BirdNET_V2.4"), the event-side parallel of the GitHub #2902 record fix.
-// Regression test for #1025: events previously returned an empty ModelName because the
-// repository only preloaded Label (not Label.Model) and the converter never set it.
-func TestV2OnlyDatastore_ThresholdEvent_ModelName(t *testing.T) {
-	ds, cleanup := setupTestDatastoreWithLabels(t, []string{"Parus major_Great Tit"})
+// TestV2OnlyDatastore_ThresholdEvent_Retrieval verifies that GetThresholdEvents and
+// GetRecentThresholdEvents return events for the species.
+func TestV2OnlyDatastore_ThresholdEvent_Retrieval(t *testing.T) {
+	ds, cleanup := setupTestDatastore(t)
 	defer cleanup()
 
 	event := &datastore.ThresholdEvent{
-		SpeciesName:   "Parus major",
+		SpeciesName:   "parus major",
 		PreviousLevel: 0,
 		NewLevel:      1,
 		PreviousValue: 0.6,
@@ -974,113 +1106,15 @@ func TestV2OnlyDatastore_ThresholdEvent_ModelName(t *testing.T) {
 	}
 	require.NoError(t, ds.SaveThresholdEvent(event))
 
-	events, err := ds.GetThresholdEvents("Parus major", 10)
+	events, err := ds.GetThresholdEvents("parus major", 10)
 	require.NoError(t, err)
 	require.Len(t, events, 1)
-	assert.Equal(t, "BirdNET_V2.4", events[0].ModelName,
-		"event ModelName must be constructed from the Label's Model (Name_VVersion)")
+	assert.Equal(t, "parus major", events[0].SpeciesName)
 
 	recent, err := ds.GetRecentThresholdEvents(10)
 	require.NoError(t, err)
 	require.Len(t, recent, 1)
-	assert.Equal(t, "BirdNET_V2.4", recent[0].ModelName,
-		"recent event ModelName must be constructed from the Label's Model")
-}
-
-// TestV2OnlyDatastore_GetThresholdEvents_ResolvesScientificName covers the
-// second (scientific-name) query path: a common-name input resolves to a
-// different scientific name, so the merge query runs and finds events stored
-// under the scientific name.
-func TestV2OnlyDatastore_GetThresholdEvents_ResolvesScientificName(t *testing.T) {
-	ds, cleanup := setupTestDatastoreWithLabels(t, []string{"Parus major_Great Tit"})
-	defer cleanup()
-
-	// Save an event under the scientific name (the correctly-saved, post-#1907 shape).
-	event := &datastore.ThresholdEvent{
-		SpeciesName:   "Parus major",
-		PreviousLevel: 0,
-		NewLevel:      1,
-		PreviousValue: 0.6,
-		NewValue:      0.7,
-		ChangeReason:  "high_confidence",
-		Confidence:    0.95,
-		CreatedAt:     time.Now(),
-	}
-	require.NoError(t, ds.SaveThresholdEvent(event))
-
-	// Query by the common name. resolveToScientificName("Great Tit") -> "Parus major",
-	// so the second query runs and finds the event stored under the scientific name.
-	events, err := ds.GetThresholdEvents("Great Tit", 10)
-	require.NoError(t, err)
-	require.Len(t, events, 1)
-	assert.Equal(t, "Parus major", events[0].SpeciesName)
-}
-
-// TestV2OnlyDatastore_GetThresholdEvents_SecondQueryError pins the #1010 fix:
-// a DB failure on the second (scientific-name) query must surface, not be
-// swallowed and returned as an empty/partial success.
-func TestV2OnlyDatastore_GetThresholdEvents_SecondQueryError(t *testing.T) {
-	cfg, cfgCleanup := buildTestConfig(t, []string{"Parus major_Great Tit"})
-	defer cfgCleanup()
-
-	// Fail only the scientific-name (second) query; the common-name (first)
-	// query still succeeds, isolating the previously-swallowed error path.
-	cfg.Threshold = errInjectingThresholdRepository{
-		DynamicThresholdRepository: cfg.Threshold,
-		failOnSpecies:              "Parus major",
-	}
-
-	ds, err := New(cfg)
-	require.NoError(t, err)
-	defer func() { _ = ds.Close() }()
-
-	// resolveToScientificName("Great Tit") -> "Parus major", so the second query
-	// runs and the injected error must propagate. Assert on the injected message so
-	// the test pins the second (scientific-name) query as the failing one, not just
-	// any error.
-	_, err = ds.GetThresholdEvents("Great Tit", 10)
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "injected DB failure")
-}
-
-// TestV2OnlyDatastore_GetThresholdEvents_SameTimestampTieBreak pins the
-// CreatedAt/ID sort tie-break. The per-query LIMIT is applied in SQL, so a
-// single query cannot exercise the Go-side sort; the tie-break only governs how
-// the MERGED result of the two queries (common-name + scientific-name) is
-// truncated. We store one event found by Query 1 (a legacy common-name label)
-// and one found by Query 2 (the resolved scientific name) sharing a timestamp,
-// then assert the higher-ID event wins truncation to one row.
-func TestV2OnlyDatastore_GetThresholdEvents_SameTimestampTieBreak(t *testing.T) {
-	ds, cleanup := setupTestDatastoreWithLabels(t, []string{"Parus major_Great Tit"})
-	defer cleanup()
-
-	ts := time.Now()
-	// Query 1 finds this event (label scientific_name == the common-name input).
-	require.NoError(t, ds.SaveThresholdEvent(&datastore.ThresholdEvent{
-		SpeciesName: "Great Tit", NewLevel: 1, NewValue: 0.7, ChangeReason: "legacy", Confidence: 0.95, CreatedAt: ts,
-	}))
-	// Query 2 finds this event (label scientific_name == resolved scientific name).
-	require.NoError(t, ds.SaveThresholdEvent(&datastore.ThresholdEvent{
-		SpeciesName: "Parus major", NewLevel: 1, NewValue: 0.7, ChangeReason: "correct", Confidence: 0.95, CreatedAt: ts,
-	}))
-
-	// Both events come back from the merge; learn the higher ID (saved second).
-	all, err := ds.GetThresholdEvents("Great Tit", 10)
-	require.NoError(t, err)
-	require.Len(t, all, 2)
-	maxID := all[0].ID
-	for _, e := range all[1:] {
-		if e.ID > maxID {
-			maxID = e.ID
-		}
-	}
-
-	// Truncating the same-timestamp merge to one row must deterministically keep
-	// the higher ID via the tie-break.
-	top, err := ds.GetThresholdEvents("Great Tit", 1)
-	require.NoError(t, err)
-	require.Len(t, top, 1)
-	assert.Equal(t, maxID, top[0].ID)
+	assert.Equal(t, "parus major", recent[0].SpeciesName)
 }
 
 func TestV2OnlyDatastore_SearchNotes(t *testing.T) {
@@ -1327,7 +1361,6 @@ func TestV2OnlyDatastore_ImplementsInterface(t *testing.T) {
 
 // === Data gap regression tests ===
 // These tests verify bugs identified in the v2only datastore audit (2026-02-21).
-// See docs/plans/2026-02-21-v2only-datastore-data-gaps.md for full findings.
 
 // saveTestNote is a helper that saves a note and returns its ID.
 func saveTestNote(t *testing.T, ds *Datastore, date, timeStr, species string, confidence float64) {
@@ -1662,7 +1695,7 @@ func TestGetTopBirdsData_SpeciesCode(t *testing.T) {
 	cfg.SpeciesCodeMap = speciesCodeMap
 	ds, err := New(cfg)
 	require.NoError(t, err)
-	defer func() { _ = ds.Close(); cfgCleanup() }()
+	t.Cleanup(func() { assert.NoError(t, ds.Close()); cfgCleanup() }) // nolint:testifylint // assert not require: cfgCleanup must still run if Close errors; require would Goexit and skip it
 
 	now := time.Now().UTC()
 	dateStr := now.Format(time.DateOnly)
@@ -1718,7 +1751,7 @@ func TestV2OnlyDatastore_GetBatchHourlyOccurrences_ScientificName(t *testing.T) 
 	// including the scientific-only bat label. Assert the daily total per species
 	// rather than a specific hour index: the query buckets hours using SQLite's
 	// OS-local timezone, which may differ from the test datastore's configured UTC.
-	counts, err := ds.GetBatchHourlyOccurrences(t.Context(), date,
+	counts, err := ds.GetBatchHourlyOccurrences(t.Context(), date, date,
 		[]string{"Turdus merula", "Barbastella barbastellus"}, 0.0)
 	require.NoError(t, err)
 
@@ -1733,12 +1766,56 @@ func TestV2OnlyDatastore_GetBatchHourlyOccurrences_ScientificName(t *testing.T) 
 	// The localized common name is no longer an accepted key. Pre-fix, the batch
 	// query reverse-mapped "Common Blackbird" -> "Turdus merula" and returned the
 	// blackbird's count under the common-name key; the fixed query returns zero.
-	byCommon, err := ds.GetBatchHourlyOccurrences(t.Context(), date, []string{"Common Blackbird"}, 0.0)
+	byCommon, err := ds.GetBatchHourlyOccurrences(t.Context(), date, date, []string{"Common Blackbird"}, 0.0)
 	require.NoError(t, err)
 	common, ok := byCommon["Common Blackbird"]
 	require.True(t, ok)
 	assert.Equal(t, 0, hourlyTotal(&common),
 		"localized common name must not resolve to detections")
+}
+
+// TestV2OnlyDatastore_GetBatchHourlyOccurrences_DateRange verifies the batch hourly query sums
+// detections across every day in the inclusive [startDate, endDate] range rather than a single
+// day. The time-of-day chart requests the user's whole selected range; querying only one day made
+// species that happened to be silent that day read as zero for the entire range.
+func TestV2OnlyDatastore_GetBatchHourlyOccurrences_DateRange(t *testing.T) {
+	ds, cleanup := setupTestDatastoreWithLabels(t, []string{"Turdus merula_Common Blackbird"})
+	defer cleanup()
+
+	// One detection on each of three consecutive days.
+	saveTestNote(t, ds, "2024-01-15", "08:20:00", "Turdus merula", 0.8)
+	saveTestNote(t, ds, "2024-01-16", "08:30:00", "Turdus merula", 0.8)
+	saveTestNote(t, ds, "2024-01-17", "08:40:00", "Turdus merula", 0.8)
+
+	// The full range sums all three days, including the end date itself.
+	counts, err := ds.GetBatchHourlyOccurrences(t.Context(), "2024-01-15", "2024-01-17",
+		[]string{"Turdus merula"}, 0.0)
+	require.NoError(t, err)
+	blackbird, ok := counts["Turdus merula"]
+	require.True(t, ok)
+	assert.Equal(t, 3, hourlyTotal(&blackbird), "range must cover every day, end date inclusive")
+
+	// start == end still covers exactly that one day (the single-date callers' behavior).
+	oneDay, err := ds.GetBatchHourlyOccurrences(t.Context(), "2024-01-16", "2024-01-16",
+		[]string{"Turdus merula"}, 0.0)
+	require.NoError(t, err)
+	single, ok := oneDay["Turdus merula"]
+	require.True(t, ok)
+	assert.Equal(t, 1, hourlyTotal(&single), "start == end covers that single day only")
+}
+
+// TestV2OnlyDatastore_GetBatchHourlyOccurrences_InvertedRange verifies an end date before the start
+// date is rejected. Such a range produces no zone segments, so without the guard the query would
+// return all-zero counts for every species with a nil error - a silent wrong answer.
+func TestV2OnlyDatastore_GetBatchHourlyOccurrences_InvertedRange(t *testing.T) {
+	ds, cleanup := setupTestDatastoreWithLabels(t, []string{"Turdus merula_Common Blackbird"})
+	defer cleanup()
+	saveTestNote(t, ds, "2024-01-15", "08:20:00", "Turdus merula", 0.8)
+
+	_, err := ds.GetBatchHourlyOccurrences(t.Context(), "2024-01-17", "2024-01-15",
+		[]string{"Turdus merula"}, 0.0)
+	require.Error(t, err, "an inverted range must not silently return zeroes")
+	assert.Contains(t, err.Error(), "precedes")
 }
 
 // TestV2OnlyDatastore_GetBatchHourlyOccurrences_CancelledContext verifies that a cancelled
@@ -1753,7 +1830,7 @@ func TestV2OnlyDatastore_GetBatchHourlyOccurrences_CancelledContext(t *testing.T
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	_, err := ds.GetBatchHourlyOccurrences(ctx, "2024-01-15", []string{"Turdus merula"}, 0.0)
+	_, err := ds.GetBatchHourlyOccurrences(ctx, "2024-01-15", "2024-01-15", []string{"Turdus merula"}, 0.0)
 	require.ErrorIs(t, err, context.Canceled, "cancelled context must surface as context.Canceled, not silently zeroed counts")
 }
 
@@ -1779,7 +1856,7 @@ func TestGetSpeciesSummaryData_NoDateFilter(t *testing.T) {
 	cfg.SpeciesCodeMap = speciesCodeMap
 	ds, err := New(cfg)
 	require.NoError(t, err)
-	defer func() { _ = ds.Close(); cfgCleanup() }()
+	t.Cleanup(func() { assert.NoError(t, ds.Close()); cfgCleanup() }) // nolint:testifylint // assert not require: cfgCleanup must still run if Close errors; require would Goexit and skip it
 
 	now := time.Now().UTC()
 
@@ -1834,10 +1911,10 @@ func TestGetSpeciesSummaryData_WithDateFilter(t *testing.T) {
 	assert.Empty(t, summaries, "should return empty for dates with no detections")
 }
 
-func TestV2OnlyDatastore_UpdateNameMaps(t *testing.T) {
+func TestV2OnlyDatastore_SetSpeciesIndex_SwapsSnapshot(t *testing.T) {
 	t.Parallel()
 
-	// Start with English labels
+	// Start with English labels; New() seeds the fallback index from cfg.Labels.
 	englishLabels := []string{
 		"Turdus merula_Common Blackbird",
 		"Parus major_Great Tit",
@@ -1845,41 +1922,76 @@ func TestV2OnlyDatastore_UpdateNameMaps(t *testing.T) {
 	ds, cleanup := setupTestDatastoreWithLabels(t, englishLabels)
 	t.Cleanup(cleanup)
 
-	// Verify initial English resolution
+	// Verify initial English resolution off the fallback seed.
 	assert.Equal(t, "Common Blackbird", ds.resolveCommonName("Turdus merula"))
 	assert.Equal(t, "Great Tit", ds.resolveCommonName("Parus major"))
 	assert.Equal(t, "Turdus merula", ds.resolveToScientificName("common blackbird"))
 
-	// Switch to Finnish labels
-	finnishLabels := []string{
+	// Inject a shared index rebuilt with Finnish labels, the way the orchestrator
+	// hands the datastore its service in APIServerService.Start.
+	finnish := speciesindex.New(nil)
+	finnish.Rebuild([]string{
 		"Turdus merula_mustarastas",
 		"Parus major_talitiainen",
 		"Strix aluco_lehtopöllö",
-	}
-	ds.UpdateNameMaps(finnishLabels)
+	}, "")
+	ds.SetSpeciesIndex(finnish)
 
-	// Verify Finnish resolution
+	// Verify Finnish resolution after the swap.
 	assert.Equal(t, "mustarastas", ds.resolveCommonName("Turdus merula"))
 	assert.Equal(t, "talitiainen", ds.resolveCommonName("Parus major"))
 	assert.Equal(t, "lehtopöllö", ds.resolveCommonName("Strix aluco"))
 
-	// Verify reverse lookup works with new locale
+	// Verify reverse lookup works with the new locale.
 	assert.Equal(t, "Turdus merula", ds.resolveToScientificName("mustarastas"))
 
-	// Verify old English names no longer resolve
+	// Verify old English names no longer resolve.
 	assert.Equal(t, "common blackbird", ds.resolveToScientificName("common blackbird"),
 		"Old English common name should no longer resolve to scientific name")
 
-	// Verify unknown species still falls back to scientific name
+	// Verify unknown species still falls back to scientific name.
 	assert.Equal(t, "Unknown species", ds.resolveCommonName("Unknown species"))
 }
 
-func TestV2OnlyDatastore_UpdateNameMaps_ConcurrentAccess(t *testing.T) {
+// TestV2OnlyDatastore_FallbackSeedWithoutSharedIndex pins that New seeds the
+// fallback index from cfg.Labels for a datastore that is never handed the shared
+// service (file-analysis commands, fresh install, tests), byte-identical to Phase 1.
+func TestV2OnlyDatastore_FallbackSeedWithoutSharedIndex(t *testing.T) {
+	t.Parallel()
+
+	ds, cleanup := setupTestDatastoreWithLabels(t, []string{"Turdus merula_Common Blackbird"})
+	t.Cleanup(cleanup)
+
+	// No SetSpeciesIndex call: resolution must still work off the constructor seed.
+	assert.Equal(t, "Common Blackbird", ds.resolveCommonName("Turdus merula"))
+	assert.Equal(t, "Turdus merula", ds.resolveToScientificName("common blackbird"))
+}
+
+// TestV2OnlyDatastore_SetSpeciesIndex_NilIgnored pins that a nil service is ignored,
+// leaving the existing (fallback) index in place rather than clearing it.
+func TestV2OnlyDatastore_SetSpeciesIndex_NilIgnored(t *testing.T) {
+	t.Parallel()
+
+	ds, cleanup := setupTestDatastoreWithLabels(t, []string{"Turdus merula_Common Blackbird"})
+	t.Cleanup(cleanup)
+
+	ds.SetSpeciesIndex(nil)
+	assert.Equal(t, "Common Blackbird", ds.resolveCommonName("Turdus merula"),
+		"a nil SetSpeciesIndex must leave the existing index in place")
+}
+
+func TestV2OnlyDatastore_SetSpeciesIndex_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
 	labels := []string{"Turdus merula_Common Blackbird"}
 	ds, cleanup := setupTestDatastoreWithLabels(t, labels)
 	t.Cleanup(cleanup)
+
+	// Prebuild the two shared snapshots the writer swaps between.
+	english := speciesindex.New(nil)
+	english.Rebuild([]string{"Turdus merula_Common Blackbird"}, "")
+	finnish := speciesindex.New(nil)
+	finnish.Rebuild([]string{"Turdus merula_mustarastas"}, "")
 
 	var wg sync.WaitGroup
 	const goroutines = 50
@@ -1902,7 +2014,7 @@ func TestV2OnlyDatastore_UpdateNameMaps_ConcurrentAccess(t *testing.T) {
 	for range goroutines / 2 {
 		wg.Go(func() {
 			for range iterations {
-				// Both snapshots map some common name → "Turdus merula",
+				// Both snapshots map some common name to "Turdus merula",
 				// so the scientific name should always resolve correctly
 				sci := ds.resolveToScientificName("common blackbird")
 				if sci != "common blackbird" {
@@ -1916,61 +2028,22 @@ func TestV2OnlyDatastore_UpdateNameMaps_ConcurrentAccess(t *testing.T) {
 		})
 	}
 
-	// Concurrent writer
+	// Concurrent writer swapping the shared index (atomic pointer Store).
 	wg.Go(func() {
 		for range iterations {
-			ds.UpdateNameMaps([]string{"Turdus merula_mustarastas"})
-			ds.UpdateNameMaps([]string{"Turdus merula_Common Blackbird"})
+			ds.SetSpeciesIndex(finnish)
+			ds.SetSpeciesIndex(english)
 		}
 	})
 
 	wg.Wait()
 }
 
-// batchFakeResolver misses ResolveLocal (the cold-path branch) and resolves only via the
-// batch seam, like the real resolver does for out-of-working-set bats.
-type batchFakeResolver struct{ batch map[string]string }
-
-func (b *batchFakeResolver) Resolve(string, string) string      { return "" }
-func (b *batchFakeResolver) ResolveLocal(string) (string, bool) { return "", false }
-func (b *batchFakeResolver) ResolveLocalizedBatch(names []string) map[string]string {
-	out := make(map[string]string, len(names))
-	for _, n := range names {
-		if v, ok := b.batch[n]; ok {
-			out[n] = v
-		}
-	}
-	return out
-}
-
-func TestBuildNameMaps_SecondaryModelScientificOnlyLabelIsReverseSearchable(t *testing.T) {
-	t.Parallel()
-
-	r := &batchFakeResolver{batch: map[string]string{"Barbastella barbastellus": "mopsilepakko"}}
-	nm := buildNameMaps([]string{"Barbastella barbastellus"}, r)
-
-	// Reverse exact map is NFC-folded, lowercased.
-	assert.Equal(t, "Barbastella barbastellus", nm.species["mopsilepakko"])
-	// Forward + substring maps present too.
-	assert.Equal(t, "mopsilepakko", nm.common["Barbastella barbastellus"])
-	assert.Equal(t, "mopsilepakko", nm.commonFolded["Barbastella barbastellus"])
-}
-
-func TestBuildNameMaps_AmbiguousCommonNameDeletedNotLastWriterWins(t *testing.T) {
-	t.Parallel()
-
-	// Two scientific names sharing one common name must not silently route to an
-	// arbitrary winner; the ambiguous reverse key is dropped.
-	nm := buildNameMaps([]string{"Strix aluco_Owl", "Bubo bubo_Owl"}, nil)
-	_, ok := nm.species["owl"]
-	assert.False(t, ok, "ambiguous common name must be deleted from the exact reverse map")
-
-	// The forward display maps must still contain both species so their common names
-	// are shown correctly in the UI. Ambiguity handling must only drop the reverse
-	// lookup key, not the forward display names.
-	assert.Equal(t, "Owl", nm.common["Strix aluco"], "forward map must retain common name for Strix aluco")
-	assert.Equal(t, "Owl", nm.common["Bubo bubo"], "forward map must retain common name for Bubo bubo")
-}
+// Note: the name-map builder behaviors previously exercised here through
+// buildNameMaps directly (scientific-only labels reverse-searchable via the batch
+// seam, and the ambiguous-common-name drop) now live in internal/speciesindex,
+// where the shared builder is owned and golden-tested against both former
+// builders.
 
 // TestUnixTimeOrZero verifies that a non-positive epoch yields the zero time (so the
 // API renders an empty timestamp) instead of the 1970 epoch origin, while a positive
@@ -2023,11 +2096,52 @@ func TestConvertToNewSpeciesData_ZeroEpoch(t *testing.T) {
 	assert.NotEmpty(t, got[1].LastSeenDate)
 }
 
+func TestV2OnlyDatastore_NewSpeciesWindowAfterMidnightReload(t *testing.T) {
+	ds, cleanup := setupTestDatastore(t)
+	t.Cleanup(cleanup)
+	location, err := time.LoadLocation("Europe/Amsterdam")
+	require.NoError(t, err)
+	ds.timezone = location
+	day := time.Now().In(location).AddDate(0, 0, -7)
+	first := time.Date(day.Year(), day.Month(), day.Day(), 23, 59, 50, 0, location)
+	savedAt := first.Add(15 * time.Second)
+	note := &datastore.Note{
+		ScientificName: "Parus major", Confidence: 0.95,
+		Date: savedAt.Format(time.DateOnly), Time: savedAt.Format(time.TimeOnly),
+		BeginTime: first, EndTime: savedAt,
+	}
+	require.NoError(t, ds.Save(note, nil))
+	// Reproduce mixed history through the supported Save boundary: an epoch-zero
+	// audio start is persisted as integer zero, not SQL NULL.
+	missing := *note
+	missing.ID = 0
+	missing.Time = savedAt.Add(time.Minute).Format(time.TimeOnly)
+	missing.BeginTime = time.UnixMilli(0)
+	missing.EndTime = time.Time{}
+	require.NoError(t, ds.Save(&missing, nil))
+	got, err := ds.GetNewSpeciesDetections(t.Context(), "1900-01-01", savedAt.Format(time.DateOnly), 100, 0)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, savedAt.Format(time.DateOnly), got[0].FirstSeenDate)
+	assert.True(t, first.Equal(got[0].FirstBeginTime))
+	assert.Equal(t, first.Format(time.DateOnly), got[0].FirstBeginTime.Format(time.DateOnly))
+
+	tracker := speciestracker.NewTrackerFromSettings(ds, &conf.SpeciesTrackingSettings{
+		Enabled: true, NewSpeciesWindowDays: 7, NotificationSuppressionHours: 168,
+	})
+	t.Cleanup(func() { assert.NoError(t, tracker.Close()) })
+	require.NoError(t, tracker.InitFromDatabase())
+	isNew, _, novelty := tracker.CheckAndUpdateSpeciesWithNovelty("Parus major", first.Add(168*time.Hour))
+	assert.False(t, isNew, "reloading must not extend notification eligibility past suppression")
+	assert.True(t, novelty.NoveltyEpisodeActive, "restoring the audio date must preserve the first-ever novelty episode")
+	assert.GreaterOrEqual(t, novelty.NoveltyEpisodeDays, 7, "first-ever metadata must still match novelty alert rules")
+}
+
 // TestV2OnlyDatastore_GetSpeciesDiversityData_TimezoneBucketing verifies the date grouping in
 // GetSpeciesDiversityData buckets by the configured timezone, not UTC or the OS-local zone. A
 // detection at a fixed UTC instant 30 minutes before midnight must group on the NEXT calendar day
 // when the configured zone is UTC+5. The negative assertion (the UTC date does not match) proves
-// the bucketing is genuinely offset-aware, and exercises the BETWEEN date filter end-to-end.
+// the bucketing is genuinely offset-aware, and exercises the date range filter end-to-end.
 func TestV2OnlyDatastore_GetSpeciesDiversityData_TimezoneBucketing(t *testing.T) {
 	ds, cleanup := setupTestDatastore(t)
 	defer cleanup()
@@ -2059,4 +2173,368 @@ func TestV2OnlyDatastore_GetSpeciesDiversityData_TimezoneBucketing(t *testing.T)
 	none, err := ds.GetSpeciesDiversityData(ctx, "2024-06-14", "2024-06-14")
 	require.NoError(t, err)
 	assert.Empty(t, none, "detection must not bucket on the UTC date when the configured zone is UTC+5")
+}
+
+// TestV2OnlyDatastore_GetThresholdEvents_OrderingAndLimit verifies events are returned
+// most-recent-first (created_at DESC) and that the limit truncates to the newest (#4195).
+func TestV2OnlyDatastore_GetThresholdEvents_OrderingAndLimit(t *testing.T) {
+	ds, cleanup := setupTestDatastore(t)
+	defer cleanup()
+
+	base := time.Now().Truncate(time.Second)
+	offsets := []time.Duration{0, time.Minute, 2 * time.Minute}
+	for i, off := range offsets {
+		require.NoError(t, ds.SaveThresholdEvent(&datastore.ThresholdEvent{
+			SpeciesName:  "great tit",
+			NewLevel:     i + 1,
+			NewValue:     0.7,
+			ChangeReason: "high_confidence",
+			Confidence:   0.95,
+			CreatedAt:    base.Add(off),
+		}))
+	}
+
+	events, err := ds.GetThresholdEvents("great tit", 10)
+	require.NoError(t, err)
+	require.Len(t, events, 3)
+	// Descending by created_at: newest first.
+	assert.Equal(t, base.Add(2*time.Minute).Unix(), events[0].CreatedAt.Unix(), "newest event must be first")
+	assert.Equal(t, base.Unix(), events[2].CreatedAt.Unix(), "oldest event must be last")
+
+	// Limit truncates to the newest.
+	top, err := ds.GetThresholdEvents("great tit", 1)
+	require.NoError(t, err)
+	require.Len(t, top, 1)
+	assert.Equal(t, base.Add(2*time.Minute).Unix(), top[0].CreatedAt.Unix())
+}
+
+// TestV2OnlyDatastore_GetThresholdEvents_SameTimestampTiebreak verifies the id DESC
+// tiebreaker makes same-created_at truncation deterministic under the limit (#4195).
+func TestV2OnlyDatastore_GetThresholdEvents_SameTimestampTiebreak(t *testing.T) {
+	ds, cleanup := setupTestDatastore(t)
+	defer cleanup()
+
+	ts := time.Now().Truncate(time.Second)
+	require.NoError(t, ds.SaveThresholdEvent(&datastore.ThresholdEvent{
+		SpeciesName: "great tit", NewLevel: 1, NewValue: 0.7, ChangeReason: "first", Confidence: 0.9, CreatedAt: ts,
+	}))
+	require.NoError(t, ds.SaveThresholdEvent(&datastore.ThresholdEvent{
+		SpeciesName: "great tit", NewLevel: 2, NewValue: 0.6, ChangeReason: "second", Confidence: 0.9, CreatedAt: ts,
+	}))
+
+	all, err := ds.GetThresholdEvents("great tit", 10)
+	require.NoError(t, err)
+	require.Len(t, all, 2)
+	// Under "created_at DESC, id DESC" the higher id (saved second) sorts first.
+	assert.Greater(t, all[0].ID, all[1].ID, "same-timestamp events must order by id DESC")
+
+	top, err := ds.GetThresholdEvents("great tit", 1)
+	require.NoError(t, err)
+	require.Len(t, top, 1)
+	assert.Equal(t, all[0].ID, top[0].ID, "same-timestamp truncation must deterministically keep the higher id")
+}
+
+// TestV2OnlyDatastore_DynamicThreshold_EmptySpeciesRejected verifies the empty-key guard:
+// a save with an empty species key is rejected by the repository rather than silently
+// keying a row on the empty string (#4195).
+func TestV2OnlyDatastore_DynamicThreshold_EmptySpeciesRejected(t *testing.T) {
+	ds, cleanup := setupTestDatastore(t)
+	defer cleanup()
+
+	err := ds.SaveDynamicThreshold(&datastore.DynamicThreshold{
+		SpeciesName:   "",
+		Level:         1,
+		CurrentValue:  0.7,
+		BaseThreshold: 0.8,
+		ValidHours:    24,
+		ExpiresAt:     time.Now().Add(24 * time.Hour),
+	})
+	require.Error(t, err, "empty species name must be rejected")
+
+	batchErr := ds.BatchSaveDynamicThresholds([]datastore.DynamicThreshold{{
+		SpeciesName:   "",
+		Level:         1,
+		CurrentValue:  0.7,
+		BaseThreshold: 0.8,
+		ValidHours:    24,
+		ExpiresAt:     time.Now().Add(24 * time.Hour),
+	}})
+	require.Error(t, batchErr, "empty species name must be rejected in batch save")
+}
+
+// TestV2OnlyDatastore_Save_PersistsModelContributions verifies that saving a detection
+// via DetectionRepository.Save (and Datastore.Save) persists per-model consensus
+// contributions to detection_model_contributions and deduplicates colliding model IDs (#4648).
+func TestV2OnlyDatastore_Save_PersistsModelContributions(t *testing.T) {
+	t.Parallel()
+
+	ds, cleanup := setupTestDatastore(t)
+	defer cleanup()
+	ctx := t.Context()
+
+	repo := datastore.NewDetectionRepository(ds, time.UTC)
+
+	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	result := &detection.Result{
+		Timestamp:  now,
+		SourceNode: "Large Garage Wall",
+		Species: detection.Species{
+			ScientificName: "Poecile carolinensis",
+			CommonName:     "carolina chickadee",
+		},
+		Confidence: 0.92,
+		Model:      detection.ModelInfo{Name: "BirdNET", Version: "2.4", Variant: "default"},
+		ModelContributions: map[string]detection.ResultModelContrib{
+			"BirdNET_V2.4": {
+				Model:         detection.ModelInfo{Name: "BirdNET", Version: "2.4", Variant: "default"},
+				HitCount:      8,
+				MaxConfidence: 0.92,
+				MinConfidence: 0.55,
+				ConfidenceSum: 5.4,
+				FirstHitAt:    now,
+				LastHitAt:     now.Add(6 * time.Second),
+			},
+			"BirdNET_V3.0": {
+				Model:         detection.ModelInfo{Name: "BirdNET", Version: "3.0", Variant: "EUNA"},
+				HitCount:      5,
+				MaxConfidence: 0.87,
+				MinConfidence: 0.61,
+				ConfidenceSum: 3.7,
+				FirstHitAt:    now.Add(time.Second),
+				LastHitAt:     now.Add(5 * time.Second),
+			},
+			"Perch_V2": {
+				Model:         detection.ModelInfo{Name: "Perch", Version: "2", Variant: "default"},
+				HitCount:      3,
+				MaxConfidence: 0.84,
+			},
+		},
+	}
+
+	require.NoError(t, repo.Save(ctx, result, nil))
+	require.NotZero(t, result.ID)
+
+	var contribs []entities.DetectionModelContribution
+	require.NoError(t, ds.manager.DB().
+		Preload("Model").
+		Where("detection_id = ?", result.ID).
+		Find(&contribs).Error)
+	require.Len(t, contribs, 3, "all three contributing models must be saved in detection_model_contributions")
+
+	byModel := make(map[string]entities.DetectionModelContribution, len(contribs))
+	for _, c := range contribs {
+		require.NotNil(t, c.Model)
+		key := fmt.Sprintf("%s_%s_%s", c.Model.Name, c.Model.Version, c.Model.Variant)
+		byModel[key] = c
+	}
+
+	require.Contains(t, byModel, "BirdNET_2.4_default")
+	assert.Equal(t, 8, byModel["BirdNET_2.4_default"].HitCount)
+	assert.InDelta(t, 0.92, byModel["BirdNET_2.4_default"].MaxConfidence, 1e-9)
+	v24 := byModel["BirdNET_2.4_default"]
+	require.NotNil(t, v24.MinConfidence)
+	require.NotNil(t, v24.ConfidenceSum)
+	require.NotNil(t, v24.FirstHitAt)
+	require.NotNil(t, v24.LastHitAt)
+	assert.InDelta(t, 0.55, *v24.MinConfidence, 1e-9)
+	assert.InDelta(t, 5.4, *v24.ConfidenceSum, 1e-9)
+	assert.Equal(t, now.UnixMilli(), *v24.FirstHitAt)
+	assert.Equal(t, now.Add(6*time.Second).UnixMilli(), *v24.LastHitAt)
+
+	require.Contains(t, byModel, "BirdNET_3.0_EUNA")
+	assert.Equal(t, 5, byModel["BirdNET_3.0_EUNA"].HitCount)
+	assert.InDelta(t, 0.87, byModel["BirdNET_3.0_EUNA"].MaxConfidence, 1e-9)
+	v30 := byModel["BirdNET_3.0_EUNA"]
+	require.NotNil(t, v30.MinConfidence)
+	require.NotNil(t, v30.ConfidenceSum)
+	require.NotNil(t, v30.FirstHitAt)
+	require.NotNil(t, v30.LastHitAt)
+	assert.InDelta(t, 0.61, *v30.MinConfidence, 1e-9)
+	assert.InDelta(t, 3.7, *v30.ConfidenceSum, 1e-9)
+	assert.Equal(t, now.Add(time.Second).UnixMilli(), *v30.FirstHitAt)
+	assert.Equal(t, now.Add(5*time.Second).UnixMilli(), *v30.LastHitAt)
+
+	require.Contains(t, byModel, "Perch_2_default")
+	assert.Equal(t, 3, byModel["Perch_2_default"].HitCount)
+	assert.InDelta(t, 0.84, byModel["Perch_2_default"].MaxConfidence, 1e-9)
+	perch := byModel["Perch_2_default"]
+	assert.Nil(t, perch.MinConfidence, "unknown stats are stored as NULL, not zero")
+	assert.Nil(t, perch.ConfidenceSum)
+	assert.Nil(t, perch.FirstHitAt)
+	assert.Nil(t, perch.LastHitAt)
+
+	// Also verify deduplication when two contribution entries resolve to the same AIModel row.
+	dupNote := &datastore.Note{
+		ScientificName: "Spizella pallida",
+		CommonName:     "clay-colored sparrow",
+		Date:           "2026-10-17",
+		Time:           "12:01:00",
+		Confidence:     0.93,
+		ModelContributions: map[string]detection.ResultModelContrib{
+			"default_a": {
+				Model:         detection.ModelInfo{}, // resolves via WithDefaults() to BirdNET 2.4 default
+				HitCount:      2,
+				MaxConfidence: 0.81,
+				MinConfidence: 0.7,
+				ConfidenceSum: 1.5,
+				FirstHitAt:    now.Add(2 * time.Second),
+				LastHitAt:     now.Add(9 * time.Second),
+			},
+			"default_b": {
+				Model:         detection.ModelInfo{Name: "BirdNET", Version: "2.4", Variant: "default"},
+				HitCount:      4,
+				MaxConfidence: 0.93,
+				MinConfidence: 0.6,
+				ConfidenceSum: 3.1,
+				FirstHitAt:    now.Add(time.Second),
+				LastHitAt:     now.Add(4 * time.Second),
+			},
+		},
+	}
+	require.NoError(t, ds.Save(dupNote, nil))
+	require.NotZero(t, dupNote.ID)
+
+	var dupContribs []entities.DetectionModelContribution
+	require.NoError(t, ds.manager.DB().
+		Where("detection_id = ?", dupNote.ID).
+		Find(&dupContribs).Error)
+	require.Len(t, dupContribs, 1, "colliding ModelIDs must be merged into a single row")
+	assert.Equal(t, 6, dupContribs[0].HitCount)
+	assert.InDelta(t, 0.93, dupContribs[0].MaxConfidence, 1e-9)
+	merged := dupContribs[0]
+	require.NotNil(t, merged.MinConfidence)
+	require.NotNil(t, merged.ConfidenceSum)
+	require.NotNil(t, merged.FirstHitAt)
+	require.NotNil(t, merged.LastHitAt)
+	assert.InDelta(t, 0.6, *merged.MinConfidence, 1e-9, "min of mins")
+	assert.InDelta(t, 4.6, *merged.ConfidenceSum, 1e-9, "sum of sums")
+	assert.Equal(t, now.Add(time.Second).UnixMilli(), *merged.FirstHitAt, "earliest first hit")
+	assert.Equal(t, now.Add(9*time.Second).UnixMilli(), *merged.LastHitAt, "latest last hit")
+
+	// When one side of a collision lacks stats, the merged row has none: a sum
+	// over only some of the hits would give a wrong mean.
+	partialNote := &datastore.Note{
+		ScientificName: "Spizella pusilla",
+		CommonName:     "field sparrow",
+		Date:           "2026-10-17",
+		Time:           "12:02:00",
+		Confidence:     0.9,
+		ModelContributions: map[string]detection.ResultModelContrib{
+			"with_stats": {
+				Model:         detection.ModelInfo{},
+				HitCount:      2,
+				MaxConfidence: 0.8,
+				MinConfidence: 0.7,
+				ConfidenceSum: 1.5,
+				FirstHitAt:    now,
+				LastHitAt:     now.Add(time.Second),
+			},
+			"without_stats": {
+				Model:         detection.ModelInfo{Name: "BirdNET", Version: "2.4", Variant: "default"},
+				HitCount:      1,
+				MaxConfidence: 0.9,
+			},
+		},
+	}
+	require.NoError(t, ds.Save(partialNote, nil))
+
+	var partialContribs []entities.DetectionModelContribution
+	require.NoError(t, ds.manager.DB().
+		Where("detection_id = ?", partialNote.ID).
+		Find(&partialContribs).Error)
+	require.Len(t, partialContribs, 1)
+	assert.Equal(t, 3, partialContribs[0].HitCount)
+	assert.Nil(t, partialContribs[0].MinConfidence)
+	assert.Nil(t, partialContribs[0].ConfidenceSum)
+	assert.Nil(t, partialContribs[0].FirstHitAt)
+	assert.Nil(t, partialContribs[0].LastHitAt)
+}
+
+// TestV2OnlyDatastore_Save_KeepsDetectionWhenContributionsFail verifies that model
+// contributions are best-effort: a failure to persist them must not fail the save
+// or roll back the detection (#4648).
+func TestV2OnlyDatastore_Save_KeepsDetectionWhenContributionsFail(t *testing.T) {
+	t.Parallel()
+
+	ds, cleanup := setupTestDatastore(t)
+	defer cleanup()
+
+	// Make every contribution write fail while detections stay writable.
+	require.NoError(t, ds.manager.DB().Migrator().DropTable(&entities.DetectionModelContribution{}))
+
+	note := &datastore.Note{
+		ScientificName: "Poecile carolinensis",
+		CommonName:     "carolina chickadee",
+		Date:           "2026-10-17",
+		Time:           "12:00:00",
+		Confidence:     0.92,
+		ModelContributions: map[string]detection.ResultModelContrib{
+			"BirdNET_V2.4": {
+				Model:         detection.ModelInfo{Name: "BirdNET", Version: "2.4", Variant: "default"},
+				HitCount:      8,
+				MaxConfidence: 0.92,
+			},
+		},
+	}
+
+	require.NoError(t, ds.Save(note, nil), "a contribution failure must not fail the detection save")
+	require.NotZero(t, note.ID, "the detection ID must still be propagated to the note")
+
+	var count int64
+	require.NoError(t, ds.manager.DB().Model(&entities.Detection{}).
+		Where("id = ?", note.ID).Count(&count).Error)
+	assert.Equal(t, int64(1), count, "the detection row must survive a contribution failure")
+}
+
+// TestMergeContribution_Stats pins both orders of a merge, which the map-iteration
+// order of resolveModelContributions leaves random: stats survive only when both
+// sides have them, whichever side arrived first.
+func TestMergeContribution_Stats(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	withStats := detection.ResultModelContrib{
+		HitCount: 2, MaxConfidence: 0.8, MinConfidence: 0.7, ConfidenceSum: 1.5,
+		FirstHitAt: base, LastHitAt: base.Add(time.Second),
+	}
+	withoutStats := detection.ResultModelContrib{HitCount: 1, MaxConfidence: 0.9}
+
+	assertNoStats := func(t *testing.T, e *entities.DetectionModelContribution) {
+		t.Helper()
+		assert.Equal(t, 3, e.HitCount)
+		assert.InDelta(t, 0.9, e.MaxConfidence, 1e-9)
+		assert.Nil(t, e.FirstHitAt)
+		assert.Nil(t, e.LastHitAt)
+		assert.Nil(t, e.MinConfidence)
+		assert.Nil(t, e.ConfidenceSum)
+	}
+
+	t.Run("destination has stats, merged entry lacks them", func(t *testing.T) {
+		t.Parallel()
+		dst := contributionEntity(1, &withStats)
+		mergeContribution(dst, &withoutStats)
+		assertNoStats(t, dst)
+	})
+	t.Run("destination lacks stats, merged entry has them", func(t *testing.T) {
+		t.Parallel()
+		dst := contributionEntity(1, &withoutStats)
+		mergeContribution(dst, &withStats)
+		assertNoStats(t, dst)
+	})
+	t.Run("both have stats", func(t *testing.T) {
+		t.Parallel()
+		other := detection.ResultModelContrib{
+			HitCount: 1, MaxConfidence: 0.6, MinConfidence: 0.6, ConfidenceSum: 0.6,
+			FirstHitAt: base.Add(-time.Second), LastHitAt: base.Add(5 * time.Second),
+		}
+		dst := contributionEntity(1, &withStats)
+		mergeContribution(dst, &other)
+		require.NotNil(t, dst.FirstHitAt)
+		require.NotNil(t, dst.LastHitAt)
+		require.NotNil(t, dst.MinConfidence)
+		require.NotNil(t, dst.ConfidenceSum)
+		assert.Equal(t, base.Add(-time.Second).UnixMilli(), *dst.FirstHitAt)
+		assert.Equal(t, base.Add(5*time.Second).UnixMilli(), *dst.LastHitAt)
+		assert.InDelta(t, 0.6, *dst.MinConfidence, 1e-9)
+		assert.InDelta(t, 2.1, *dst.ConfidenceSum, 1e-9)
+	})
 }

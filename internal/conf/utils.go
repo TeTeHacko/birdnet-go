@@ -3,6 +3,7 @@ package conf
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"math"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -173,6 +175,40 @@ func FindConfigFile() (string, error) {
 		Category(errors.CategoryFileIO).
 		Context("operation", "find-config-file").
 		Build()
+}
+
+// ResolveConfigDir returns the directory that contains the active config.yaml.
+// It prefers the directory of the resolved config file (honoring the --config
+// flag and viper's resolved path); when no config file is found yet (e.g. a
+// fresh install before the first save), it falls back to the first default
+// config path. This is the directory where co-located config artifacts such as
+// the user-editable model catalog are read from and written to.
+func ResolveConfigDir() (string, error) {
+	// An explicit --config path wins even when the file does not exist yet (a
+	// fresh install whose config.yaml has not been saved): co-locate artifacts
+	// with the user-specified config rather than the default directory.
+	if ConfigPath != "" {
+		return filepath.Dir(ConfigPath), nil
+	}
+
+	if path, err := FindConfigFile(); err == nil {
+		return filepath.Dir(path), nil
+	}
+
+	configPaths, err := GetDefaultConfigPaths()
+	if err != nil {
+		return "", errors.New(err).
+			Category(errors.CategoryConfiguration).
+			Context("operation", "resolve-config-dir").
+			Build()
+	}
+	if len(configPaths) == 0 {
+		return "", errors.Newf("no config directory could be resolved").
+			Category(errors.CategoryConfiguration).
+			Context("operation", "resolve-config-dir").
+			Build()
+	}
+	return configPaths[0], nil
 }
 
 // GetBasePath expands environment variables in the given path and ensures the resulting path exists.
@@ -501,14 +537,6 @@ func GetFfmpegBinaryName() string {
 	return "ffmpeg"
 }
 
-// GetSoxBinaryName returns the binary name for sox based on the current OS.
-func GetSoxBinaryName() string {
-	if runtime.GOOS == osWindows {
-		return "sox.exe"
-	}
-	return "sox"
-}
-
 // GetFfprobeBinaryName returns the binary name for ffprobe based on the current OS.
 func GetFfprobeBinaryName() string {
 	if runtime.GOOS == osWindows {
@@ -520,9 +548,53 @@ func GetFfprobeBinaryName() string {
 // GetFfmpegVersionFrom detects the ffmpeg version by executing the binary at
 // the given path. Returns empty string and 0,0 if detection fails.
 func GetFfmpegVersionFrom(ffmpegPath string) (version string, major, minor int) {
-	cmd := exec.Command(ffmpegPath, "-version") //nolint:gosec // G204: ffmpegPath validated by ValidateToolPath before reaching here
+	return GetFfmpegVersionFromContext(context.Background(), ffmpegPath)
+}
+
+// ffmpegVersionProbeTimeout is how long the ffmpeg version probe may run.
+// Settings validation runs the probe inside settings writes, which hold the
+// process-wide settings writer lock, so a hung ffmpeg must not hold it forever.
+// The limit is generous so a cold first start from slow storage still finishes.
+// A killed probe can take up to ffmpegProbeWaitDelay longer to return.
+// It is a variable so that it can be tuned without changing the probe.
+var ffmpegVersionProbeTimeout = 30 * time.Second
+
+// boundedFfmpegVersion is the production ffmpegVersionDetector: it detects the
+// version like GetFfmpegVersionFrom but gives up after ffmpegVersionProbeTimeout
+// (plus up to ffmpegProbeWaitDelay for the output pipe to close), returning the
+// same empty result as any other failed probe.
+func boundedFfmpegVersion(ffmpegPath string) (version string, major, minor int) {
+	ctx, cancel := context.WithTimeout(context.Background(), ffmpegVersionProbeTimeout)
+	defer cancel()
+	return GetFfmpegVersionFromContext(ctx, ffmpegPath)
+}
+
+// ffmpegProbeWaitDelay is how long the version probe waits for the ffmpeg
+// output pipes to close once the process has exited or been killed, before it
+// stops waiting. A probe whose process exited successfully still reports the
+// version it printed when a child keeps a pipe open past that point; a probe
+// that was killed or failed reports none.
+const ffmpegProbeWaitDelay = 2 * time.Second
+
+// GetFfmpegVersionFromContext is like GetFfmpegVersionFrom but bounds the
+// `ffmpeg -version` probe with the supplied context, so a hung or wrapped
+// binary cannot block the caller indefinitely. Returns empty string and 0,0
+// if detection fails or the context is cancelled. A process that exited
+// successfully still yields its version when a child holds the output pipe past
+// ffmpegProbeWaitDelay.
+func GetFfmpegVersionFromContext(ctx context.Context, ffmpegPath string) (version string, major, minor int) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd := exec.CommandContext(ctx, ffmpegPath, "-version") //nolint:gosec // G204: ffmpegPath validated by ValidateToolPath before reaching here
+	// A wrapper script can leave a child holding the output pipe after the process
+	// exits or is killed; without a wait delay CombinedOutput would keep waiting
+	// for it. When the process itself exited successfully, CombinedOutput returns
+	// exec.ErrWaitDelay together with the output captured so far; it may be partial,
+	// so ParseFfmpegVersion below decides whether it holds a version.
+	cmd.WaitDelay = ffmpegProbeWaitDelay
 	output, err := cmd.CombinedOutput()
-	if err != nil {
+	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		return "", 0, 0
 	}
 	return ParseFfmpegVersion(string(output))
@@ -645,38 +717,76 @@ func parseLibavutilVersion(output string) (major, minor int) {
 	return major, minor
 }
 
-// GetSoxFormats returns the audio formats supported by the SoX binary at the
-// given path. Returns nil if SoX cannot be executed or reports no formats.
-func GetSoxFormats(soxPath string) []string {
-	cmd := exec.Command(soxPath, "-h") //nolint:gosec // G204: soxPath validated by ValidateToolPath before reaching here
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil
-	}
+// redactedToolPath replaces a contaminated tool path in logs and error messages.
+// A Home Assistant ingress path embeds a credential token
+// (e.g. "/api/hassio_ingress/<token>/usr/bin/ffmpeg"), so the raw path must never
+// reach logs or support dumps.
+const redactedToolPath = "[redacted contaminated path]"
 
-	for line := range strings.SplitSeq(string(output), "\n") {
-		if formats, found := strings.CutPrefix(line, "AUDIO FILE FORMATS:"); found {
-			return strings.Fields(strings.TrimSpace(formats))
-		}
+// rePathContamination matches URL-like segments (e.g. "/api/", "/ingress/",
+// "/proxy/", "/hassio/") that indicate an external tool path has been
+// contaminated by a reverse-proxy or ingress prefix rather than being a clean
+// filesystem path. A real binary path on disk never contains these. Home
+// Assistant add-ons in particular can resolve a tool path to
+// "/api/hassio_ingress/<token>/usr/bin/ffmpeg", which is not a usable
+// executable and fails every invocation. Both separators are matched so the
+// check is robust on Windows (backslash) as well as POSIX (forward slash).
+var rePathContamination = regexp.MustCompile(`(?i)[/\\](?:api|ingress|proxy|hassio)[/\\]`)
+
+// IsContaminatedToolPath reports whether an external tool path looks like it was
+// contaminated by a reverse-proxy or ingress URL prefix. It is the single source
+// of truth for this check, shared by configuration-time validation here and by
+// execution-time validation in the audiocore/ffmpeg package.
+func IsContaminatedToolPath(path string) bool {
+	return rePathContamination.MatchString(path)
+}
+
+// RedactToolPath returns a representation of an external tool path that is safe to
+// put in logs, errors, or telemetry. A contaminated path (e.g. a Home Assistant
+// ingress path embedding a credential token) is replaced with a placeholder; a
+// clean path is returned unchanged. Use this anywhere a configured tool path is
+// surfaced to a sink that may reach Sentry or a support dump.
+func RedactToolPath(path string) string {
+	if IsContaminatedToolPath(path) {
+		return redactedToolPath
 	}
-	return nil
+	return path
+}
+
+// isExecutableFile reports whether path exists and is a regular (non-directory) file.
+func isExecutableFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 // ValidateToolPath checks if a tool is available, either at an explicit path or in the system PATH.
 // It returns the validated path to the tool if found, or an empty string and an error otherwise.
 func ValidateToolPath(configuredPath, toolName string) (string, error) {
+	// pathForMessage is what we surface in logs and errors: the configured path,
+	// redacted if it is contaminated (it can embed an ingress credential token).
+	pathForMessage := RedactToolPath(configuredPath)
 	if configuredPath != "" {
-		// Check if the explicitly configured path exists and is a file
-		if info, err := os.Stat(configuredPath); err == nil && !info.IsDir() {
+		switch {
+		case IsContaminatedToolPath(configuredPath):
+			// Reject contaminated paths BEFORE the os.Stat check: on Home
+			// Assistant add-ons the supervisor can make a path like
+			// "/api/hassio_ingress/<token>/usr/bin/ffmpeg" stat-succeed even
+			// though it is not a usable executable, so the bad path would
+			// otherwise be stored in settings and fail on every invocation. The
+			// path itself is omitted here; it embeds a credential token.
+			GetLogger().Warn("Configured tool path appears contaminated by a proxy/ingress prefix; ignoring it and checking system PATH",
+				logger.String("tool", toolName))
+		case isExecutableFile(configuredPath):
 			// Ideally, we'd check execute permissions here, but os.Stat doesn't provide a cross-platform way.
 			// We assume if it exists and isn't a directory, it's likely the executable.
 			// The actual execution will fail later if it's not executable.
 			return configuredPath, nil
+		default:
+			// If configured path is invalid, log a warning but still check PATH as a fallback
+			GetLogger().Warn("Configured tool path invalid or not found, checking system PATH",
+				logger.String("configured_path", pathForMessage),
+				logger.String("tool", toolName))
 		}
-		// If configured path is invalid, log a warning but still check PATH as a fallback
-		GetLogger().Warn("Configured tool path invalid or not found, checking system PATH",
-			logger.String("configured_path", configuredPath),
-			logger.String("tool", toolName))
 	}
 
 	// If no configured path or the configured path was invalid, check the system PATH
@@ -687,7 +797,7 @@ func ValidateToolPath(configuredPath, toolName string) (string, error) {
 
 	// If not found in configured path or system PATH
 	if configuredPath != "" {
-		return "", fmt.Errorf("tool '%s' not found at configured path '%s' or in system PATH", toolName, configuredPath)
+		return "", fmt.Errorf("tool '%s' not found at configured path '%s' or in system PATH", toolName, pathForMessage)
 	}
 	return "", fmt.Errorf("tool '%s' not found in system PATH and no path configured", toolName)
 }

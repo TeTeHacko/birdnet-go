@@ -8,14 +8,17 @@ import (
 	"strings"
 	"time"
 
-	apiv2 "github.com/tphakala/birdnet-go/internal/api/v2"
+	"github.com/getsentry/sentry-go"
+	importsapi "github.com/tphakala/birdnet-go/internal/api/v2/imports"
 	"github.com/tphakala/birdnet-go/internal/app"
 	"github.com/tphakala/birdnet-go/internal/classifier"
 	"github.com/tphakala/birdnet-go/internal/conf"
 	"github.com/tphakala/birdnet-go/internal/datastore"
 	datastoreV2 "github.com/tphakala/birdnet-go/internal/datastore/v2"
 	"github.com/tphakala/birdnet-go/internal/datastore/v2/entities"
+	"github.com/tphakala/birdnet-go/internal/datastore/v2/migration"
 	"github.com/tphakala/birdnet-go/internal/datastore/v2only"
+	"github.com/tphakala/birdnet-go/internal/diagnostics"
 	"github.com/tphakala/birdnet-go/internal/errors"
 	"github.com/tphakala/birdnet-go/internal/logger"
 	"github.com/tphakala/birdnet-go/internal/observability"
@@ -51,6 +54,33 @@ func abortOnV2SchemaCorruption(log logger.Logger, err error, operation, modeLabe
 	return fmt.Errorf("v2 schema corrupted in %s mode, refusing silent fallback to legacy mode: %w", modeLabel, err)
 }
 
+// mixedSchemaGuideURL is the wiki section that explains how to resolve a MySQL or
+// MariaDB database holding both enhanced database (v2) and legacy tables. The anchor
+// follows the section heading in doc/wiki/database-doctor.md.
+const mixedSchemaGuideURL = "https://github.com/tphakala/birdnet-go/wiki/Database-Doctor#mysql-and-mariadb-enhanced-and-legacy-tables-in-one-database"
+
+// mixedSchemaRecoveryHint is the user-facing instruction emitted when startup refuses a
+// database that holds both schemas. db-doctor is named only to say it does not cover MySQL.
+// An error that names a failed step needs no manual change: fix its cause and restart.
+const mixedSchemaRecoveryHint = "if the error names a failed step, fix its cause and restart; otherwise stop BirdNET-Go, back up the database with mysqldump (mariadb-dump on MariaDB), then follow " +
+	mixedSchemaGuideURL + "; the db-doctor script supports SQLite only"
+
+// abortOnMixedSchema inspects the error of the startup state check. If it chains to
+// datastoreV2.ErrMixedSchemaDatabase it logs at Error level with the per-table row
+// counts and the recovery hint and returns a wrapped error the caller must propagate.
+// Startup stops before any datastore is constructed and drops no table with rows, so
+// the decision repeats on every boot until the user acts or the cause of a failed step goes away. Returns nil for
+// other errors and for nil input.
+func abortOnMixedSchema(log logger.Logger, err error) error {
+	if err == nil || !errors.Is(err, datastoreV2.ErrMixedSchemaDatabase) {
+		return nil
+	}
+	log.Error("database holds both enhanced database (v2) tables and legacy tables, refusing to start, no table with rows was dropped",
+		logger.Error(err),
+		logger.String("recovery_hint", mixedSchemaRecoveryHint))
+	return fmt.Errorf("refusing to start on a database with both enhanced and legacy tables: %w", err)
+}
+
 // DatabaseService manages the database lifecycle as an app.Service with TierCore shutdown.
 // It owns both the primary datastore (v1) and the optional v2 database manager.
 type DatabaseService struct {
@@ -59,14 +89,24 @@ type DatabaseService struct {
 	dataStore  datastore.Interface
 	v2Manager  datastoreV2.Manager
 	v2OnlyMode bool
+
+	// checkStartupState reads the database state at startup. It is a field so tests
+	// can inject a state; NewDatabaseService sets the real check.
+	checkStartupState func(*conf.Settings) datastoreV2.StartupState
+
+	// legacyMonitor keeps the migration_state telemetry tag, the legacy schema
+	// bell notice and the weekly push reminder current. It exists only while
+	// the process runs the legacy schema with a state manager.
+	legacyMonitor *legacySchemaMonitor
 }
 
 // NewDatabaseService creates a new DatabaseService with the given settings and metrics.
 // The service is not started; call Start() to initialize the databases.
 func NewDatabaseService(settings *conf.Settings, metrics *observability.Metrics) *DatabaseService {
 	return &DatabaseService{
-		settings: settings,
-		metrics:  metrics,
+		settings:          settings,
+		metrics:           metrics,
+		checkStartupState: datastoreV2.CheckMigrationStateBeforeStartup,
 	}
 }
 
@@ -98,7 +138,16 @@ func (d *DatabaseService) IsV2OnlyMode() bool {
 
 // Start initializes and opens the database connections.
 // It handles three startup paths: v2-only (post-migration), fresh install, and legacy mode.
-// Migration infrastructure is initialized when not in v2-only mode.
+// When a MySQL or MariaDB database holds both enhanced database (v2) tables and legacy
+// tables, the startup state check keeps the side that holds data and drops only the
+// other side's empty tables. Start refuses, dropping no table with rows, only when no side can be
+// kept without losing rows, a table cannot be read or an empty table cannot be removed
+// (datastoreV2.ErrMixedSchemaDatabase).
+// Migration infrastructure is initialized when not in v2-only mode; on a legacy
+// install with a migration state manager it also starts the monitor that keeps
+// the migration_state telemetry tag, the legacy schema bell notice and the
+// weekly push reminder current, and logs the legacy schema startup WARN once
+// (the monitor logs it, or this method when no state manager exists).
 //
 //nolint:gocognit,gocyclo // Database initialization requires handling multiple startup paths with detailed logging
 func (d *DatabaseService) Start(_ context.Context) error {
@@ -123,7 +172,7 @@ func (d *DatabaseService) Start(_ context.Context) error {
 	hasUnmigrated := datastoreV2.HasUnmigratedLegacyRecords(settings, datastoreLog)
 
 	// Check for and perform database consolidation if needed (SQLite only)
-	// Skip consolidation when unmigrated records found — let the worker tail-sync them first
+	// Skip consolidation when unmigrated records found; let the worker tail-sync them first
 	if settings.Output.SQLite.Enabled && !hasUnmigrated {
 		consolidated, err := datastoreV2.CheckAndConsolidateAtStartup(settings.Output.SQLite.Path, datastoreLog)
 		if err != nil {
@@ -143,7 +192,7 @@ func (d *DatabaseService) Start(_ context.Context) error {
 
 	// Check migration state before initializing database
 	// This allows us to skip the legacy database when migration is complete
-	startupState := datastoreV2.CheckMigrationStateBeforeStartup(settings)
+	startupState := d.checkStartupState(settings)
 	d.v2OnlyMode = startupState.MigrationStatus == entities.MigrationStatusCompleted && startupState.V2Available
 	freshInstall := startupState.FreshInstall
 
@@ -175,6 +224,28 @@ func (d *DatabaseService) Start(_ context.Context) error {
 			logger.String("operation", "startup_mode_check"))
 	}
 
+	// Journal the boot snapshot before any database file is created, so the
+	// recorded path facts match what the startup decision saw (a fresh
+	// install must record configured_exists=false). diagnostics is
+	// telemetry-free by design; report the returned anomalies to Sentry here.
+	_, bootAnomalies := diagnostics.RecordBoot(diagnostics.Default(), bootParamsFromStartup(settings, startupState))
+	for i := range bootAnomalies {
+		// CaptureMessage self-gates on the telemetry opt-in and scrubs the
+		// message; the journal record is already written regardless.
+		telemetry.CaptureMessage(
+			fmt.Sprintf("Boot anomaly: %s (%s)", bootAnomalies[i].Kind, bootAnomalies[i].Message),
+			sentry.LevelWarning,
+			"diagnostics",
+		)
+	}
+
+	// A database holding both schemas that cannot be reconciled without losing rows is never
+	// opened: neither the legacy fallback below nor the unmigrated-records override above
+	// may pick a side for the user.
+	if err := abortOnMixedSchema(datastoreLog, startupState.Error); err != nil {
+		return err
+	}
+
 	// Initialize database access based on startup state
 	var v2OnlyDatastore *v2only.Datastore
 
@@ -200,7 +271,7 @@ func (d *DatabaseService) Start(_ context.Context) error {
 			// Set global enhanced database flag
 			datastoreV2.SetEnhancedDatabaseMode()
 			// Notify the API layer that we're in v2-only mode
-			apiv2.SetV2OnlyMode()
+			importsapi.SetV2OnlyMode()
 			// Set the v2 database manager
 			d.v2Manager = v2OnlyDatastore.Manager()
 		}
@@ -228,9 +299,18 @@ func (d *DatabaseService) Start(_ context.Context) error {
 			// Set global enhanced database flag
 			datastoreV2.SetEnhancedDatabaseMode()
 			// Notify the API layer that we're in v2-only mode
-			apiv2.SetV2OnlyMode()
+			importsapi.SetV2OnlyMode()
 			// Set the v2 database manager
 			d.v2Manager = v2OnlyDatastore.Manager()
+			// Journal the fresh-database creation. A MySQL fresh install has
+			// no file path; journal an empty path rather than the unused
+			// sqlite setting.
+			freshDBPath := ""
+			if !settings.Output.MySQL.Enabled {
+				freshDBPath = settings.Output.SQLite.Path
+			}
+			diagnostics.RecordFreshDB(diagnostics.Default(),
+				freshDBPath, datastoreV2.DecisionFreshInstall)
 		}
 
 	default:
@@ -264,14 +344,15 @@ func (d *DatabaseService) Start(_ context.Context) error {
 	}
 
 	// Set datastore schema version as a Sentry tag for telemetry
-	telemetry.SetDatastoreSchemaTag(d.dataStore.SchemaVersion())
+	schemaVersion := d.dataStore.SchemaVersion()
+	telemetry.SetDatastoreSchemaTag(schemaVersion)
 
 	// Initialize v2 migration infrastructure only if not in enhanced database mode
 	// In enhanced database mode, migration is already complete - no need for migration infrastructure
 	if !d.v2OnlyMode {
 		// This sets up the StateManager and Worker for the database migration API.
 		// Store the returned manager so Stop() can close the v2 database connection.
-		migrationManager, err := initializeMigrationInfrastructure(settings, d.dataStore)
+		infra, err := initializeMigrationInfrastructure(settings, d.dataStore)
 		if err != nil {
 			// Schema corruption during migration setup is the same silent-fallback class
 			// of failure the v2-only and fresh-install arms now refuse. A migration v2
@@ -287,25 +368,95 @@ func (d *DatabaseService) Start(_ context.Context) error {
 			GetLogger().Warn("migration infrastructure initialization failed",
 				logger.Error(err),
 				logger.String("operation", "initialize_migration_infrastructure"))
-		} else {
-			d.v2Manager = migrationManager
+		}
+		if infra != nil {
+			d.v2Manager = infra.manager
+			if infra.states != nil {
+				d.legacyMonitor = newLegacySchemaMonitor(infra.states, legacySchemaPollInterval, datastoreLog,
+					schemaVersion == datastore.SchemaVersionLegacy)
+				if infra.metadata != nil {
+					d.legacyMonitor.setReminder(newLegacyReminder(infra.metadata,
+						func() *conf.Settings { return conf.CurrentOrFallback(d.settings) },
+						d.settings.BuildDate, legacySchemaPollInterval, datastoreLog))
+				}
+			}
+		}
+		if d.legacyMonitor == nil && schemaVersion == datastore.SchemaVersionLegacy {
+			// Legacy schema without a readable migration state.
+			_ = telemetry.SetMigrationStateTag(migrationTagUnavailable)
+			logLegacySchemaWarning(datastoreLog, migration.LegacyNoticeNone, migrationTagUnavailable)
 		}
 	} else {
 		datastoreLog.Debug("skipping migration infrastructure in enhanced database mode",
 			logger.String("operation", "initialize_migration_infrastructure"))
 	}
 
+	// Start the monitor last so the failure defer above never has to stop it.
+	if d.legacyMonitor != nil {
+		d.legacyMonitor.start()
+	}
+
 	startSucceeded = true
 	return nil
 }
 
+// bootParamsFromStartup maps settings and the datastore startup state into
+// plain-typed diagnostics boot parameters. Kept as a pure function for
+// testability; RecordBoot itself is best-effort.
+func bootParamsFromStartup(settings *conf.Settings, st datastoreV2.StartupState) *diagnostics.BootParams {
+	p := &diagnostics.BootParams{
+		Version:         settings.Version,
+		BuildDate:       settings.BuildDate,
+		StartupDecision: st.Decision,
+		MigrationState:  string(st.MigrationStatus),
+	}
+
+	if cfgPath, err := conf.FindConfigFile(); err == nil {
+		p.ConfigPath = cfgPath
+		p.ConfigExisted = true
+	}
+	if created, path := conf.DefaultConfigCreated(); created {
+		p.ConfigDefaulted = true
+		// The config file on disk was generated by THIS process during
+		// Load, so it did not exist before boot: never report
+		// config_existed=true together with config_defaulted=true.
+		p.ConfigExisted = false
+		if p.ConfigPath == "" {
+			p.ConfigPath = path
+		}
+	}
+
+	if dir, err := conf.ResolveConfigDir(); err == nil {
+		p.ConfigDir = dir
+	}
+
+	if settings.Output.MySQL.Enabled {
+		p.Dialect = datastore.DialectMySQL
+		return p
+	}
+	p.Dialect = datastore.DialectSQLite
+	p.ConfiguredDBPath = settings.Output.SQLite.Path
+	p.V2SidecarPath = datastoreV2.V2MigrationPathFromConfigured(settings.Output.SQLite.Path)
+	if abs, err := filepath.Abs(settings.Output.SQLite.Path); err == nil {
+		p.DataDir = filepath.Dir(abs)
+	}
+	return p
+}
+
 // Stop gracefully shuts down the database connections with WAL checkpoints.
-// It stops the migration worker, closes the v2 database, then closes the primary datastore.
+// It stops the migration state monitor and the migration worker, closes the v2 database,
+// then closes the primary datastore.
 func (d *DatabaseService) Stop(_ context.Context) error {
 	log := GetLogger()
 
+	// Stop the state monitor first so nothing reads the database after it closes.
+	if d.legacyMonitor != nil {
+		d.legacyMonitor.stop()
+		d.legacyMonitor = nil
+	}
+
 	// Stop the migration worker before closing databases.
-	apiv2.StopMigrationWorker()
+	importsapi.StopMigrationWorker()
 
 	// Close v2 database (only in migration mode, not v2-only).
 	if !d.v2OnlyMode {
@@ -319,7 +470,7 @@ func (d *DatabaseService) Stop(_ context.Context) error {
 }
 
 // closeDataStore performs a WAL checkpoint and closes the primary datastore.
-// Safe to call multiple times — nils out the reference after close.
+// Safe to call multiple times: nils out the reference after close.
 func (d *DatabaseService) closeDataStore(log logger.Logger) {
 	store := d.dataStore
 	d.dataStore = nil
@@ -368,13 +519,15 @@ const v2SchemaResetMarker = ".v2_schema_reset"
 // file (plus WAL/SHM) is deleted so the caller can recreate the manager and
 // retry. A marker file prevents infinite crash loops.
 //
-// Returns nil when the database was successfully deleted (caller must recreate
-// the manager and call Initialize again), or the original/wrapped error when
-// self-healing is not possible.
+// Returns nil when Initialize succeeded or when the database was deleted (in
+// the second case the caller must recreate the manager and call Initialize
+// again; it tells the cases apart by whether v2Path still exists), or the
+// original/wrapped error when self-healing is not possible.
 func initializeV2WithSelfHealing(manager datastoreV2.Manager, v2Path string, log logger.Logger) error {
 	// Attempt normal initialization.
-	if err := manager.Initialize(); err == nil {
-		// Success — clean up any stale marker from a previous recovery.
+	err := manager.Initialize()
+	if err == nil {
+		// Success: clean up any stale marker from a previous recovery.
 		markerPath := filepath.Join(filepath.Dir(v2Path), v2SchemaResetMarker)
 		if removeErr := os.Remove(markerPath); removeErr != nil && !os.IsNotExist(removeErr) {
 			log.Warn("failed to remove stale schema reset marker",
@@ -382,15 +535,15 @@ func initializeV2WithSelfHealing(manager datastoreV2.Manager, v2Path string, log
 				logger.String("marker", markerPath))
 		}
 		return nil
-	} else if !errors.Is(err, datastoreV2.ErrV2SchemaCorrupted) {
-		// Not a schema corruption error — return as-is.
-		return err
-	} else {
-		// Schema corrupted — attempt self-healing below.
-		log.Warn("v2 schema corruption detected, evaluating self-healing",
-			logger.Error(err),
-			logger.String("path", v2Path))
 	}
+	if !errors.Is(err, datastoreV2.ErrV2SchemaCorrupted) {
+		// Not a schema corruption error: return as-is.
+		return err
+	}
+	// Schema corrupted: attempt self-healing below.
+	log.Warn("v2 schema corruption detected, evaluating self-healing",
+		logger.Error(err),
+		logger.String("path", v2Path))
 
 	// Guard: if the marker already exists, a previous reset did not help.
 	markerPath := filepath.Join(filepath.Dir(v2Path), v2SchemaResetMarker)
@@ -425,14 +578,14 @@ func initializeV2WithSelfHealing(manager datastoreV2.Manager, v2Path string, log
 	}
 
 	// Delete the database file and its WAL/SHM companions.
-	// The main database file MUST be removed — if it fails, return an error
+	// The main database file MUST be removed: if it fails, return an error
 	// because the manager is already closed and the caller would proceed
 	// with a closed manager.
 	for _, suffix := range []string{"", "-wal", "-shm"} {
 		path := v2Path + suffix
 		if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
 			if suffix == "" {
-				// Main database file removal failed — this is fatal for self-healing
+				// Main database file removal failed: this is fatal for self-healing
 				return fmt.Errorf("failed to remove corrupt v2 database file %s: %w", path, removeErr)
 			}
 			log.Warn("failed to remove v2 companion file during self-healing",
@@ -480,14 +633,14 @@ func isV2DatabaseSafeToDelete(dbPath string, log logger.Logger) bool {
 		var exists int64
 		// Check if the table exists before querying it.
 		if err := db.Raw("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&exists).Error; err != nil || exists == 0 {
-			continue // Table doesn't exist — OK.
+			continue // Table doesn't exist, OK.
 		}
 		var rowCount int64
 		if err := db.Raw("SELECT COUNT(*) FROM `" + table + "`").Scan(&rowCount).Error; err != nil {
 			log.Warn("failed to count rows in table during safety check",
 				logger.Error(err),
 				logger.String("table", table))
-			return false // Cannot confirm empty — be safe.
+			return false // Cannot confirm empty, be safe.
 		}
 		if rowCount > 0 {
 			log.Warn("v2 database has user data, not safe to delete",
@@ -524,7 +677,7 @@ func isV2DatabaseSafeToDelete(dbPath string, log logger.Logger) bool {
 }
 
 // closeV2Database performs a WAL checkpoint and closes the v2 database.
-// Safe to call multiple times — nils out the reference after close.
+// Safe to call multiple times: nils out the reference after close.
 func (d *DatabaseService) closeV2Database(log logger.Logger) {
 	manager := d.v2Manager
 	d.v2Manager = nil

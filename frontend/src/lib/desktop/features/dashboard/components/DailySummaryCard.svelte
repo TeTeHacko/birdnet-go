@@ -73,12 +73,12 @@ Responsive Breakpoints:
     getTemperatureSymbol,
     type TemperatureUnit,
   } from '$lib/utils/formatters';
-  import { dashboardSettings } from '$lib/stores/settings';
+  import { dashboardSettings, speciesTrackingSettings } from '$lib/stores/settings';
   import {
     resolveNoveltyCategory,
     noveltyCategoryColorVar,
   } from '$lib/desktop/features/dashboard/utils/noveltyCategory';
-  import { ChevronLeft, ChevronRight, Star, XCircle } from '@lucide/svelte';
+  import { ChevronLeft, ChevronRight, History, Star, XCircle } from '@lucide/svelte';
   import { untrack } from 'svelte';
   import AnimatedCounter from './AnimatedCounter.svelte';
   import BirdThumbnailPopup from './BirdThumbnailPopup.svelte';
@@ -636,6 +636,16 @@ Responsive Breakpoints:
     hourly: () => '#',
   });
 
+  // Returns the cached URL for a key, building and storing it on first use
+  function cachedUrl(cacheKey: string, build: () => string): string {
+    let url = urlCache.get(cacheKey);
+    if (url === undefined) {
+      url = build();
+      urlCache.set(cacheKey, url);
+    }
+    return url;
+  }
+
   // Reactive URL builder factory - clears cache when selectedDate changes
   $effect(() => {
     // Clear cache when selectedDate changes to prevent stale URLs
@@ -644,18 +654,14 @@ Responsive Breakpoints:
     // Create optimized, memoized URL builders
     urlBuilders.species = (species: DailySpeciesSummary) => {
       const cacheKey = `species:${species.scientific_name}:${selectedDate}`;
-      if (!urlCache.has(cacheKey)) {
-        urlCache.set(
-          cacheKey,
-          buildSpeciesDetectionUrl(
-            species.scientific_name,
-            selectedDate,
-            CONFIG.QUERY.DEFAULT_NUM_RESULTS,
-            0
-          )
-        );
-      }
-      return urlCache.get(cacheKey)!;
+      return cachedUrl(cacheKey, () =>
+        buildSpeciesDetectionUrl(
+          species.scientific_name,
+          selectedDate,
+          CONFIG.QUERY.DEFAULT_NUM_RESULTS,
+          0
+        )
+      );
     };
 
     urlBuilders.speciesHour = (
@@ -664,31 +670,23 @@ Responsive Breakpoints:
       duration: number = 1
     ) => {
       const cacheKey = `species-hour:${species.scientific_name}:${selectedDate}:${hour}:${duration}`;
-      if (!urlCache.has(cacheKey)) {
-        urlCache.set(
-          cacheKey,
-          buildSpeciesHourUrl(
-            species.scientific_name,
-            selectedDate,
-            hour,
-            duration,
-            CONFIG.QUERY.DEFAULT_NUM_RESULTS,
-            0
-          )
-        );
-      }
-      return urlCache.get(cacheKey)!;
+      return cachedUrl(cacheKey, () =>
+        buildSpeciesHourUrl(
+          species.scientific_name,
+          selectedDate,
+          hour,
+          duration,
+          CONFIG.QUERY.DEFAULT_NUM_RESULTS,
+          0
+        )
+      );
     };
 
     urlBuilders.hourly = (hour: number, duration: number = 1) => {
       const cacheKey = `hourly:${selectedDate}:${hour}:${duration}`;
-      if (!urlCache.has(cacheKey)) {
-        urlCache.set(
-          cacheKey,
-          buildHourlyDetectionUrl(selectedDate, hour, duration, CONFIG.QUERY.DEFAULT_NUM_RESULTS, 0)
-        );
-      }
-      return urlCache.get(cacheKey)!;
+      return cachedUrl(cacheKey, () =>
+        buildHourlyDetectionUrl(selectedDate, hour, duration, CONFIG.QUERY.DEFAULT_NUM_RESULTS, 0)
+      );
     };
   });
 
@@ -709,6 +707,16 @@ Responsive Breakpoints:
     return serverTimezone ? getDateInTimezone(serverTimezone) : getLocalDateString();
   });
   const isToday = $derived(selectedDate === serverTodayDate);
+
+  // Absence threshold for the infrequent novelty tier; undefined disables it so
+  // the category never activates when species tracking (or its infrequent
+  // sub-toggle) is turned off, matching the gating in NewSpeciesHighlightsCard.
+  const infrequentThresholdDays = $derived(
+    $speciesTrackingSettings?.enabled === true &&
+      $speciesTrackingSettings.infrequentTracking?.enabled === true
+      ? ($speciesTrackingSettings.infrequentTracking.absenceDays ?? 14)
+      : undefined
+  );
 
   // Check for reduced motion preference for performance and accessibility
   const prefersReducedMotion = $derived(
@@ -1051,6 +1059,10 @@ Responsive Breakpoints:
           <div class="flex flex-col" style:gap="var(--grid-gap)">
             {#each sortedData as item, index (`${item.scientific_name}_${index}`)}
               {@const displayName = localizeSpeciesName(item.scientific_name, item.common_name)}
+              {@const noveltyCat = resolveNoveltyCategory(item, {
+                infrequentThresholdDays,
+                isToday,
+              })}
               <div
                 class="flex items-center species-row"
                 class:new-species={item.isNew && !prefersReducedMotion}
@@ -1084,7 +1096,7 @@ Responsive Breakpoints:
                     title={displayName}
                   >
                     <span class="truncate flex-1">{displayName}</span>
-                    {#if resolveNoveltyCategory(item) === 'lifetime'}
+                    {#if noveltyCat === 'lifetime'}
                       <span
                         class="inline-block shrink-0"
                         style:color={noveltyCategoryColorVar('lifetime')}
@@ -1092,7 +1104,7 @@ Responsive Breakpoints:
                       >
                         <Star class="size-3 fill-current" />
                       </span>
-                    {:else if resolveNoveltyCategory(item) === 'year'}
+                    {:else if noveltyCat === 'year'}
                       <span
                         class="shrink-0"
                         style:color={noveltyCategoryColorVar('year')}
@@ -1100,13 +1112,23 @@ Responsive Breakpoints:
                       >
                         📅
                       </span>
-                    {:else if resolveNoveltyCategory(item) === 'season'}
+                    {:else if noveltyCat === 'season'}
                       <span
                         class="shrink-0"
                         style:color={noveltyCategoryColorVar('season')}
                         title={`First time this ${item.current_season || 'season'} (${item.days_this_season ?? 0} day${(item.days_this_season ?? 0) === 1 ? '' : 's'} ago)`}
                       >
                         🌿
+                      </span>
+                    {:else if noveltyCat === 'infrequent'}
+                      <span
+                        class="inline-block shrink-0"
+                        style:color={noveltyCategoryColorVar('infrequent')}
+                        title={t('dashboard.dailySummary.tooltips.infrequent', {
+                          days: item.days_since_last_seen ?? 0,
+                        })}
+                      >
+                        <History class="size-3" />
                       </span>
                     {/if}
                   </a>

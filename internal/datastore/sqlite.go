@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,17 +39,37 @@ type SQLiteStore struct {
 
 	// dbstatAvailable caches whether the dbstat virtual table exists.
 	// 0 = unchecked, 1 = available, -1 = not available.
-	dbstatAvailable int32
+	dbstatAvailable atomic.Int32
 
 	// Guards to prevent starting monitoring loops more than once.
 	integrityOnce     sync.Once
 	walCheckpointOnce sync.Once
 }
 
-func validateSQLiteConfig() error {
-	// Add validation logic for SQLite configuration
-	// Return an error if the configuration is invalid
-	return nil
+// defaultSQLitePath mirrors the viper default set in conf/defaults.go
+// ("output.sqlite.path"). It is used as a fallback when the configured path is
+// blank, since that default only applies at fresh config bootstrap and can be
+// overwritten with an empty string by a later settings save.
+const defaultSQLitePath = "birdnet.db"
+
+// resolveSQLitePath returns the configured SQLite database path, falling back to
+// defaultSQLitePath when the configured value is blank. A blank path would
+// otherwise flow into buildSQLiteDSN and produce a bare "?<pragmas>" DSN; the
+// SQLite driver treats everything before the "?" as the filename, so it would
+// create/open a file literally named after the pragma query string in the
+// working directory instead of the intended database.
+func resolveSQLitePath(configured string) string {
+	if strings.TrimSpace(configured) == "" {
+		return defaultSQLitePath
+	}
+	return configured
+}
+
+// ResolveSQLitePath returns the database file the datastore opens for a
+// configured SQLite path: the path itself, or the default database file when it
+// is blank.
+func ResolveSQLitePath(configured string) string {
+	return resolveSQLitePath(configured)
 }
 
 // getDiskSpace returns available disk space for the given path using diskmanager
@@ -188,8 +209,13 @@ func (s *SQLiteStore) createBackup(dbPath string) error {
 
 // Open initializes the SQLite database connection
 func (s *SQLiteStore) Open() (retErr error) {
-	// Get database path from settings
-	dbPath := s.Settings.Output.SQLite.Path
+	// Get database path from settings, guarding against a blank value that
+	// would otherwise produce a malformed DSN and open a bogus file.
+	dbPath := resolveSQLitePath(s.Settings.Output.SQLite.Path)
+	if dbPath != s.Settings.Output.SQLite.Path {
+		GetLogger().Warn("Configured SQLite path is empty; falling back to default",
+			logger.String("default_path", dbPath))
+	}
 
 	// Initialize telemetry integration
 	telemetryEnabled := s.Settings != nil && s.Settings.Sentry.Enabled
@@ -221,10 +247,10 @@ func (s *SQLiteStore) Open() (retErr error) {
 	var gormLogger gormlogger.Interface
 	if s.Settings.Debug {
 		// Use debug log level with lower slow threshold
-		gormLogger = NewGormLogger(500*time.Millisecond, gormlogger.Info, s.metrics)
+		gormLogger = NewGormLogger(500*time.Millisecond, gormlogger.Info, s.metrics, "sqlite")
 	} else {
 		// Use default settings with metrics
-		gormLogger = NewGormLogger(500*time.Millisecond, gormlogger.Warn, s.metrics)
+		gormLogger = NewGormLogger(500*time.Millisecond, gormlogger.Warn, s.metrics, "sqlite")
 	}
 
 	// Build DSN with pragmas as query parameters so they apply to every
@@ -233,7 +259,7 @@ func (s *SQLiteStore) Open() (retErr error) {
 	// happens to execute the statement gets them; new pool connections
 	// remain at SQLite defaults and miss busy_timeout entirely, leading
 	// to immediate "database is locked" errors under concurrency.
-	dsn := buildSQLiteDSN(dbPath, "_journal_mode=WAL&_busy_timeout=30000&_foreign_keys=ON&_synchronous=NORMAL&_cache_size=-4000")
+	dsn := buildSQLiteDSN(dbPath, "_journal_mode=WAL&_busy_timeout=30000&_foreign_keys=ON&_synchronous=NORMAL&_cache_size=-16000")
 
 	// Open SQLite database with GORM
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
@@ -271,6 +297,16 @@ func (s *SQLiteStore) Open() (retErr error) {
 			Build()
 	}
 	sqlDB.SetMaxOpenConns(1)
+
+	// Enable memory-mapped I/O for reads. mattn/go-sqlite3 has no _mmap_size DSN
+	// param, so set it per-connection; with SetMaxOpenConns(1) and no connection
+	// expiry there is a single long-lived connection, so this one Exec persists.
+	// mmap maps the main DB file (up to the cap or its size) into the page cache,
+	// avoiding read() syscalls; it is read-only and WAL/durability are unaffected.
+	if err := db.Exec(fmt.Sprintf("PRAGMA mmap_size=%d", sqliteMmapSizeBytes)).Error; err != nil {
+		GetLogger().Warn("Failed to set SQLite mmap_size (continuing without memory-mapped reads)",
+			logger.Error(err))
+	}
 
 	// Clean up connection pool if any subsequent initialization step fails.
 	defer func() {
@@ -352,6 +388,12 @@ func (s *SQLiteStore) Open() (retErr error) {
 
 // integrityCheckInterval is how often PRAGMA quick_check runs (24 hours).
 const integrityCheckInterval = 24 * time.Hour
+
+// sqliteMmapSizeBytes caps SQLite's memory-mapped I/O for the main DB file at
+// 256 MiB. This is a max (SQLite maps at most the file size) and consumes virtual
+// address space, not resident memory, so it is safe on small 64-bit hosts and a
+// large win for cold reads on slow storage (e.g. an SD card).
+const sqliteMmapSizeBytes = 256 * 1024 * 1024
 
 // startIntegrityCheckLoop runs PRAGMA quick_check at startup and every 24 hours.
 // Uses the monitoring context for clean shutdown.
@@ -599,12 +641,16 @@ func (s *SQLiteStore) UpdateNote(id string, updates map[string]any) error {
 	return s.DB.Model(&Note{}).Where("id = ?", id).Updates(updates).Error
 }
 
-// GetDBPath returns the database file path for telemetry integration
+// GetDBPath returns the database file path for telemetry integration. It
+// resolves a blank configured path to the same default Open() falls back to, so
+// callers never see an empty path while the connection actually runs against the
+// default database.
 func (s *SQLiteStore) GetDBPath() string {
-	if s.Settings != nil && s.Settings.Output.SQLite.Path != "" {
-		return s.Settings.Output.SQLite.Path
+	var configured string
+	if s.Settings != nil {
+		configured = s.Settings.Output.SQLite.Path
 	}
-	return ""
+	return resolveSQLitePath(configured)
 }
 
 // CheckpointWAL forces a checkpoint of the Write-Ahead Log to ensure all changes are written to the main database file.

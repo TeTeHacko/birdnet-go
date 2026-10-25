@@ -12,6 +12,13 @@ import (
 func TestValidateSecuritySettings_OAuth(t *testing.T) {
 	t.Parallel()
 
+	// The blunt security-oauth-host rule is gone: it rejected a provider carrying a
+	// perfectly good absolute redirectUri just because security.host was unset, and
+	// it only ever looked at the deprecated blocks. What replaced it is
+	// validateOAuthRedirects, which is narrower (only a missing usable redirect is
+	// fatal) and wider (every provider kind, via the migrated array). The cases below
+	// all supply an absolute redirectUri, so none of them is rejected here; see
+	// TestValidateOAuthRedirects_ScopedToLockOutShape for the boundary.
 	tests := []struct {
 		name     string
 		security Security
@@ -19,7 +26,7 @@ func TestValidateSecuritySettings_OAuth(t *testing.T) {
 		errType  string
 	}{
 		{
-			name: "Google OAuth enabled without host - should fail",
+			name: "Google OAuth enabled without host - not rejected here",
 			security: Security{
 				Host: "",
 				GoogleAuth: SocialProvider{
@@ -29,11 +36,10 @@ func TestValidateSecuritySettings_OAuth(t *testing.T) {
 					RedirectURI:  "https://example.com/callback",
 				},
 			},
-			wantErr: true,
-			errType: "security-oauth-host",
+			wantErr: false,
 		},
 		{
-			name: "GitHub OAuth enabled without host - should fail",
+			name: "GitHub OAuth enabled without host - not rejected here",
 			security: Security{
 				Host: "",
 				GithubAuth: SocialProvider{
@@ -43,11 +49,10 @@ func TestValidateSecuritySettings_OAuth(t *testing.T) {
 					RedirectURI:  "https://example.com/callback",
 				},
 			},
-			wantErr: true,
-			errType: "security-oauth-host",
+			wantErr: false,
 		},
 		{
-			name: "Both OAuth providers enabled without host - should fail",
+			name: "Both OAuth providers enabled without host - not rejected here",
 			security: Security{
 				Host: "",
 				GoogleAuth: SocialProvider{
@@ -63,8 +68,7 @@ func TestValidateSecuritySettings_OAuth(t *testing.T) {
 					RedirectURI:  "https://example.com/github/callback",
 				},
 			},
-			wantErr: true,
-			errType: "security-oauth-host",
+			wantErr: false,
 		},
 		{
 			name: "Google OAuth enabled with valid host - should pass",
@@ -532,6 +536,46 @@ func TestValidateSecuritySettings_TrustedProxies(t *testing.T) {
 			if tt.wantErr {
 				require.Error(t, err)
 				assertValidationError(t, err, tt.errType)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestValidateSecuritySettings_PlainHTTPSessionClients tests plain-HTTP session
+// client address validation.
+func TestValidateSecuritySettings_PlainHTTPSessionClients(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		clients []string
+		wantErr bool
+	}{
+		{name: "empty list", clients: nil},
+		{name: "IPv4 and IPv6 addresses", clients: []string{"172.18.0.5", "2001:db8::5", "::ffff:172.18.0.6"}},
+		{name: "blank entries are skipped", clients: []string{"", "  ", "172.18.0.5"}},
+		{name: "IPv4 range", clients: []string{"172.18.0.0/29"}, wantErr: true},
+		{name: "IPv6 range", clients: []string{"2001:db8::/64"}, wantErr: true},
+		{name: "IPv4 default route", clients: []string{"0.0.0.0/0"}, wantErr: true},
+		{name: "single-host CIDR", clients: []string{"172.18.0.5/32"}, wantErr: true},
+		{name: "cloudflare preset is not an address", clients: []string{TrustedProxyCloudflarePreset}, wantErr: true},
+		{name: "host name", clients: []string{"birdnet-go"}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateSecuritySettings(&Security{
+				PlainHTTPSessionClients: tt.clients,
+				SessionDuration:         24 * time.Hour,
+			})
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assertValidationError(t, err, "security-plainhttpsessionclients-format")
 			} else {
 				assert.NoError(t, err)
 			}

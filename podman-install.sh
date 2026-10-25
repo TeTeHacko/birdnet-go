@@ -958,6 +958,12 @@ QUADLET_DIR="$HOME/.config/containers/systemd"
 AUDIO_ENV="--device /dev/snd:/dev/snd"
 # Flag for fresh installation
 FRESH_INSTALL="false"
+# Whether a user config already exists at startup. Captured here, before any
+# install step writes the default config, so it is a reliable "fresh vs update"
+# signal for the data-affecting rootless-audio decision. FRESH_INSTALL is set
+# later in run_installation, but its detection also flips true for existing
+# installs (an unrelated pre-existing quirk), so it must not gate that decision.
+if [ -e "$CONFIG_FILE" ]; then INSTALL_HAD_CONFIG="true"; else INSTALL_HAD_CONFIG="false"; fi
 # Configured timezone (will be set during configuration)
 CONFIGURED_TZ=""
 
@@ -1701,6 +1707,43 @@ check_birdnet_installation() {
     fi
 }
 
+# True when the given host socket exists. Gate on the socket (-S), not its directory.
+host_socket_present() { [ -S "$1" ]; }
+
+# True when the quadlet file exists and has keep-id enabled (uncommented).
+quadlet_has_keep_id() { [ -f "$1" ] && grep -q '^UserNS=keep-id' "$1"; }
+
+# Enable the template's commented "#Volume=DIR:DIR:ro" line for a host directory.
+# Matches the Volume= line itself, so comment wording can change freely.
+enable_quadlet_volume() {
+    sed -i "s|^#Volume=$2:$2:ro|Volume=$2:$2:ro|" "$1"
+}
+
+# mDNS host mounts for a quadlet. The Avahi mount is always present in the unit: its
+# per-unit source is linked to /run/avahi-daemon (or left as an empty directory) by the
+# unit's ExecStartPre at every start, so Podman never meets a missing bind source and
+# nothing is toggled here. The D-Bus mount is enabled only when its host socket exists
+# (Podman refuses to start a container whose bind source is missing), keep-id is on
+# (EXTERNAL auth compares uids) and the uid is non-root (uid 0 on the system bus is host
+# root), so call this after keep-id may have been enabled. The template is re-copied on
+# every run, so the D-Bus decision is re-detected on each install/update. Never :z or :Z.
+# Usage: enable_mdns_mounts <quadlet> <uid> <avahi socket> <dbus socket>
+enable_mdns_mounts() {
+    local quadlet="$1" uid="$2" avahi_socket="$3" dbus_socket="$4"
+    if host_socket_present "$avahi_socket"; then
+        log_message "INFO" "Host avahi-daemon socket found; the unit links it into the container at each start"
+        print_message "🌐 Host avahi-daemon mount active for .local (mDNS) hostnames" "$GREEN"
+    else
+        log_message "INFO" "Host avahi-daemon socket not found; the container resolves .local hostnames only through unicast DNS until avahi-daemon is installed and the unit restarted"
+    fi
+    if [ "$uid" != "0" ] && host_socket_present "$dbus_socket" && quadlet_has_keep_id "$quadlet"; then
+        enable_quadlet_volume "$quadlet" "$(dirname "$dbus_socket")"
+        log_message "INFO" "Enabled host D-Bus mount in Quadlet unit for DNS-SD service discovery"
+    else
+        log_message "INFO" "D-Bus mount not enabled (needs /run/dbus/system_bus_socket, keep-id and a non-root uid); DNS-SD service discovery will not work in the container"
+    fi
+}
+
 # Function to create Quadlet service files
 create_quadlet_service() {
     log_message "INFO" "Creating Quadlet service configuration"
@@ -1712,6 +1755,15 @@ create_quadlet_service() {
     local quadlet_source=""
     local quadlet_target="$QUADLET_DIR/birdnet-go.container"
     local network_target="$QUADLET_DIR/birdnet-go.network"
+
+    # Remember whether the current unit already had rootless audio enabled, so
+    # regenerating it on an update does not silently revert a prior opt-in (either
+    # a fresh-install auto-enable or a manual one). Checked before the template is
+    # copied over the target below.
+    local had_rootless_audio=false
+    if quadlet_has_keep_id "$quadlet_target"; then
+        had_rootless_audio=true
+    fi
     
     # Copy network configuration
     if [ -f "Podman/quadlet/birdnet-go.network" ]; then
@@ -1786,16 +1838,26 @@ Image=${BIRDNET_GO_IMAGE}
 ContainerName=birdnet-go
 Volume=./config:/config
 Volume=./data:/data
+# Host mounts for .local names and DNS-SD discovery (see doc/wiki/rtsp-troubleshooting.md).
+# The Avahi source is a per-unit path that ExecStartPre links to /run/avahi-daemon when
+# avahi runs on the host, or leaves as an empty directory, so the unit starts either way.
+# The D-Bus mount needs keep-id and a non-root uid. Never add :z or :Z.
+Volume=%t/%N-mdns/avahi-daemon:/run/avahi-daemon:ro
+#Volume=/run/dbus:/run/dbus:ro
 PublishPort=${WEB_PORT}:8080
 Environment=TZ=${CONFIGURED_TZ:-UTC}
 Environment=BIRDNET_UID=\$(id -u)
 Environment=BIRDNET_GID=\$(id -g)
-Device=/dev/snd:/dev/snd
+AddDevice=-/dev/snd:/dev/snd
+# Rootless audio (opt-in): uncomment to reach the sound card under rootless
+# Podman. A fresh install enables this automatically (see below).
+#UserNS=keep-id
+#GroupAdd=keep-groups
 Network=birdnet-bridge
-Tmpfs=/config/hls:exec,size=50M,uid=\$(id -u),gid=\$(id -g),mode=0755
 
 [Service]
 Restart=always
+ExecStartPre=/bin/sh -c 'mkdir -p %t/%N-mdns && rm -rf %t/%N-mdns/avahi-daemon && if [ -S /run/avahi-daemon/socket ]; then ln -sfn /run/avahi-daemon %t/%N-mdns/avahi-daemon; else mkdir %t/%N-mdns/avahi-daemon; fi'
 TimeoutStartSec=900
 
 [Install]
@@ -1803,7 +1865,46 @@ WantedBy=default.target
 EOF
         log_message "INFO" "Created default Quadlet container configuration"
     fi
+
+    # Enable rootless audio on a genuinely fresh install (no pre-existing user
+    # config to strand), or when a prior unit already had it enabled so an update
+    # preserves the opt-in. INSTALL_HAD_CONFIG is captured at startup before the
+    # default config is written, so it is the reliable fresh-vs-update signal for
+    # this data-affecting decision. An existing install that never opted in is
+    # left untouched: its /config and /data are owned by a subuid, and switching
+    # to keep-id would run the app as the host UID and lose access to those files.
+    if [ "$INSTALL_HAD_CONFIG" = "false" ] || [ "$had_rootless_audio" = "true" ]; then
+        # keep-groups only works under the crun OCI runtime; runc silently ignores
+        # it (the container starts but without the host audio group, so the sound
+        # card stays inaccessible). The podman package pulls runc on some distros
+        # (e.g. Debian 13), so install crun; Podman then prefers it.
+        if ! command -v crun >/dev/null 2>&1; then
+            log_message "INFO" "Installing crun (required for rootless audio via keep-groups)"
+            sudo apt-get update -qq >/dev/null 2>&1 || true
+            sudo apt-get install -qq -y crun >/dev/null 2>&1 || true
+        fi
+        # Enable keep-id/keep-groups when preserving a prior opt-in (reverting it
+        # would break volumes already re-owned to the host UID), or on a fresh
+        # install when crun is available. On a fresh install without crun, leave
+        # the default (subuid) mode instead: keep-groups would be a no-op, so
+        # switching the app to the host UID would gain nothing.
+        if [ "$had_rootless_audio" = "true" ] || command -v crun >/dev/null 2>&1; then
+            sed -i 's|^#UserNS=keep-id|UserNS=keep-id|; s|^#GroupAdd=keep-groups|GroupAdd=keep-groups|' "$quadlet_target"
+            if command -v crun >/dev/null 2>&1; then
+                log_message "INFO" "Enabled rootless audio (keep-id + keep-groups + crun) in Quadlet unit"
+                print_message "🔊 Rootless audio enabled (keep-id + keep-groups + crun): sound card works out of the box" "$GREEN"
+            else
+                log_message "WARN" "Kept rootless audio (keep-id) enabled but crun is missing; audio needs crun"
+                print_message "⚠️  Rootless audio (keep-id) kept enabled, but crun is missing so the sound card will not work until you install it (see Podman/README.md)" "$YELLOW"
+            fi
+        else
+            log_message "WARN" "crun unavailable; left rootless audio disabled (see Podman/README.md)"
+            print_message "⚠️  crun is unavailable, so rootless audio was not enabled (see Podman/README.md)" "$YELLOW"
+        fi
+    fi
     
+    enable_mdns_mounts "$quadlet_target" "$(id -u)" /run/avahi-daemon/socket /run/dbus/system_bus_socket
+
     # Reload systemd to recognize new Quadlet files
     systemctl --user daemon-reload
     log_command_result "systemctl --user daemon-reload" $? "Quadlet service reload"

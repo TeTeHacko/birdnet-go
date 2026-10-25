@@ -12,8 +12,8 @@ type Detection struct {
 
 	// Timestamps (consolidated - Unix timestamp is single source of truth)
 	DetectedAt int64  `gorm:"not null;index;index:idx_detection_label_date;index:idx_detection_confidence"`
-	BeginTime  *int64 // Milliseconds offset from source start
-	EndTime    *int64 // Milliseconds offset from source start
+	BeginTime  *int64 // Absolute capture begin time, Unix milliseconds (Save: BeginTime.UnixMilli)
+	EndTime    *int64 // Absolute capture completion time, Unix milliseconds (Save: EndTime.UnixMilli)
 
 	// Detection metadata
 	Confidence float64 `gorm:"not null;index:idx_detection_confidence"`
@@ -24,6 +24,10 @@ type Detection struct {
 
 	// Audio clip reference
 	ClipName *string `gorm:"type:varchar(500)"`
+	// SpectrogramClipName is the clip_name a detection had when retention deleted its audio while a spectrogram render of it was kept on disk. Spectrogram filenames derive from it. Mutually exclusive with ClipName.
+	SpectrogramClipName *string `gorm:"type:varchar(500)"`
+	// ClipSampleRate is the sample rate in Hz of the saved audio clip file. It is NULL when unknown (rows written before the column existed that were never probed, and rows with no clip). It describes the original capture, so it survives retention.
+	ClipSampleRate *int
 
 	// Processing metadata
 	ProcessingTimeMs *int64 // Milliseconds

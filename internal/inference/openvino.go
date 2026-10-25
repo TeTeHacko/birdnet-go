@@ -7,11 +7,16 @@ import (
 
 	"github.com/tphakala/birdnet-go/internal/errors"
 	ov "github.com/tphakala/birdnet-go/internal/inference/openvino"
+	"github.com/tphakala/birdnet-go/internal/logger"
 )
 
 var (
 	ovInitMu      sync.Mutex
 	ovInitialized bool
+	// ovInitPath is the library path the loaded core came from, recorded by
+	// InitOpenVINO so EnsureOpenVINOProbe can probe the same library out of
+	// process. Guarded by ovInitMu.
+	ovInitPath string
 )
 
 // ovActiveClassifiers counts OpenVINO classifiers currently serving inference.
@@ -86,12 +91,64 @@ func NewOpenVINOClassifier(modelPath string, opts OpenVINOClassifierOptions) (Cl
 // OpenVINOHasDevice reports whether the named OpenVINO device (e.g. ov.DeviceGPU)
 // is available. It returns false on any error (backend not compiled in, core not
 // initialized, or query failure), so callers can use it as a plain gate.
+//
+// It never enumerates devices in-process: ov_core_get_available_devices walks
+// the vendor driver stack, and a fault there aborts the whole process (issue
+// #4236). When the out-of-process probe has completed, its cached result
+// answers. While a probe is in flight, and before any probe has run, it answers
+// false. The GPU device planner runs the probe before building a classifier; a
+// host that loaded the core without it (the explicit-CPU plan path) reads false
+// here until EnsureOpenVINOProbe fills the cache.
 func OpenVINOHasDevice(name string) bool {
-	devs, err := ov.AvailableDevices()
-	if err != nil {
+	devs, status, err := cachedOVProbeDevices()
+	if status != ovProbeCached {
 		return false
 	}
-	return slices.Contains(devs, name)
+	return err == nil && slices.Contains(devs, name)
+}
+
+// EnsureOpenVINOProbe runs the out-of-process device probe for the library the
+// loaded OpenVINO core came from, unless a probe verdict for it is already
+// cached, so later OpenVINOHasDevice calls answer from the probe. It is a no-op
+// when this build has no OpenVINO backend or the core is not loaded (then no
+// device is available anyway). It blocks until the probe child finishes (bounded
+// by the probe timeout), so call it off request paths or where a one-time wait
+// is acceptable. A failed probe degrades to "no device", as in device planning.
+func EnsureOpenVINOProbe() {
+	if !ov.Supported {
+		return
+	}
+	ovInitMu.Lock()
+	initialized, path := ovInitialized, ovInitPath
+	ovInitMu.Unlock()
+	if !initialized {
+		return
+	}
+	if _, err := OpenVINOProbeDevices(path); err != nil {
+		logOVProbeFailure(path, err)
+	}
+}
+
+// ovProbeFailureWarned records the library paths whose probe failure has been
+// logged at WARN (value: struct{}), so a failing probe is diagnosable from the
+// log without a WARN line per call (a cached probe failure is returned to every
+// caller, and a timed-out probe is retried by later callers).
+//
+//nolint:gochecknoglobals // process-wide once-per-path log guard
+var ovProbeFailureWarned sync.Map
+
+// logOVProbeFailure logs a failed device probe for libraryPath: WARN the first
+// time for that path, DEBUG after. The error names the cause (a crashed child
+// with its stderr excerpt, a timeout, or a missing completion marker).
+func logOVProbeFailure(libraryPath string, err error) {
+	log := logger.Global().Module("inference")
+	if _, seen := ovProbeFailureWarned.LoadOrStore(libraryPath, struct{}{}); seen {
+		log.Debug("OpenVINO device probe failed again",
+			logger.String("library_path", libraryPath), logger.Error(err))
+		return
+	}
+	log.Warn("OpenVINO device probe failed; treating the GPU as unavailable",
+		logger.String("library_path", libraryPath), logger.Error(err))
 }
 
 func (c *openvinoClassifier) Predict(samples []float32) ([]float32, error) {
@@ -111,9 +168,114 @@ func (c *openvinoClassifier) Close() {
 	}
 }
 
+// OpenVINOEmbeddingExtractorOptions configures an OpenVINO-backed embedding
+// extractor. Unlike OpenVINOClassifierOptions it carries no label list: the
+// extractor reads a single non-logits output port (the embedding vector) and is
+// validated against the consumer's expected embedding dimension rather than a
+// species label count.
+type OpenVINOEmbeddingExtractorOptions struct {
+	Threads       int    // INFERENCE_NUM_THREADS; 0 = OpenVINO auto-tune (CPU only)
+	PrecisionHint string // INFERENCE_PRECISION_HINT; "" defaults to f16
+	Device        string // ov.DeviceCPU (default) or ov.DeviceGPU
+	OutputIndex   int    // embedding output port index (e.g. 1 for birdnet-v24-embeddings)
+	ExpectedDim   int    // required embedding element count; validated against the model
+}
+
+// openvinoEmbeddingExtractor adapts a single-output ov.Classifier bound to a
+// model's embedding port into an EmbeddingExtractor. The bat pipeline consumes
+// only the embedding vector (the embedding model's logits are discarded), so the
+// underlying classifier is compiled to read just the embedding output port. It is
+// NOT goroutine-safe; callers serialize access.
+type openvinoEmbeddingExtractor struct {
+	c   ov.Classifier
+	dim int
+}
+
+// NewOpenVINOEmbeddingExtractor creates an EmbeddingExtractor backed by the native
+// OpenVINO backend that reads a model's embedding output port (opts.OutputIndex).
+// InitOpenVINO must be called first; if the OpenVINO core is not initialized (or the
+// backend is not compiled in), construction returns ov.ErrOpenVINOUnavailable, which
+// the caller treats as fall back to ORT. The compiled embedding port's element count
+// is validated against opts.ExpectedDim (the consumer's required embedding dimension):
+// a mismatch (a wrong OutputIndex or an unexpected model) is rejected so the caller
+// falls back to ORT rather than feeding a malformed embedding downstream.
+func NewOpenVINOEmbeddingExtractor(modelPath string, opts OpenVINOEmbeddingExtractorOptions) (EmbeddingExtractor, error) {
+	if opts.ExpectedDim <= 0 {
+		return nil, errors.Newf("OpenVINO embedding extractor requires a positive ExpectedDim").
+			Category(errors.CategoryValidation).Build()
+	}
+	prec := opts.PrecisionHint
+	if prec == "" {
+		prec = ov.DefaultPrecisionHint
+	}
+	threads := max(opts.Threads, 0)
+	c, err := ov.NewClassifier(modelPath, ov.Options{
+		PrecisionHint: prec,
+		Threads:       threads,
+		Device:        opts.Device,
+		OutputIndex:   opts.OutputIndex,
+	})
+	if err != nil {
+		return nil, err
+	}
+	// Validate the compiled embedding port dimension against the consumer's expected
+	// embedding size (the bat classifier's input dim). The OV backend reports
+	// NumClasses from the selected output port of the compiled model, so a mismatch is
+	// a genuine model/port inconsistency: reject it and let the caller fall back to ORT.
+	if n := c.NumClasses(); n != opts.ExpectedDim {
+		_ = c.Close()
+		return nil, errors.Newf("OpenVINO embedding output dimension %d does not match expected %d", n, opts.ExpectedDim).
+			Category(errors.CategoryValidation).Build()
+	}
+	ovActiveClassifiers.Add(1)
+	return &openvinoEmbeddingExtractor{c: c, dim: c.NumClasses()}, nil
+}
+
+// Predict satisfies the Classifier interface that EmbeddingExtractor embeds, but
+// this extractor compiles only the model's embedding output port and so cannot
+// produce the raw logits Predict is contracted to return. It returns an error rather
+// than silently handing back an embedding vector in place of logits, so a caller
+// using it through a generic Classifier reference fails loudly instead of consuming
+// the wrong tensor. The bat pipeline calls PredictWithEmbeddings, never Predict.
+func (e *openvinoEmbeddingExtractor) Predict(_ []float32) ([]float32, error) {
+	return nil, errors.Newf("openvino embedding extractor does not produce logits; use PredictWithEmbeddings").
+		Category(errors.CategoryValidation).Build()
+}
+
+// PredictWithEmbeddings runs one inference and returns the embedding vector as the
+// embeddings result with nil logits. The compiled model exposes only the embedding
+// output port (the native backend binds a single output per infer request) and the
+// bat pipeline discards the logits, so logits are intentionally nil.
+func (e *openvinoEmbeddingExtractor) PredictWithEmbeddings(samples []float32) (logits, embeddings []float32, err error) {
+	if e.c == nil {
+		return nil, nil, ov.ErrOpenVINOUnavailable
+	}
+	emb, err := e.c.PredictRaw(samples)
+	if err != nil {
+		return nil, nil, err
+	}
+	return nil, emb, nil
+}
+
+// NumSpecies returns the embedding element count. The extractor has no species
+// output of its own (its logits port is not compiled in); this reports the embedding
+// dimension so the value is non-zero and stable.
+func (e *openvinoEmbeddingExtractor) NumSpecies() int { return e.dim }
+
+// Close releases the underlying compiled model and decrements the active-classifier
+// count. Idempotent.
+func (e *openvinoEmbeddingExtractor) Close() {
+	if e.c != nil {
+		_ = e.c.Close()
+		e.c = nil
+		ovActiveClassifiers.Add(-1)
+	}
+}
+
 // InitOpenVINO initializes the OpenVINO runtime (loads libopenvino_c and the
 // process-global core). Safe to call repeatedly; retries after failure for
-// hot-reload recovery. Mirrors InitONNXRuntime.
+// hot-reload recovery. Mirrors InitONNXRuntime. On success it records
+// libraryPath for EnsureOpenVINOProbe.
 func InitOpenVINO(libraryPath string) error {
 	ovInitMu.Lock()
 	defer ovInitMu.Unlock()
@@ -124,6 +286,8 @@ func InitOpenVINO(libraryPath string) error {
 		return err
 	}
 	ovInitialized = true
+	ovInitializedSnap.Store(true)
+	ovInitPath = libraryPath
 	return nil
 }
 
@@ -138,6 +302,8 @@ func DestroyOpenVINO() error {
 		return err
 	}
 	ovInitialized = false
+	ovInitializedSnap.Store(false)
+	ovInitPath = ""
 	return nil
 }
 

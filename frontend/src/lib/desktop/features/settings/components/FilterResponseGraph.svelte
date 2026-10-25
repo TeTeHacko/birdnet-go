@@ -1,60 +1,308 @@
 <!--
   Filter Response Graph Component
 
-  Purpose: Visualizes frequency response curves for audio filters
+  Purpose: Plots the frequency response of an equalizer configuration as the
+  backend computes it, so the preview matches the filter chain audio uses.
 
   Features:
-  - Real-time frequency response visualization
-  - Modified logarithmic frequency scale optimized for high frequencies (20Hz - 20kHz)
-  - Gain display (-48dB to +12dB)
-  - Interactive tooltips on hover
-  - Combined response curve (single line representing filter chain)
-  - Shows flat 0dB response when no filters are applied
-  - Responsive width with professional margins
-  - Supports BandReject (notch) filters with width parameter
+  - Curve points come from POST /api/v2/system/audio/equalizer/response
+    (debounced; a newer edit always wins over an older response)
+  - Frequency axis follows the range the backend swept: a modified logarithmic
+    scale optimized for high frequencies from 20Hz to 20kHz, and a plain
+    logarithmic scale up to Nyquist for sources above the default sample rate
+  - Interactive tooltip showing the nearest computed point
+  - Flat 0dB curve and label when the equalizer is disabled, empty, or every
+    filter is skipped or set to 0 passes
+  - Loading, updating, error (with Retry) and skipped-filter states, each with
+    visible text; loading, updating and skipped are announced through a polite
+    status region, errors through an alert region (both always rendered)
+  - Caption with the sample rate the curve was calculated for
 
   Props:
-  - filters: Array of filter configurations (can be empty)
+  - equalizer: Equalizer configuration ({ enabled, filters }) to preview
+  - sampleRate: Sample rate to calculate at (optional; omit to use the
+    server's configured rate)
   - height: Canvas height (optional, defaults to 400px)
 
   Width is auto-calculated based on container size for responsive behavior.
 
   @component
 -->
+<script module lang="ts">
+  // Gain range mapped onto the plot height. The bottom is fixed at MIN_DB. The
+  // top starts at BASE_MAX_DB and rises in DB_GRID_STEP steps to hold the drawn
+  // peak, up to MAX_TOP_DB; a higher peak is clamped to the top edge.
+  /** Gain at the bottom edge of the plot, in dB. */
+  export const MIN_DB = -96;
+  /** Gain at the top edge of the plot when no drawn point is higher, in dB. */
+  export const BASE_MAX_DB = 12;
+  /** Highest gain the top edge of the plot can reach, in dB. A display choice: a taller axis flattens the rest of the curve. */
+  export const MAX_TOP_DB = 48;
+  /** Distance between horizontal grid lines and labels, and the steps of the top edge, in dB. */
+  export const DB_GRID_STEP = 12;
+  /** Peak gains are rounded to 1 / this many dB, so float noise does not move the axis. */
+  const PEAK_STEPS_PER_DB = 10;
+
+  /** The y axis chosen for one response. */
+  export interface GainAxis {
+    /** Gain at the top edge of the plot, in dB. */
+    maxDb: number;
+    /** Highest gain among the drawn points, rounded to 0.1 dB; undefined without drawn points. */
+    peakDb: number | undefined;
+    /** True when the peak is above the highest axis the plot can reach. */
+    clipped: boolean;
+  }
+
+  /** Chooses the y axis for the points inside the drawn frequency range. */
+  export function gainAxis(
+    points: ReadonlyArray<{ hz: number; gainDb: number }>,
+    minHz: number,
+    maxHz: number
+  ): GainAxis {
+    let peak: number | undefined;
+    for (const point of points) {
+      if (point.hz < minHz || point.hz > maxHz) continue;
+      if (peak === undefined || point.gainDb > peak) peak = point.gainDb;
+    }
+    if (peak === undefined) return { maxDb: BASE_MAX_DB, peakDb: undefined, clipped: false };
+    const peakDb = Math.round(peak * PEAK_STEPS_PER_DB) / PEAK_STEPS_PER_DB;
+    const stepped = Math.ceil(peakDb / DB_GRID_STEP) * DB_GRID_STEP;
+    return {
+      maxDb: Math.min(MAX_TOP_DB, Math.max(BASE_MAX_DB, stepped)),
+      peakDb,
+      clipped: peakDb > MAX_TOP_DB,
+    };
+  }
+
+  /** Gains of the horizontal grid lines, from the plot bottom up to maxDb. */
+  export function gainGridLines(maxDb: number): number[] {
+    const lines: number[] = [];
+    for (let db = MIN_DB; db <= maxDb; db += DB_GRID_STEP) lines.push(db);
+    return lines;
+  }
+
+  // Frequency axis. The left edge is always MIN_FREQ_HZ. The right edge is the
+  // top of the range the backend swept, but never below AUDIBLE_MAX_HZ, so
+  // sources at the default rate keep the scale tuned for the audible band.
+  /** Frequency at the left edge of the plot, in Hz. */
+  export const MIN_FREQ_HZ = 20;
+  /** Frequency at the right edge of the plot for sweeps that end at or below it, in Hz. */
+  export const AUDIBLE_MAX_HZ = 20000;
+  /** Frequency where the audible scale changes from a plain to a gentler logarithmic curve, in Hz. */
+  const AUDIBLE_KNEE_HZ = 1000;
+  /** Share of the audible axis width taken by 20 Hz to the knee. */
+  const AUDIBLE_LOW_PORTION = 0.3;
+  /** Steepness of the audible scale above the knee: log10(1 + this * x) spans 0 to 1 over x in 0 to 1. */
+  const AUDIBLE_HIGH_CURVE = 9;
+  /** Frequency grid lines of the audible axis, with more detail in the bird band, in Hz. */
+  export const AUDIBLE_GRID_HZ = [
+    20, 50, 100, 200, 500, 1000, 2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000, 20000,
+  ];
+  /** Frequency grid lines of a full-band axis, one 1-2-5 step per decade, in Hz. */
+  export const FULL_BAND_GRID_HZ = [
+    20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000,
+  ];
+  /** A full-band axis gets a grid line at its end when it ends this many times above the last grid line. */
+  export const AXIS_END_LABEL_MIN_FACTOR = 2;
+
+  /** The right edge of the plot for a response swept up to responseMaxHz, in Hz. */
+  export function axisMaxHz(responseMaxHz: number | undefined): number {
+    return responseMaxHz !== undefined && responseMaxHz > AUDIBLE_MAX_HZ
+      ? responseMaxHz
+      : AUDIBLE_MAX_HZ;
+  }
+
+  /** Position of hz on an axis ending at maxHz: 0 at the left edge, 1 at the right edge. */
+  export function frequencyToFraction(hz: number, maxHz: number): number {
+    if (maxHz > AUDIBLE_MAX_HZ) {
+      return Math.log10(hz / MIN_FREQ_HZ) / Math.log10(maxHz / MIN_FREQ_HZ);
+    }
+    if (hz <= AUDIBLE_KNEE_HZ) {
+      return (
+        (Math.log10(hz / MIN_FREQ_HZ) / Math.log10(AUDIBLE_KNEE_HZ / MIN_FREQ_HZ)) *
+        AUDIBLE_LOW_PORTION
+      );
+    }
+    const x = (hz - AUDIBLE_KNEE_HZ) / (maxHz - AUDIBLE_KNEE_HZ);
+    return AUDIBLE_LOW_PORTION + (1 - AUDIBLE_LOW_PORTION) * Math.log10(1 + x * AUDIBLE_HIGH_CURVE);
+  }
+
+  /** Frequency at a position on an axis ending at maxHz; the inverse of frequencyToFraction. */
+  export function fractionToFrequency(fraction: number, maxHz: number): number {
+    if (maxHz > AUDIBLE_MAX_HZ) {
+      return MIN_FREQ_HZ * Math.pow(maxHz / MIN_FREQ_HZ, fraction);
+    }
+    if (fraction <= AUDIBLE_LOW_PORTION) {
+      return MIN_FREQ_HZ * Math.pow(AUDIBLE_KNEE_HZ / MIN_FREQ_HZ, fraction / AUDIBLE_LOW_PORTION);
+    }
+    const x =
+      (Math.pow(10, (fraction - AUDIBLE_LOW_PORTION) / (1 - AUDIBLE_LOW_PORTION)) - 1) /
+      AUDIBLE_HIGH_CURVE;
+    return AUDIBLE_KNEE_HZ + x * (maxHz - AUDIBLE_KNEE_HZ);
+  }
+
+  /** Frequencies of the vertical grid lines (and labels) of an axis ending at maxHz. */
+  export function frequencyGridLines(maxHz: number): number[] {
+    if (maxHz <= AUDIBLE_MAX_HZ) return AUDIBLE_GRID_HZ;
+    const lines = FULL_BAND_GRID_HZ.filter(hz => hz <= maxHz);
+    const last = lines.at(-1) ?? MIN_FREQ_HZ;
+    if (maxHz >= last * AXIS_END_LABEL_MIN_FACTOR) lines.push(maxHz);
+    return lines;
+  }
+</script>
+
 <script lang="ts">
   /* global ResizeObserver */
   import { onMount } from 'svelte';
-  import {
-    calculateCombinedResponse,
-    type FilterConfig,
-    MIN_DB,
-    MAX_DB,
-  } from '$lib/utils/audio/dsp';
-  import type { EqualizerFilterType } from '$lib/stores/settings';
   import { t } from '$lib/i18n';
-
-  interface Filter {
-    type: EqualizerFilterType;
-    frequency: number;
-    q?: number;
-    width?: number;
-    passes?: number;
-  }
+  import Button from '$lib/desktop/components/ui/Button.svelte';
+  import ErrorAlert from '$lib/desktop/components/ui/ErrorAlert.svelte';
+  import LoadingSpinner from '$lib/desktop/components/ui/LoadingSpinner.svelte';
+  import {
+    buildEqualizerResponseRequest,
+    createEqualizerResponseLoader,
+    findNearestPoint,
+    type EqualizerResponseFilterInput,
+    type EqualizerResponseReady,
+    type EqualizerResponseState,
+    type EqualizerSkippedFilter,
+  } from '$lib/api/equalizer';
 
   interface Props {
-    filters: Filter[];
+    /** Equalizer configuration to preview. */
+    equalizer: { enabled: boolean; filters: EqualizerResponseFilterInput[] };
+    /** Sample rate the preview is calculated at; omit to use the server's configured rate. */
+    sampleRate?: number;
     height?: number;
   }
 
   // Make responsive to container width, default to reasonable size
-  let { filters = [], height = 400 }: Props = $props();
+  let { equalizer, sampleRate, height = 400 }: Props = $props();
+
+  /** Font of the frequency and gain tick labels. */
+  const AXIS_LABEL_FONT = '11px system-ui, -apple-system, sans-serif';
+  /** Font of the axis titles. */
+  const AXIS_TITLE_FONT = '12px system-ui, -apple-system, sans-serif';
+  /** Font of the label drawn over a flat curve. */
+  const FLAT_LABEL_FONT = '13px system-ui, -apple-system, sans-serif';
+
+  let graphState = $state<EqualizerResponseState>({ status: 'loading' });
+  let tooltip = $state({ visible: false, x: 0, y: 0, freq: 0, gain: 0 });
+
+  const loader = createEqualizerResponseLoader(next => {
+    graphState = next;
+    // A stationary cursor would otherwise keep showing a stale gain.
+    tooltip.visible = false;
+  });
+
+  const requestBody = $derived(buildEqualizerResponseRequest(equalizer, sampleRate));
+
+  $effect(() => {
+    loader.request(requestBody);
+  });
+
+  /** The response to draw: the current one, or the previous one while updating. */
+  const drawable = $derived<EqualizerResponseReady | undefined>(
+    graphState.status === 'ready'
+      ? { request: graphState.request, response: graphState.response }
+      : graphState.status === 'loading'
+        ? graphState.previous
+        : undefined
+  );
+
+  /** The right edge of the frequency axis; like the y axis it follows the response being drawn. */
+  const xMaxHz = $derived(axisMaxHz(drawable?.response.maxHz));
+  const freqGridLines = $derived(frequencyGridLines(xMaxHz));
+
+  /** The y axis for the response being drawn; it follows the drawn peak. */
+  const axis = $derived(gainAxis(drawable?.response.points ?? [], MIN_FREQ_HZ, xMaxHz));
+  const gridLines = $derived(gainGridLines(axis.maxDb));
+  const clippedText = $derived(
+    drawable && axis.clipped && axis.peakDb !== undefined
+      ? t('settings.audio.audioFilters.graph.clipped', { peak: axis.peakDb })
+      : ''
+  );
+
+  /**
+   * Disabled, empty, all-skipped and all-bypassed (passes 0) configurations give
+   * a flat 0 dB curve: no filter is both accepted by the backend and switched on.
+   */
+  const isFlat = $derived.by(() => {
+    if (drawable === undefined) return false;
+    if (!drawable.response.enabled) return true;
+    const skippedIndexes = new Set(drawable.response.skipped.map(entry => entry.index));
+    return !drawable.request.equalizer.filters.some(
+      (filter, index) => !skippedIndexes.has(index) && (filter.passes ?? 0) !== 0
+    );
+  });
+
+  // Live regions are rendered empty and get text only after mount, in a later
+  // task: a region inserted together with its text is often not announced.
+  let announce = $state(false);
+
+  const alertText = $derived(
+    announce && graphState.status === 'error' ? t('settings.audio.audioFilters.graph.error') : ''
+  );
+
+  const statusText = $derived.by(() => {
+    if (!announce) return '';
+    switch (graphState.status) {
+      case 'loading':
+        return graphState.previous
+          ? t('settings.audio.audioFilters.graph.updating')
+          : t('settings.audio.audioFilters.graph.loading');
+      case 'ready': {
+        const parts: string[] = [];
+        if (graphState.response.skipped.length > 0) {
+          parts.push(
+            t('settings.audio.audioFilters.graph.skippedHeading', {
+              count: graphState.response.skipped.length,
+            })
+          );
+        }
+        if (clippedText) parts.push(clippedText);
+        return parts.join(' ');
+      }
+      case 'error':
+        return '';
+    }
+  });
+
+  /** Translated line for one skipped filter, named from the request it was computed for. */
+  function skippedMessage(entry: EqualizerSkippedFilter, ready: EqualizerResponseReady): string {
+    const filter = ready.request.equalizer.filters.at(entry.index);
+    const params = {
+      number: entry.index + 1,
+      type: filter?.type ?? entry.type,
+      frequency: filter?.frequency ?? 0,
+      rate: ready.response.sampleRate,
+    };
+    switch (entry.reason) {
+      case 'unknown_type':
+        return t('settings.audio.audioFilters.graph.skippedReasons.unknown_type', params);
+      case 'invalid_parameters':
+        return t('settings.audio.audioFilters.graph.skippedReasons.invalid_parameters', params);
+      case 'add_failed':
+        return t('settings.audio.audioFilters.graph.skippedReasons.add_failed', params);
+      case 'unknown':
+        return t('settings.audio.audioFilters.graph.skippedReasons.unknown', params);
+    }
+  }
 
   // Container element for measuring width
   let containerElement: HTMLDivElement;
 
   // Canvas element reference
   let canvas: HTMLCanvasElement;
-  let tooltip = $state({ visible: false, x: 0, y: 0, freq: 0, gain: 0 });
+
+  // Wrapper that takes focus when Retry removes the error alert, so focus
+  // does not fall back to the page body.
+  let graphRegion: HTMLDivElement | undefined = $state();
+
+  function handleRetry() {
+    loader.retry();
+    graphRegion?.focus();
+  }
 
   // Professional margins for proper label spacing
   const margins = {
@@ -72,17 +320,6 @@
   let plotWidth = $derived(canvasWidth - margins.left - margins.right);
   let plotHeight = $derived(canvasHeight - margins.top - margins.bottom);
 
-  // Frequency range - standard audio range up to 20kHz (human hearing limit)
-  const MIN_FREQ = 20;
-  const MAX_FREQ = 20000;
-  // MIN_DB and MAX_DB imported from DSP utilities
-
-  // Grid lines optimized for audio engineering work - more detail in bird frequency range
-  const freqGridLines = [
-    20, 50, 100, 200, 500, 1000, 2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000, 20000,
-  ];
-  const dbGridLines = [-48, -36, -24, -12, 0, 12];
-
   // Color scheme - reactive state for proper Svelte 5 updates
   let colors = $state({
     background: 'hsl(222, 30%, 15%)', //
@@ -98,92 +335,19 @@
     // This function kept for compatibility with existing effect calls
   }
 
-  // Convert local Filter type to FilterConfig for DSP utilities
-  function toFilterConfig(filter: Filter): FilterConfig {
-    return {
-      type: filter.type as FilterConfig['type'],
-      frequency: filter.frequency,
-      q: filter.q,
-      width: filter.width,
-      passes: filter.passes,
-    };
-  }
-
-  // Calculate combined response of all filters using DSP utilities
-  function getCombinedResponse(frequency: number): number {
-    if (filters.length === 0) {
-      return 0; // Flat response when no filters
-    }
-    try {
-      const filterConfigs = filters.map(toFilterConfig);
-      return calculateCombinedResponse(filterConfigs, frequency);
-    } catch {
-      // Fallback to flat response on calculation error
-      return 0;
-    }
-  }
-
-  // Convert frequency to x position using modified log scale optimized for audio work
+  // Convert frequency to x position on the axis of the response being drawn
   function freqToX(freq: number): number {
-    // Modified logarithmic scale that gives more visual space to high frequencies
-    // This is similar to what professional audio software uses
-
-    if (freq <= 1000) {
-      // Standard log scale for low frequencies (20Hz - 1kHz)
-      const logMin = Math.log10(MIN_FREQ);
-      const log1k = Math.log10(1000);
-      const logFreq = Math.log10(freq);
-      const lowEndPortion = 0.3; // 30% of the width for 20Hz-1kHz
-      return margins.left + ((logFreq - logMin) / (log1k - logMin)) * plotWidth * lowEndPortion;
-    } else {
-      // Modified scale for high frequencies (1kHz - 20kHz) with more visual space
-      const highFreqStart = 1000;
-      const highFreqRange = MAX_FREQ - highFreqStart;
-      const freqInHighRange = freq - highFreqStart;
-
-      // Use a gentler logarithmic curve for high frequencies
-      const normalizedHighFreq =
-        Math.log10(1 + (freqInHighRange / highFreqRange) * 9) / Math.log10(10);
-
-      const lowEndPortion = 0.3;
-      const highEndStart = margins.left + plotWidth * lowEndPortion;
-      const highEndWidth = plotWidth * (1 - lowEndPortion);
-
-      return highEndStart + normalizedHighFreq * highEndWidth;
-    }
+    return margins.left + frequencyToFraction(freq, xMaxHz) * plotWidth;
   }
 
   // Convert x position to frequency (inverse of freqToX)
   function xToFreq(x: number): number {
-    const plotX = x - margins.left;
-    const lowEndPortion = 0.3;
-    const lowEndWidth = plotWidth * lowEndPortion;
-
-    if (plotX <= lowEndWidth) {
-      // Low frequency range (20Hz - 1kHz)
-      const logMin = Math.log10(MIN_FREQ);
-      const log1k = Math.log10(1000);
-      const ratio = plotX / lowEndWidth;
-      const logFreq = logMin + ratio * (log1k - logMin);
-      return Math.pow(10, logFreq);
-    } else {
-      // High frequency range (1kHz - 20kHz)
-      const highEndWidth = plotWidth * (1 - lowEndPortion);
-      const highRatio = (plotX - lowEndWidth) / highEndWidth;
-
-      // Inverse of the modified high-frequency scale
-      const normalizedVal = highRatio;
-      const logVal = normalizedVal * Math.log10(10);
-      const scaledVal = Math.pow(10, logVal) - 1;
-      const freqInHighRange = (scaledVal / 9) * (MAX_FREQ - 1000);
-
-      return 1000 + freqInHighRange;
-    }
+    return fractionToFrequency((x - margins.left) / plotWidth, xMaxHz);
   }
 
   // Convert dB to y position within plot area
   function dbToY(db: number): number {
-    return margins.top + plotHeight - ((db - MIN_DB) / (MAX_DB - MIN_DB)) * plotHeight;
+    return margins.top + plotHeight - ((db - MIN_DB) / (axis.maxDb - MIN_DB)) * plotHeight;
   }
 
   // Update canvas dimensions based on container
@@ -195,8 +359,13 @@
     }
   }
 
-  // Draw the frequency response graph
-  function drawGraph() {
+  // Clamp a y position to the plot area
+  function clampY(y: number): number {
+    return Math.max(margins.top, Math.min(margins.top + plotHeight, y));
+  }
+
+  // Draw the axes, grid and labels, plus the curve of `toDraw` when given
+  function drawGraph(toDraw: EqualizerResponseReady | undefined, flat: boolean) {
     if (!canvas) return;
 
     const ctx = canvas.getContext('2d');
@@ -223,7 +392,7 @@
     ctx.imageSmoothingEnabled = true;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.font = '11px system-ui, -apple-system, sans-serif';
+    ctx.font = AXIS_LABEL_FONT;
 
     // Draw full canvas background with proper dark mode support
     ctx.fillStyle = colors.background;
@@ -261,7 +430,7 @@
     }
 
     // Horizontal dB grid lines
-    for (const db of dbGridLines) {
+    for (const db of gridLines) {
       const y = dbToY(db);
       ctx.beginPath();
       ctx.moveTo(margins.left, y);
@@ -291,36 +460,29 @@
     ctx.shadowColor = 'transparent';
     ctx.shadowBlur = 0;
 
-    // Draw with higher resolution for smooth curve, using alpha fade for extreme values
-    const steps = plotWidth * 2; // Higher resolution
-
-    // Draw curve in segments to handle alpha transparency changes
-    let lastCanvasX = margins.left;
-    let lastY = dbToY(getCombinedResponse(xToFreq(margins.left)));
-
-    for (let step = 1; step <= steps; step++) {
-      const plotX = (step / steps) * plotWidth;
-      const canvasX = margins.left + plotX;
-      const freq = xToFreq(canvasX);
-      const gain = getCombinedResponse(freq);
-
-      // Clamp Y to plot bounds - this ensures continuous line even for deep notches
-      const y = Math.max(margins.top, Math.min(margins.top + plotHeight, dbToY(gain)));
-
-      // Draw line segment (always draw for continuous curve)
+    if (toDraw) {
+      // A fresh path: the reference line above left its path open, and a bare
+      // stroke would redraw it in curve style.
       ctx.beginPath();
-      ctx.moveTo(lastCanvasX, lastY);
-      ctx.lineTo(canvasX, y);
+      let started = false;
+      for (const point of toDraw.response.points) {
+        if (point.hz < MIN_FREQ_HZ || point.hz > xMaxHz) continue;
+        const x = freqToX(point.hz);
+        const y = clampY(dbToY(point.gainDb));
+        if (started) {
+          ctx.lineTo(x, y);
+        } else {
+          ctx.moveTo(x, y);
+          started = true;
+        }
+      }
       ctx.stroke();
-
-      lastCanvasX = canvasX;
-      lastY = y;
     }
 
-    // Add subtle text when no filters are present - professional styling
-    if (filters.length === 0) {
+    // Subtle label when the curve is flat
+    if (flat) {
       ctx.fillStyle = colors.text;
-      ctx.font = '13px system-ui, -apple-system, sans-serif';
+      ctx.font = FLAT_LABEL_FONT;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.globalAlpha = colors.background === '#0d1117' ? 0.4 : 0.5; // Lower opacity in dark mode
@@ -332,7 +494,8 @@
       ctx.globalAlpha = 1;
     }
 
-    // Draw labels
+    // Draw labels (the flat label above may have changed the font)
+    ctx.font = AXIS_LABEL_FONT;
     ctx.fillStyle = colors.text;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
@@ -353,14 +516,14 @@
     // dB labels (positioned to the left of plot area)
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    for (const db of dbGridLines) {
+    for (const db of gridLines) {
       const y = dbToY(db);
       ctx.fillText(`${db}dB`, margins.left - 10, y);
     }
 
     // Axes labels with proper positioning
     ctx.fillStyle = colors.text;
-    ctx.font = '12px system-ui, -apple-system, sans-serif';
+    ctx.font = AXIS_TITLE_FONT;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
     ctx.fillText(
@@ -386,21 +549,22 @@
     const y = event.clientY - rect.top;
 
     // Only show tooltip when mouse is within plot area
-    if (
+    const nearest =
+      drawable &&
       x >= margins.left &&
       x <= margins.left + plotWidth &&
       y >= margins.top &&
       y <= margins.top + plotHeight
-    ) {
-      const freq = Math.round(xToFreq(x));
-      const gain = getCombinedResponse(freq);
+        ? findNearestPoint(drawable.response.points, xToFreq(x))
+        : undefined;
 
+    if (nearest) {
       tooltip = {
         visible: true,
         x: x, // Use canvas-relative coordinates
         y: y, // Use canvas-relative coordinates
-        freq,
-        gain: Math.round(gain * 10) / 10,
+        freq: Math.round(nearest.hz),
+        gain: Math.round(nearest.gainDb * 10) / 10,
       };
     } else {
       tooltip.visible = false;
@@ -414,13 +578,16 @@
 
   // Update colors and dimensions when mounted
   onMount(() => {
+    const announceTimer = setTimeout(() => {
+      announce = true;
+    }, 0);
     updateColors();
     updateCanvasDimensions();
 
     // Listen for theme changes
     const observer = new MutationObserver(() => {
       updateColors();
-      drawGraph();
+      drawGraph(drawable, isFlat);
     });
 
     observer.observe(document.documentElement, {
@@ -434,66 +601,140 @@
       const RO = globalThis.ResizeObserver as typeof ResizeObserver;
       resizeObserver = new RO(() => {
         updateCanvasDimensions();
-        drawGraph();
+        drawGraph(drawable, isFlat);
       });
       resizeObserver.observe(containerElement);
     }
 
     return () => {
+      clearTimeout(announceTimer);
       observer.disconnect();
       resizeObserver?.disconnect();
+      loader.dispose();
     };
   });
 
-  // Redraw graph when filters change or dimensions update
+  // Redraw when the response or the dimensions change. The y axis is derived
+  // from the response, so it needs no read of its own. Every dependency is read
+  // here, before drawGraph can return early (an incomplete test canvas, say),
+  // so the effect always tracks them.
   $effect(() => {
-    if (canvas) {
+    const toDraw = drawable;
+    const flat = isFlat;
+    const width = canvasWidth;
+    const heightPx = canvasHeight;
+    if (canvas && width > 0 && heightPx > 0) {
       updateColors();
-      drawGraph();
-    }
-  });
-
-  // Update dimensions when container size changes
-  $effect(() => {
-    // This effect will run when canvasWidth changes
-    if (canvas && canvasWidth) {
-      drawGraph();
+      drawGraph(toDraw, flat);
     }
   });
 </script>
 
 <!-- Centered container with proper spacing -->
 <div class="w-full flex justify-center py-4" bind:this={containerElement}>
-  <div class="relative">
-    <canvas
-      bind:this={canvas}
-      width={canvasWidth}
-      height={canvasHeight}
-      class="border border-[var(--color-base-300)] rounded-lg cursor-crosshair shadow-lg"
-      style:background-color={colors.background}
-      onmousemove={handleMouseMove}
-      onmouseleave={handleMouseLeave}
-    ></canvas>
+  <div
+    class="flex flex-col gap-3 focus:outline-none"
+    style:width="{canvasWidth}px"
+    tabindex="-1"
+    bind:this={graphRegion}
+  >
+    <div class="relative">
+      <canvas
+        bind:this={canvas}
+        width={canvasWidth}
+        height={canvasHeight}
+        class="block border border-[var(--color-base-300)] rounded-lg cursor-crosshair shadow-lg"
+        style:background-color={colors.background}
+        onmousemove={handleMouseMove}
+        onmouseleave={handleMouseLeave}
+      ></canvas>
 
-    {#if tooltip && tooltip.visible && tooltip.x != null && tooltip.y != null}
-      <div
-        class="absolute z-10 px-3 py-2 text-xs bg-[var(--color-base-300)] border border-[var(--color-base-content)]/20 rounded-lg shadow-lg pointer-events-none"
-        style:left="{(tooltip.x ?? 0) + 10}px"
-        style:top="{(tooltip.y ?? 0) - 10}px"
-        style:transform="translateY(-100%)"
-      >
-        <div class="font-semibold">{tooltip.freq} Hz</div>
+      {#if graphState.status === 'loading' && !graphState.previous}
         <div
-          class={tooltip.gain > 0
-            ? 'text-[var(--color-success)]'
-            : tooltip.gain < -12
-              ? 'text-[var(--color-error)]'
-              : ''}
+          class="absolute inset-0 flex items-center justify-center pointer-events-none"
+          data-testid="eq-graph-loading"
+          aria-hidden="true"
         >
-          {tooltip.gain > 0 ? '+' : ''}{tooltip.gain} dB
+          <div
+            class="flex items-center gap-2 px-3 py-2 text-sm rounded-lg bg-[var(--color-base-100)] text-[var(--color-base-content)] shadow"
+          >
+            <LoadingSpinner size="sm" aria-hidden="true" />
+            <span>{t('settings.audio.audioFilters.graph.loading')}</span>
+          </div>
         </div>
-      </div>
+      {/if}
+
+      {#if tooltip && tooltip.visible && tooltip.x != null && tooltip.y != null}
+        <div
+          class="absolute z-10 px-3 py-2 text-xs bg-[var(--color-base-300)] border border-[var(--color-base-content)]/20 rounded-lg shadow-lg pointer-events-none"
+          style:left="{(tooltip.x ?? 0) + 10}px"
+          style:top="{(tooltip.y ?? 0) - 10}px"
+          style:transform="translateY(-100%)"
+        >
+          <div class="font-semibold">{tooltip.freq} Hz</div>
+          <div
+            class={tooltip.gain > 0
+              ? 'text-[var(--color-success)]'
+              : tooltip.gain < -12
+                ? 'text-[var(--color-error)]'
+                : ''}
+          >
+            {tooltip.gain > 0 ? '+' : ''}{tooltip.gain} dB
+          </div>
+        </div>
+      {/if}
+    </div>
+
+    <p class="min-h-5 text-xs text-[var(--color-base-content)]/70">
+      {#if graphState.status === 'loading' && graphState.previous}
+        <span data-testid="eq-graph-updating" aria-hidden="true">
+          {t('settings.audio.audioFilters.graph.updating')}
+        </span>
+      {:else if graphState.status === 'ready'}
+        <span data-testid="eq-graph-sample-rate">
+          {t('settings.audio.audioFilters.graph.sampleRate', {
+            rate: graphState.response.sampleRate,
+          })}
+        </span>
+      {/if}
+    </p>
+
+    <p class="min-h-5 text-xs text-[var(--color-base-content)]/70">
+      {#if clippedText}
+        <span data-testid="eq-graph-clipped" aria-hidden="true">{clippedText}</span>
+      {/if}
+    </p>
+
+    {#if graphState.status === 'ready' && graphState.response.skipped.length > 0}
+      {@const ready = { request: graphState.request, response: graphState.response }}
+      <ErrorAlert type="warning" role="note" data-testid="eq-graph-skipped">
+        <span class="block font-medium">
+          {t('settings.audio.audioFilters.graph.skippedHeading', {
+            count: graphState.response.skipped.length,
+          })}
+        </span>
+        <ul class="mt-1 list-disc ps-5 space-y-1">
+          {#each graphState.response.skipped as entry (entry.index)}
+            <li>
+              {skippedMessage(entry, ready)}
+              {#if entry.message && entry.reason !== 'unknown_type'}
+                <span class="block text-[var(--color-base-content)]/70">{entry.message}</span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      </ErrorAlert>
+    {:else if graphState.status === 'error'}
+      <ErrorAlert type="error" role="note" data-testid="eq-graph-error">
+        <span class="block">{t('settings.audio.audioFilters.graph.error')}</span>
+        <Button className="mt-2" onclick={handleRetry}>
+          {t('common.retry')}
+        </Button>
+      </ErrorAlert>
     {/if}
+
+    <div class="sr-only" role="status" aria-atomic="true">{statusText}</div>
+    <div class="sr-only" role="alert">{alertText}</div>
   </div>
 </div>
 

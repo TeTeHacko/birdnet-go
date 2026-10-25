@@ -2,6 +2,7 @@ package classifier
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -29,9 +30,10 @@ const fakeModelVersion = "1.0"
 // reloadFakeModel is a ModelInstance that records Close calls so tests can assert
 // the old instance is torn down after a swap.
 type reloadFakeModel struct {
-	id      string
-	closes  atomic.Int32
-	onClose func()
+	id           string
+	closes       atomic.Int32
+	onClose      func()
+	resolvedPath string
 }
 
 func (m *reloadFakeModel) Predict(_ context.Context, _ [][]float32) ([]datastore.Results, error) {
@@ -50,12 +52,15 @@ func (m *reloadFakeModel) Close() error {
 	}
 	return nil
 }
-func (m *reloadFakeModel) Device() string { return deviceCPU }
+func (m *reloadFakeModel) RuntimeInfo() (device, backend, precision string) {
+	return deviceCPU, BackendONNX, ""
+}
+func (m *reloadFakeModel) ResolvedModelPath() string { return m.resolvedPath }
 
 // registerTestSecondaryBuilder adds a builder under id for the duration of the
 // test, restoring the global map on cleanup. The map is a package global, so the
 // tests that use it must not run in parallel.
-func registerTestSecondaryBuilder(t *testing.T, id string, build secondaryModelBuilder) {
+func registerTestSecondaryBuilder(t *testing.T, id string, build entryBuilder) {
 	t.Helper()
 	_, existed := openvinoCapableSecondaryBuilders[id]
 	require.False(t, existed, "test builder %s already registered", id)
@@ -79,8 +84,7 @@ func TestReloadSecondaryModels_SwapsAndClosesOld(t *testing.T) {
 	setGlobalBackend(t, "openvino", "gpu", "/opt/ov")
 
 	old := &reloadFakeModel{id: testSecondaryID}
-	o := newTestOrchestrator(t, &mockModelInstance{id: permanentRegistryID})
-	o.ModelInfo.ID = permanentRegistryID
+	o := newTestOrchestrator(t, &mockModelInstance{id: RegistryIDBirdNETV24})
 	// Loaded on a different backend so the per-entry gate fires.
 	o.models[testSecondaryID] = &modelEntry{instance: old, backend: secondaryBackendKey{backend: "onnx"}}
 
@@ -104,6 +108,88 @@ func TestReloadSecondaryModels_SwapsAndClosesOld(t *testing.T) {
 		"entry triplet should advance to the new backend")
 }
 
+// TestReloadSecondaryModels_ThreadCountChangeForcesRebuild verifies that a runtime
+// change to the CPU thread budget (birdnet.threads) rebuilds an OV-capable secondary
+// even when the backend, device, and OpenVINO path are unchanged, so a secondary
+// re-applies the new thread count live exactly as the primary model does. Before the
+// fix the per-entry gate keyed only on backend/device/path, so a pure thread-count
+// change was silently skipped and secondaries kept their old thread count until a
+// restart. Mutation check: this fails if `threads` is dropped from secondaryBackendKey.
+func TestReloadSecondaryModels_ThreadCountChangeForcesRebuild(t *testing.T) {
+	// CPU device so INFERENCE_NUM_THREADS is meaningful; only Threads differs from
+	// the loaded entry below.
+	s := conftest.GetTestSettings()
+	s.BirdNET.Backend = "openvino"
+	s.BirdNET.OpenVINODevice = "cpu"
+	s.BirdNET.OpenVINOPath = "/opt/ov"
+	s.BirdNET.Threads = 1
+	conftest.SetTestSettings(s)
+	t.Cleanup(func() { conftest.SetTestSettings(nil) })
+
+	old := &reloadFakeModel{id: testSecondaryID}
+	o := newTestOrchestrator(t, &mockModelInstance{id: RegistryIDBirdNETV24})
+	// Loaded with the SAME backend/device/path but a different thread count (4).
+	o.models[testSecondaryID] = &modelEntry{instance: old, backend: secondaryBackendKey{
+		backend: "openvino", ovDevice: "cpu", ovPath: "/opt/ov", threads: 4,
+	}}
+
+	var built atomic.Int32
+	var gotThreads atomic.Int32
+	newInst := &reloadFakeModel{id: testSecondaryID}
+	registerTestSecondaryBuilder(t, testSecondaryID, func(_ *Orchestrator, settings *conf.Settings, threads int) (ModelInstance, error) {
+		built.Add(1)
+		gotThreads.Store(int32(threads)) //nolint:gosec // small test thread count
+		assert.Equal(t, 1, settings.BirdNET.Threads, "builder must see the new thread count")
+		return newInst, nil
+	})
+
+	require.NoError(t, o.ReloadSecondaryModels())
+
+	assert.Equal(t, int32(1), built.Load(), "a thread-count change must rebuild the secondary")
+	assert.Same(t, ModelInstance(newInst), o.models[testSecondaryID].instance, "new instance should be swapped in")
+	assert.Equal(t, int32(1), old.closes.Load(), "old instance should be closed once")
+	assert.Equal(t, int32(1), gotThreads.Load(), "builder should receive the new per-model thread budget")
+	assert.Equal(t, secondaryBackendKey{backend: "openvino", ovDevice: "cpu", ovPath: "/opt/ov", threads: 1},
+		o.models[testSecondaryID].backend, "entry key should advance to the new thread count")
+}
+
+// TestReloadSecondaryModels_NoOpWhenThreadsUnchangedNonZero verifies the skip
+// direction of the thread-aware gate at a NON-ZERO thread count: when the entry
+// was already built with the same backend/device/path AND the same thread count,
+// an unrelated reload_birdnet trigger must NOT rebuild it. The sibling
+// TestReloadSecondaryModels_NoOpWhenTripletUnchanged only exercises the zero-value
+// (threads:0) match; this brackets the new `threads` field at a real value so a
+// regression that made every reload rebuild (e.g. comparing against a zero-value
+// key) is caught.
+func TestReloadSecondaryModels_NoOpWhenThreadsUnchangedNonZero(t *testing.T) {
+	s := conftest.GetTestSettings()
+	s.BirdNET.Backend = "openvino"
+	s.BirdNET.OpenVINODevice = "cpu"
+	s.BirdNET.OpenVINOPath = "/opt/ov"
+	s.BirdNET.Threads = 4
+	conftest.SetTestSettings(s)
+	t.Cleanup(func() { conftest.SetTestSettings(nil) })
+
+	old := &reloadFakeModel{id: testSecondaryID}
+	o := newTestOrchestrator(t, &mockModelInstance{id: RegistryIDBirdNETV24})
+	// Already built with the exact current key, including threads:4.
+	o.models[testSecondaryID] = &modelEntry{instance: old, backend: secondaryBackendKey{
+		backend: "openvino", ovDevice: "cpu", ovPath: "/opt/ov", threads: 4,
+	}}
+
+	var built atomic.Int32
+	registerTestSecondaryBuilder(t, testSecondaryID, func(_ *Orchestrator, _ *conf.Settings, _ int) (ModelInstance, error) {
+		built.Add(1)
+		return &reloadFakeModel{id: testSecondaryID}, nil
+	})
+
+	require.NoError(t, o.ReloadSecondaryModels())
+
+	assert.Equal(t, int32(0), built.Load(), "unchanged threads (and backend/device/path) must NOT rebuild")
+	assert.Same(t, ModelInstance(old), o.models[testSecondaryID].instance, "instance must be left in place")
+	assert.Equal(t, int32(0), old.closes.Load(), "old instance must not be closed")
+}
+
 // TestReloadSecondaryModels_WarmupHoldsInferenceMu verifies that the hot-reload
 // warm-up of the freshly built secondary serializes via inferenceMu, so it cannot
 // run a second model session concurrently with live inference. Mutation check:
@@ -112,20 +198,21 @@ func TestReloadSecondaryModels_WarmupHoldsInferenceMu(t *testing.T) {
 	setGlobalBackend(t, "openvino", "gpu", "/opt/ov")
 
 	old := &reloadFakeModel{id: testSecondaryID}
-	o := newTestOrchestrator(t, &mockModelInstance{id: permanentRegistryID})
-	o.ModelInfo.ID = permanentRegistryID
+	o := newTestOrchestrator(t, &mockModelInstance{id: RegistryIDBirdNETV24})
 	// Loaded on a different backend so the per-entry gate fires and the rebuild runs.
 	o.models[testSecondaryID] = &modelEntry{instance: old, backend: secondaryBackendKey{backend: "onnx"}}
 
 	started := make(chan struct{})
 	release := make(chan struct{})
+	var startedOnce sync.Once
 	// A non-empty Spec makes the warm-up actually run Predict (sized from the spec);
 	// the blocking Predict lets us observe inferenceMu while the warm-up is in flight.
 	newInst := &mockModelInstance{
 		id:   testSecondaryID,
 		spec: ModelSpec{SampleRate: 48000, ClipLength: 3 * time.Second},
 		predict: func(_ context.Context, _ [][]float32) ([]datastore.Results, error) {
-			close(started)
+			// The warm-up is followed by the latency probe, which calls Predict again.
+			startedOnce.Do(func() { close(started) })
 			<-release
 			return nil, nil
 		},
@@ -166,8 +253,7 @@ func TestReloadSecondaryModels_NoOpWhenTripletUnchanged(t *testing.T) {
 	setGlobalBackend(t, "openvino", "gpu", "/opt/ov")
 
 	old := &reloadFakeModel{id: testSecondaryID}
-	o := newTestOrchestrator(t, &mockModelInstance{id: permanentRegistryID})
-	o.ModelInfo.ID = permanentRegistryID
+	o := newTestOrchestrator(t, &mockModelInstance{id: RegistryIDBirdNETV24})
 	// Already on the current triplet: reload must be a no-op.
 	o.models[testSecondaryID] = &modelEntry{instance: old, backend: secondaryBackendKey{backend: "openvino", ovDevice: "gpu", ovPath: "/opt/ov"}}
 
@@ -188,8 +274,7 @@ func TestReloadSecondaryModels_KeepsOldOnBuildFailure(t *testing.T) {
 	setGlobalBackend(t, "openvino", "gpu", "")
 
 	old := &reloadFakeModel{id: testSecondaryID}
-	o := newTestOrchestrator(t, &mockModelInstance{id: permanentRegistryID})
-	o.ModelInfo.ID = permanentRegistryID
+	o := newTestOrchestrator(t, &mockModelInstance{id: RegistryIDBirdNETV24})
 	o.models[testSecondaryID] = &modelEntry{instance: old, backend: secondaryBackendKey{backend: "onnx"}}
 
 	buildErr := errors.Newf("simulated build failure").Build()
@@ -211,24 +296,35 @@ func TestReloadSecondaryModels_KeepsOldOnBuildFailure(t *testing.T) {
 func TestReloadSecondaryModels_SkipsNonOVCapableSecondary(t *testing.T) {
 	setGlobalBackend(t, "openvino", "gpu", "")
 
-	// A non-OV-capable secondary (no builder registered, e.g. ORT-only Bat) must
-	// not be touched by the reload.
-	batLike := &reloadFakeModel{id: RegistryIDBat}
-	o := newTestOrchestrator(t, &mockModelInstance{id: permanentRegistryID})
-	o.ModelInfo.ID = permanentRegistryID
-	o.models[RegistryIDBat] = &modelEntry{instance: batLike}
+	// A secondary with no registered OV builder must not be touched by the reload.
+	// (Bat used to be the example here, but it is now OV-capable, so use a synthetic
+	// ID that is genuinely absent from openvinoCapableSecondaryBuilders.)
+	const ortOnlyID = "ORTOnlySecondary"
+	ortOnly := &reloadFakeModel{id: ortOnlyID}
+	o := newTestOrchestrator(t, &mockModelInstance{id: RegistryIDBirdNETV24})
+	o.models[ortOnlyID] = &modelEntry{instance: ortOnly}
 
 	require.NoError(t, o.ReloadSecondaryModels())
 
-	assert.Same(t, ModelInstance(batLike), o.models[RegistryIDBat].instance, "non-OV secondary must be untouched")
-	assert.Equal(t, int32(0), batLike.closes.Load(), "non-OV secondary must not be closed")
+	assert.Same(t, ModelInstance(ortOnly), o.models[ortOnlyID].instance, "non-OV secondary must be untouched")
+	assert.Equal(t, int32(0), ortOnly.closes.Load(), "non-OV secondary must not be closed")
+}
+
+// TestBatRegisteredAsOVCapableSecondary pins that the bat model is wired as an
+// OpenVINO-capable secondary, so ReloadSecondaryModels rebuilds it on a backend or
+// device change (only its heavy embedding extractor honors the preference; the bat
+// head stays on ORT). The rebuild/swap/triplet mechanics are covered by the
+// synthetic-ID reload tests above.
+func TestBatRegisteredAsOVCapableSecondary(t *testing.T) {
+	t.Parallel()
+	_, ok := openvinoCapableSecondaryBuilders[RegistryIDBat]
+	assert.True(t, ok, "bat must be registered as an OpenVINO-capable secondary")
 }
 
 func TestReloadSecondaryModels_OrphanedEntrySkipsSwapAndClosesNew(t *testing.T) {
 	setGlobalBackend(t, "openvino", "gpu", "")
 
-	o := newTestOrchestrator(t, &mockModelInstance{id: permanentRegistryID})
-	o.ModelInfo.ID = permanentRegistryID
+	o := newTestOrchestrator(t, &mockModelInstance{id: RegistryIDBirdNETV24})
 	// The entry has a live instance and a stale triplet, so the per-entry gate
 	// fires and the build runs. The builder simulates a concurrent Delete/Unload
 	// tearing the entry down (instance == nil) WHILE the slow build is in flight;
@@ -260,8 +356,7 @@ func TestReloadSecondaryModels_OrphanedEntrySkipsSwapAndClosesNew(t *testing.T) 
 func TestReloadSecondaryModels_AlreadyOrphanedSkipsBuild(t *testing.T) {
 	setGlobalBackend(t, "openvino", "gpu", "")
 
-	o := newTestOrchestrator(t, &mockModelInstance{id: permanentRegistryID})
-	o.ModelInfo.ID = permanentRegistryID
+	o := newTestOrchestrator(t, &mockModelInstance{id: RegistryIDBirdNETV24})
 	// Already orphaned, with a stale triplet that would otherwise fire the gate.
 	o.models[testSecondaryID] = &modelEntry{instance: nil, backend: secondaryBackendKey{backend: "onnx"}}
 
@@ -282,8 +377,7 @@ func TestReloadSecondaryModels_PartialFailureAmongMultiple(t *testing.T) {
 
 	oldOK := &reloadFakeModel{id: testSecondaryID}
 	oldFail := &reloadFakeModel{id: testSecondaryID2}
-	o := newTestOrchestrator(t, &mockModelInstance{id: permanentRegistryID})
-	o.ModelInfo.ID = permanentRegistryID
+	o := newTestOrchestrator(t, &mockModelInstance{id: RegistryIDBirdNETV24})
 	// Both entries are on a different backend so the per-entry gate fires for each.
 	o.models[testSecondaryID] = &modelEntry{instance: oldOK, backend: secondaryBackendKey{backend: "onnx"}}
 	o.models[testSecondaryID2] = &modelEntry{instance: oldFail, backend: secondaryBackendKey{backend: "onnx"}}
@@ -314,8 +408,7 @@ func TestReloadSecondaryModels_PartialFailureAmongMultiple(t *testing.T) {
 func TestReloadSecondaryModels_RaceWithPredict(t *testing.T) {
 	setGlobalBackend(t, "openvino", "gpu", "")
 
-	o := newTestOrchestrator(t, &mockModelInstance{id: permanentRegistryID})
-	o.ModelInfo.ID = permanentRegistryID
+	o := newTestOrchestrator(t, &mockModelInstance{id: RegistryIDBirdNETV24})
 	o.models[testSecondaryID] = &modelEntry{instance: &reloadFakeModel{id: testSecondaryID}, backend: secondaryBackendKey{backend: "onnx"}}
 
 	registerTestSecondaryBuilder(t, testSecondaryID, func(_ *Orchestrator, _ *conf.Settings, _ int) (ModelInstance, error) {
@@ -357,7 +450,7 @@ func TestReloadSecondaryModels_RaceWithPredict(t *testing.T) {
 }
 
 // TestReloadSecondaryModels_PerEntryTripletRebuildsOnlyStale is the core
-// Forgejo #1119 behavior: with per-entry triplet tracking, a reload rebuilds only
+// Per-entry triplet tracking behavior: with per-entry triplet tracking, a reload rebuilds only
 // the secondaries whose own recorded triplet differs from the current settings.
 // One secondary is already on the current triplet (e.g. installed out-of-band by
 // LoadModel after the backend change, which records the entry's triplet at load);
@@ -369,8 +462,7 @@ func TestReloadSecondaryModels_PerEntryTripletRebuildsOnlyStale(t *testing.T) {
 
 	upToDate := &reloadFakeModel{id: testSecondaryID}
 	stale := &reloadFakeModel{id: testSecondaryID2}
-	o := newTestOrchestrator(t, &mockModelInstance{id: permanentRegistryID})
-	o.ModelInfo.ID = permanentRegistryID
+	o := newTestOrchestrator(t, &mockModelInstance{id: RegistryIDBirdNETV24})
 	// testSecondaryID is already on the current triplet; testSecondaryID2 is stale.
 	o.models[testSecondaryID] = &modelEntry{instance: upToDate, backend: currentTriplet}
 	o.models[testSecondaryID2] = &modelEntry{instance: stale, backend: secondaryBackendKey{backend: "onnx"}}
@@ -398,4 +490,158 @@ func TestReloadSecondaryModels_PerEntryTripletRebuildsOnlyStale(t *testing.T) {
 	assert.Same(t, ModelInstance(newStale), o.models[testSecondaryID2].instance, "stale instance must be swapped in")
 	assert.Equal(t, int32(1), stale.closes.Load(), "stale old instance must be closed")
 	assert.Equal(t, currentTriplet, o.models[testSecondaryID2].backend, "stale entry triplet must advance to current")
+}
+
+// TestReloadSecondaryModels_DiscardsPathResolution pins that the hot-reload path
+// queues no configuration repair.
+//
+// Scope, stated precisely because an earlier version of this test overclaimed:
+// it pins ReloadSecondaryModels ITSELF, not the bare `_` inside the three real
+// closures in openvinoCapableSecondaryBuilders. Those closures discard the
+// resolution on their SUCCESS path, which needs a real ONNX model and a real
+// ONNX Runtime, so no unit test can reach it. The builder-ran assertion closes
+// the "no rebuild happened" vacuity mode; it does not close that one.
+// TestBuildPerch_DoesNotQueuePathCorrection below covers the adjacent half that
+// IS reachable: that resolving is separated from queueing, so only a loader can
+// queue.
+func TestReloadSecondaryModels_DiscardsPathResolution(t *testing.T) {
+	setGlobalBackend(t, "openvino", "gpu", "/opt/ov")
+
+	o := newTestOrchestrator(t, &mockModelInstance{id: RegistryIDBirdNETV24})
+	o.models[testSecondaryID] = &modelEntry{
+		instance: &reloadFakeModel{id: testSecondaryID},
+		backend:  secondaryBackendKey{backend: "onnx"},
+	}
+
+	var built atomic.Int32
+	registerTestSecondaryBuilder(t, testSecondaryID, func(_ *Orchestrator, _ *conf.Settings, _ int) (ModelInstance, error) {
+		built.Add(1)
+		return &reloadFakeModel{id: testSecondaryID}, nil
+	})
+
+	require.NoError(t, o.ReloadSecondaryModels())
+
+	require.Equal(t, int32(1), built.Load(),
+		"the rebuild must actually run, or an empty queue proves nothing")
+	assert.Empty(t, o.pendingPathCorrections,
+		"a hot reload must never queue a config repair: a backend or device swap is not a stale path")
+}
+
+// TestBuildPerch_DoesNotQueuePathCorrection pins the separation the reload path
+// depends on: build* RESOLVES but never QUEUES, so only a loader can turn a
+// resolution into a config rewrite. Moving queuePathCorrection into buildPerch
+// (the shape that would make ReloadSecondaryModels start rewriting the user's
+// paths on a backend swap) fails here.
+//
+// The build itself is expected to fail: there is no real ONNX model or runtime
+// here. The resolution runs first, which is the part under test.
+func TestBuildPerch_DoesNotQueuePathCorrection(t *testing.T) {
+	t.Parallel()
+
+	entry, ok := GetCatalogEntry("perch-v2")
+	require.True(t, ok)
+
+	modelsDir := filepath.Join(t.TempDir(), "models")
+	installedModel := writeVariantModelFile(t, modelsDir, &entry, "fp32")
+	installedLabels := writeVariantLabelsFile(t, modelsDir, &entry, "fp32")
+
+	o := &Orchestrator{}
+	o.SetModelsDir(modelsDir)
+
+	// A stale gallery-shaped configured set: the resolution substitutes and is
+	// repairable, so anything that queued would queue here.
+	staleDir := filepath.Join(t.TempDir(), "models", entry.ID)
+	settings := &conf.Settings{}
+	settings.Perch.ModelPath = filepath.Join(staleDir, filepath.Base(installedModel))
+	settings.Perch.LabelPath = filepath.Join(staleDir, filepath.Base(installedLabels))
+
+	res := o.resolveFamilyPaths(RegistryIDPerchV2, modelFileSet{
+		model:  settings.Perch.ModelPath,
+		labels: settings.Perch.LabelPath,
+	}, false)
+	require.True(t, res.substituted, "fixture must produce a substituting resolution, or the test proves nothing")
+	require.True(t, res.repairable)
+
+	_, _, err := o.buildPerch(settings, 1)
+	require.Error(t, err, "no real ONNX runtime here; the resolution before the failure is the subject")
+
+	assert.Empty(t, o.pendingPathCorrections,
+		"build* must never queue: only a loader may turn a resolution into a config rewrite")
+}
+
+// TestReloadSecondaryModels_StoresProbedLatency pins that a reload replaces the
+// model's probed latency after the swap, and that a failing probe leaves the model
+// unknown instead of keeping the replaced instance's latency.
+func TestReloadSecondaryModels_StoresProbedLatency(t *testing.T) {
+	spec := ModelSpec{SampleRate: 48000, ClipLength: 3 * time.Second}
+	tests := []struct {
+		name    string
+		predict func(context.Context, [][]float32) ([]datastore.Results, error)
+		known   bool
+	}{
+		{"probe succeeds", func(context.Context, [][]float32) ([]datastore.Results, error) {
+			time.Sleep(time.Millisecond)
+			return nil, nil
+		}, true},
+		{"probe fails", func(context.Context, [][]float32) ([]datastore.Results, error) {
+			return nil, errors.NewStd("probe failure")
+		}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setGlobalBackend(t, "openvino", "gpu", "/opt/ov")
+			o := newTestOrchestrator(t, &mockModelInstance{id: RegistryIDBirdNETV24})
+			o.models[testSecondaryID] = &modelEntry{
+				instance: &reloadFakeModel{id: testSecondaryID},
+				backend:  secondaryBackendKey{backend: "onnx"},
+			}
+			stale := time.Hour
+			o.storeProbedLatency(testSecondaryID, stale, true)
+
+			newInst := &mockModelInstance{id: testSecondaryID, spec: spec, predict: tt.predict}
+			registerTestSecondaryBuilder(t, testSecondaryID, func(_ *Orchestrator, _ *conf.Settings, _ int) (ModelInstance, error) {
+				return newInst, nil
+			})
+			require.NoError(t, o.ReloadSecondaryModels(), "a failing probe must not fail the reload")
+
+			got, ok := o.ProbedLatencies()[testSecondaryID]
+			assert.Equal(t, tt.known, ok)
+			if tt.known {
+				assert.Positive(t, got)
+				assert.Less(t, got, stale, "the stale latency of the replaced instance must be overwritten")
+			}
+		})
+	}
+}
+
+// TestReloadEntry_AnchorStoresProbedLatency pins the v2.4 anchor's reload probe:
+// the anchor skips the warm-up, so its probe makes one untimed run before the
+// timed ones, and the result replaces the replaced instance's latency.
+func TestReloadEntry_AnchorStoresProbedLatency(t *testing.T) {
+	setGlobalBackend(t, "openvino", "gpu", "/opt/ov")
+	o := newTestOrchestrator(t, &mockModelInstance{id: RegistryIDBirdNETV24})
+	stale := time.Hour
+	o.storeProbedLatency(RegistryIDBirdNETV24, stale, true)
+
+	var calls int
+	next := &mockModelInstance{
+		id:   RegistryIDBirdNETV24,
+		spec: ModelSpec{SampleRate: 48000, ClipLength: 3 * time.Second},
+		predict: func(context.Context, [][]float32) ([]datastore.Results, error) {
+			calls++
+			time.Sleep(time.Millisecond)
+			return nil, nil
+		},
+	}
+	swapped, err := o.reloadEntry(RegistryIDBirdNETV24, func(*Orchestrator, *conf.Settings, int) (ModelInstance, error) {
+		return next, nil
+	}, reloadOpts{skipSpeciesIndex: true})
+	require.NoError(t, err)
+	require.True(t, swapped)
+
+	assert.Equal(t, 1+cadenceProbeRuns, calls, "one untimed run, then the timed probe runs")
+	got, ok := o.ProbedLatencies()[RegistryIDBirdNETV24]
+	require.True(t, ok, "the anchor's probe must be stored")
+	assert.Positive(t, got)
+	assert.Less(t, got, stale, "the replaced instance's latency must be overwritten")
 }

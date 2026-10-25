@@ -10,6 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Named RTSP transport values for tests.
+const (
+	transportTCP = "tcp"
+	transportUDP = "udp"
+)
+
 // newTestRegistry creates a SourceRegistry with the package logger for tests.
 func newTestRegistry(t *testing.T) *SourceRegistry {
 	t.Helper()
@@ -451,4 +457,134 @@ func TestSourceRegistry_TypeDetection(t *testing.T) {
 			assert.Equal(t, tt.wantType, src.Type)
 		})
 	}
+}
+
+// TestSourceRegistry_SyncReconfiguredParams verifies the reconfigure write-back:
+// the mode fields are always overwritten and the probed source-shape fields are
+// only overwritten when the new value is non-zero. Without this write-back a
+// mode-only edit would re-trigger reconfigure on every later cycle and
+// quiet-hours resume would rebuild the stream from a stale entry.
+func TestSourceRegistry_SyncReconfiguredParams(t *testing.T) {
+	t.Parallel()
+	r := newTestRegistry(t)
+
+	src, err := r.Register(&SourceConfig{
+		ConnectionString: "rtsp://sync.example.com/stream",
+		ChannelMode:      "downmix",
+		MediaMode:        "auto",
+		Transport:        transportTCP,
+		SourceSampleRate: 48000,
+		SourceChannels:   2,
+	})
+	require.NoError(t, err)
+
+	// New mode/transport plus non-zero shape overwrites all fields, including the
+	// estimated marker, which tracks the rate it describes (#4350).
+	ok := r.SyncReconfiguredParams(src.ID, "left", "full-stream", transportUDP, 44100, 1, true)
+	require.True(t, ok)
+
+	got, ok := r.Get(src.ID)
+	require.True(t, ok)
+	assert.Equal(t, "left", got.ChannelMode, "channel mode must be written back")
+	assert.Equal(t, "full-stream", got.MediaMode, "media mode must be written back")
+	assert.Equal(t, transportUDP, got.Transport, "transport must be written back so a later reload does not re-trigger reconfigure")
+	assert.Equal(t, 44100, got.SourceSampleRate, "non-zero source sample rate must be written back")
+	assert.Equal(t, 1, got.SourceChannels, "non-zero source channels must be written back")
+	assert.True(t, got.SourceSampleRateEstimated, "estimated marker must be written back with a non-zero rate")
+
+	// Zero-valued shape must NOT clobber the known values (mirrors the
+	// "desired != 0" guard in sourceNeedsReconfigure); modes/transport are always
+	// written. The estimated marker must not be cleared either, since it belongs to
+	// the retained rate.
+	ok = r.SyncReconfiguredParams(src.ID, "right", "audio-only", transportTCP, 0, 0, false)
+	require.True(t, ok)
+
+	got, ok = r.Get(src.ID)
+	require.True(t, ok)
+	assert.Equal(t, "right", got.ChannelMode)
+	assert.Equal(t, "audio-only", got.MediaMode)
+	assert.Equal(t, transportTCP, got.Transport)
+	assert.Equal(t, 44100, got.SourceSampleRate, "zero source sample rate must not clobber the known value")
+	assert.Equal(t, 1, got.SourceChannels, "zero source channels must not clobber the known value")
+	assert.True(t, got.SourceSampleRateEstimated, "estimated marker must not be cleared when the rate is not rewritten")
+
+	// A subsequent successful re-probe (non-zero rate, estimated=false) must clear
+	// the marker, so a recovered source stops force-resampling.
+	ok = r.SyncReconfiguredParams(src.ID, "right", "audio-only", transportTCP, 96000, 2, false)
+	require.True(t, ok)
+
+	got, ok = r.Get(src.ID)
+	require.True(t, ok)
+	assert.Equal(t, 96000, got.SourceSampleRate, "successful re-probe must write the new rate")
+	assert.False(t, got.SourceSampleRateEstimated, "successful re-probe must clear the estimated marker")
+}
+
+// TestSourceRegistry_SyncReconfiguredParams_NotFound verifies the write-back
+// reports false for an unknown source ID.
+func TestSourceRegistry_SyncReconfiguredParams_NotFound(t *testing.T) {
+	t.Parallel()
+	r := newTestRegistry(t)
+
+	assert.False(t, r.SyncReconfiguredParams("nonexistent-id", "left", "full-stream", transportTCP, 48000, 1, false))
+}
+
+// TestSourceRegistry_TransitionState pins the compare-and-set contract: the
+// state changes and an event fires only when the current state equals from.
+func TestSourceRegistry_TransitionState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		current   SourceState
+		from      SourceState
+		to        SourceState
+		wantOK    bool
+		wantState SourceState
+	}{
+		{"matching from applies", SourceStarting, SourceStarting, SourceRunning, true, SourceRunning},
+		{"to is honoured", SourceRunning, SourceRunning, SourceStopped, true, SourceStopped},
+		{"non-matching from is ignored", SourceStopped, SourceStarting, SourceRunning, false, SourceStopped},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := newTestRegistry(t)
+
+			var mu sync.Mutex
+			var received []SourceEvent
+			r.AddListener(func(e SourceEvent) {
+				mu.Lock()
+				defer mu.Unlock()
+				received = append(received, e)
+			})
+
+			src, err := r.Register(&SourceConfig{ConnectionString: "rtsp://cas-" + tt.name + ".example.com/stream"})
+			require.NoError(t, err)
+			require.NoError(t, r.UpdateState(src.ID, tt.current))
+			mu.Lock()
+			received = received[:0]
+			mu.Unlock()
+
+			assert.Equal(t, tt.wantOK, r.TransitionState(src.ID, tt.from, tt.to))
+
+			got, ok := r.Get(src.ID)
+			require.True(t, ok)
+			assert.Equal(t, tt.wantState, got.State)
+
+			mu.Lock()
+			defer mu.Unlock()
+			if tt.wantOK {
+				require.Len(t, received, 1)
+				assert.Equal(t, SourceStateChanged, received[0].Type)
+			} else {
+				assert.Empty(t, received)
+			}
+		})
+	}
+
+	t.Run("unknown ID returns false", func(t *testing.T) {
+		t.Parallel()
+		r := newTestRegistry(t)
+		assert.False(t, r.TransitionState("missing", SourceStarting, SourceRunning))
+	})
 }

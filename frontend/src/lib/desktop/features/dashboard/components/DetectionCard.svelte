@@ -23,21 +23,23 @@
   import SourceBadge from './SourceBadge.svelte';
   import PlayOverlay from './PlayOverlay.svelte';
   import SpeciesInfoBar from './SpeciesInfoBar.svelte';
+  import SpectrogramImage from '$lib/desktop/components/media/SpectrogramImage.svelte';
   import ActionMenu from '$lib/desktop/components/ui/ActionMenu.svelte';
   import AudioSettingsButton from './AudioSettingsButton.svelte';
+  import AudibleBatsButton from './AudibleBatsButton.svelte';
+  import { useAudibleBats } from '$lib/utils/useAudibleBats.svelte';
   import { cn } from '$lib/utils/cn';
-  import { buildAppUrl } from '$lib/utils/urlHelpers';
+  import { downloadDetectionAudio } from '$lib/utils/audioDownload';
   import { createSpectrogramLoader } from '$lib/utils/spectrogramLoader.svelte';
   import { DEFAULT_PLAYBACK_SPEED } from '$lib/utils/audio';
   import { get } from 'svelte/store';
   import { dashboardSettings } from '$lib/stores/settings';
+  import { t } from '$lib/i18n';
 
   // Configuration constants - use helper to read current default gain at call time
   // (cards are recycled via keyed {#each}, so a one-time const would go stale)
   const getDefaultAudioGain = () => get(dashboardSettings)?.defaultAudioGain ?? 0;
   const DEFAULT_AUDIO_FILTER_FREQ = 20;
-  const DEFAULT_DOWNLOAD_NAME = 'detection';
-  const AUDIO_FILE_EXTENSION = '.wav';
 
   interface Props {
     detection: Detection;
@@ -75,12 +77,36 @@
   // Menu state for z-index management
   let isMenuOpen = $state(false);
   let isAudioSettingsOpen = $state(false);
+  let isAudibleBatsOpen = $state(false);
+
+  // Mutual-exclusion signals: bumping one forces the sibling popup (Audible
+  // Bats vs Audio Settings) closed, so only one is ever open at a time.
+  let closeAudibleBatsSignal = $state(0);
+  let closeAudioSettingsSignal = $state(0);
 
   // Audio settings state (per-card, not shared)
   let audioGainValue = $state(getDefaultAudioGain());
   let audioFilterFreq = $state(DEFAULT_AUDIO_FILTER_FREQ);
   let audioPlaybackSpeed = $state(DEFAULT_PLAYBACK_SPEED);
   let audioContextAvailable = $state(true);
+
+  // Audible bats: only offered for bat detections (matches AudioPlayer). The
+  // request lifecycle lives in the shared composable; PlayOverlay swaps to the
+  // generated `url` while the spectrogram keeps spanning the full original clip.
+  const MODEL_TYPE_BAT = 'bat';
+  const isBatDetection = $derived(detection.modelType === MODEL_TYPE_BAT);
+  const audibleBats = useAudibleBats({ getDetectionId: () => detection.id });
+
+  // Reset derived playback if this card instance is recycled to a different
+  // detection (keyed {#each} normally avoids this, but guard defensively).
+  // svelte-ignore state_referenced_locally
+  let previousDetectionId = detection.id;
+  $effect(() => {
+    if (detection.id !== previousDetectionId) {
+      previousDetectionId = detection.id;
+      audibleBats.reset();
+    }
+  });
 
   function handleGainChange(value: number) {
     audioGainValue = value;
@@ -98,8 +124,20 @@
     audioContextAvailable = available;
   }
 
+  function handleAudibleBatsOpen() {
+    isAudibleBatsOpen = true;
+    closeAudioSettingsSignal++;
+    onFreezeStart?.();
+  }
+
+  function handleAudibleBatsClose() {
+    isAudibleBatsOpen = false;
+    onFreezeEnd?.();
+  }
+
   function handleAudioSettingsOpen() {
     isAudioSettingsOpen = true;
+    closeAudibleBatsSignal++;
     onFreezeStart?.();
   }
 
@@ -108,9 +146,14 @@
     onFreezeEnd?.();
   }
 
-  // Start/stop loader based on visibility
+  const showsSpectrogram = $derived(
+    Boolean(detection.clipName) || Boolean(detection.spectrogramOnly)
+  );
+
+  // Start/stop loader based on visibility. Skip entirely when this detection has
+  // no clip: there is no spectrogram to fetch.
   $effect(() => {
-    if (isVisible) {
+    if (detection.clipName && isVisible) {
       loader.start(detection.id);
     } else {
       loader.stop();
@@ -125,26 +168,6 @@
   function handleMenuClose() {
     isMenuOpen = false;
     onFreezeEnd?.();
-  }
-
-  function handleDownload() {
-    // Create a temporary anchor element to trigger download
-    const link = document.createElement('a');
-    link.href = buildAppUrl(`/api/v2/audio/${detection.id}`);
-    // Use species name and date/time for filename
-    // Sanitize commonName to prevent path traversal (remove characters that aren't alphanumeric, space, dot, underscore, or hyphen)
-    const safeCommonName = (detection.commonName || DEFAULT_DOWNLOAD_NAME).replace(
-      /[^a-zA-Z0-9 ._-]/g,
-      '_'
-    );
-    const dateTime =
-      detection.date && detection.time
-        ? `${detection.date}_${detection.time.replace(/:/g, '-')}`
-        : String(detection.id);
-    link.download = `${safeCommonName}_${dateTime}${AUDIO_FILE_EXTENSION}`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
   }
 
   // eslint-disable-next-line no-undef -- browser global
@@ -168,6 +191,7 @@
   onDestroy(() => {
     observer?.disconnect();
     loader.destroy();
+    audibleBats.cleanup();
   });
 </script>
 
@@ -176,41 +200,65 @@
   class={cn(
     'detection-card group relative rounded-xl',
     isNew && 'new-detection',
-    (isMenuOpen || isAudioSettingsOpen) && 'z-[60]'
+    (isMenuOpen || isAudioSettingsOpen || isAudibleBatsOpen) && 'z-[60]'
   )}
 >
   <!-- Inner container with overflow-hidden for spectrogram clipping -->
-  <div class="detection-card-inner">
-    <!-- Spectrogram Background -->
-    <div class="spectrogram-container">
-      {#if loader.showSpinner}
-        <div class="spectrogram-loading">
-          <span class="loading loading-spinner loading-md text-[var(--color-base-content)]/50"
-          ></span>
-          {#if loader.isQueued}
-            <span class="text-xs text-[var(--color-base-content)]/40 mt-1">Waiting...</span>
-          {:else if loader.isGenerating}
-            <span class="text-xs text-[var(--color-base-content)]/40 mt-1">Generating...</span>
-          {/if}
-        </div>
-      {/if}
+  <!-- Compact (shorter) layout when there is no spectrogram to display -->
+  <div class="detection-card-inner" class:compact={!showsSpectrogram}>
+    <!-- Spectrogram Background (hidden when this detection has neither a clip nor a kept image) -->
+    {#if detection.clipName}
+      <div class="spectrogram-container">
+        {#if loader.showSpinner}
+          <div class="spectrogram-loading">
+            <span class="loading loading-spinner loading-md text-[var(--color-base-content)]/50"
+            ></span>
+            {#if loader.isQueued}
+              <span class="text-xs text-[var(--color-base-content)]/40 mt-1"
+                >{t('components.audio.waiting')}</span
+              >
+            {:else if loader.isGenerating}
+              <span class="text-xs text-[var(--color-base-content)]/40 mt-1"
+                >{t('components.audio.generating')}</span
+              >
+            {/if}
+          </div>
+        {/if}
 
-      {#if loader.error}
-        <div class="spectrogram-error">
-          <span class="text-sm text-[var(--color-base-content)]/50">Spectrogram unavailable</span>
-        </div>
-      {:else if loader.spectrogramUrl}
-        <img
-          src={loader.spectrogramUrl}
-          alt="Spectrogram for {detection.commonName}"
-          class="spectrogram-image"
-          class:opacity-0={loader.state === 'loading'}
-          decoding="async"
-          onload={() => loader.handleImageLoad()}
-          onerror={() => loader.handleImageError()}
+        {#if loader.error}
+          <div class="spectrogram-error">
+            <span class="text-sm text-[var(--color-base-content)]/50"
+              >{t('components.audio.spectrogramUnavailable')}</span
+            >
+          </div>
+        {:else if loader.spectrogramUrl}
+          <img
+            src={loader.spectrogramUrl}
+            alt={t('components.audio.spectrogramForSpecies', { species: detection.commonName })}
+            class="spectrogram-image"
+            class:opacity-0={loader.state === 'loading'}
+            decoding="async"
+            onload={() => loader.handleImageLoad()}
+            onerror={() => loader.handleImageError()}
+          />
+        {/if}
+      </div>
+    {:else if detection.spectrogramOnly}
+      <!-- Retention removed the audio but kept the image: no loader, no polling. Same
+           size and raw flag as the list view's player so the same cached file is used. -->
+      <div class="spectrogram-container">
+        <SpectrogramImage
+          detectionId={detection.id.toString()}
+          size="md"
+          raw={true}
+          cover
+          alt={t('components.audio.spectrogramForSpecies', { species: detection.commonName })}
         />
-      {/if}
-    </div>
+      </div>
+    {:else}
+      <!-- Neutral background placeholder keeps the card's shape/aspect ratio -->
+      <div class="spectrogram-container spectrogram-placeholder"></div>
+    {/if}
 
     <!-- Top-Left Badges: Confidence + Weather -->
     <div class="absolute top-3 left-3 flex items-center gap-2 z-10">
@@ -230,16 +278,19 @@
       <SourceBadge {detection} variant="overlay" />
     </div>
 
-    <!-- Center Play Button -->
-    <PlayOverlay
-      detectionId={detection.id}
-      {onFreezeStart}
-      {onFreezeEnd}
-      gainValue={audioGainValue}
-      filterFreq={audioFilterFreq}
-      playbackSpeed={audioPlaybackSpeed}
-      onAudioContextAvailable={handleAudioContextAvailable}
-    />
+    <!-- Center Play Button (hidden when this detection has no clip) -->
+    {#if detection.clipName}
+      <PlayOverlay
+        detectionId={detection.id}
+        {onFreezeStart}
+        {onFreezeEnd}
+        gainValue={audioGainValue}
+        filterFreq={audioFilterFreq}
+        playbackSpeed={audioPlaybackSpeed}
+        onAudioContextAvailable={handleAudioContextAvailable}
+        audibleBatsSrc={audibleBats.url}
+      />
+    {/if}
 
     <!-- Bottom Species Info Bar -->
     <SpeciesInfoBar {detection} />
@@ -247,18 +298,34 @@
 
   <!-- Top-Right Controls - OUTSIDE overflow-hidden container -->
   <div class="absolute top-2 right-2 z-50 flex items-center gap-1.5">
-    <AudioSettingsButton
-      gainValue={audioGainValue}
-      filterFreq={audioFilterFreq}
-      playbackSpeed={audioPlaybackSpeed}
-      defaultGainValue={getDefaultAudioGain()}
-      onGainChange={handleGainChange}
-      onFilterChange={handleFilterChange}
-      onSpeedChange={handleSpeedChange}
-      disabled={!audioContextAvailable}
-      onMenuOpen={handleAudioSettingsOpen}
-      onMenuClose={handleAudioSettingsClose}
-    />
+    {#if detection.clipName}
+      {#if isBatDetection}
+        <AudibleBatsButton
+          active={audibleBats.active}
+          generating={audibleBats.generating}
+          error={audibleBats.error}
+          disabled={!audioContextAvailable}
+          closeSignal={closeAudibleBatsSignal}
+          onEnable={settings => audibleBats.enable(settings)}
+          onDisable={() => audibleBats.disable()}
+          onMenuOpen={handleAudibleBatsOpen}
+          onMenuClose={handleAudibleBatsClose}
+        />
+      {/if}
+      <AudioSettingsButton
+        gainValue={audioGainValue}
+        filterFreq={audioFilterFreq}
+        playbackSpeed={audioPlaybackSpeed}
+        defaultGainValue={getDefaultAudioGain()}
+        onGainChange={handleGainChange}
+        onFilterChange={handleFilterChange}
+        onSpeedChange={handleSpeedChange}
+        disabled={!audioContextAvailable}
+        closeSignal={closeAudioSettingsSignal}
+        onMenuOpen={handleAudioSettingsOpen}
+        onMenuClose={handleAudioSettingsClose}
+      />
+    {/if}
     <ActionMenu
       {detection}
       {isExcluded}
@@ -269,7 +336,7 @@
       {onToggleSpecies}
       {onToggleLock}
       {onDelete}
-      onDownload={handleDownload}
+      onDownload={detection.clipName ? () => downloadDetectionAudio(detection) : undefined}
       onMenuOpen={handleMenuOpen}
       onMenuClose={handleMenuClose}
     />
@@ -286,6 +353,12 @@
     height: 15rem; /* ~240px - taller for better spectrogram visibility, especially low frequencies */
     border-radius: 0.75rem;
     overflow: hidden;
+  }
+
+  /* Without a spectrogram, the card only needs room for the top badges and the
+     bottom species-info bar, so collapse the reserved height. */
+  .detection-card-inner.compact {
+    height: 7rem; /* ~112px - fits badges + species-info bar without overlap */
   }
 
   /* Spectrogram container */
@@ -308,7 +381,8 @@
   }
 
   .spectrogram-loading,
-  .spectrogram-error {
+  .spectrogram-error,
+  .spectrogram-placeholder {
     position: absolute;
     inset: 0;
     display: flex;
@@ -324,7 +398,8 @@
 
   /* Dark theme spectrogram background */
   :global([data-theme='dark']) .spectrogram-loading,
-  :global([data-theme='dark']) .spectrogram-error {
+  :global([data-theme='dark']) .spectrogram-error,
+  :global([data-theme='dark']) .spectrogram-placeholder {
     background: linear-gradient(135deg, rgb(30 41 59 / 0.9) 0%, rgb(15 23 42 / 0.95) 100%);
   }
 

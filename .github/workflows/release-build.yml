@@ -1,11 +1,216 @@
-# This workflow is kept from upstream to avoid merge conflicts.
-# It is disabled on this fork (Gitea Actions used instead).
 name: BirdNET-Go Release Build
 
-on: workflow_dispatch
+on:
+  release:
+    # Only 'created' triggers a build. 'edited' is deliberately excluded: the
+    # build is what attaches the assets, so it never needs a body edit to run,
+    # and listening on 'edited' meant any later change to the release (fixing
+    # the notes, toggling latest) re-ran the entire multi-platform build. To
+    # rebuild on demand, run the workflow_dispatch entry below from the release
+    # tag (a branch ref is refused) or re-run the failed run; do not re-add
+    # 'edited'.
+    types: [created]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+# Serialize release builds per tag. If a second trigger for the same release
+# ever fires (for example a manual dispatch overlapping the created build), it
+# queues behind the running one instead of racing it on asset uploads and
+# container image pushes. cancel-in-progress is false so an in-flight build,
+# which may be mid-push, is never killed.
+concurrency:
+  group: release-build-${{ github.event.release.tag_name || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
-  noop:
-    runs-on: ubuntu-latest
+  build:
+    if: ${{ !contains(github.ref, 'nightly') && (github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.action == 'created')) }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            os: ubuntu-24.04
+          - goos: linux
+            goarch: arm64
+            os: ubuntu-24.04
+          - goos: windows
+            goarch: amd64
+            os: ubuntu-24.04
+          - goos: darwin
+            goarch: arm64
+            os: macos-latest
+
     steps:
-      - run: 'echo "This workflow is disabled on this fork"'
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Determine build version
+        id: ver
+        env:
+          # Passed via env, not inline ${{ }}, so a crafted ref name cannot
+          # inject shell (defense in depth against the template-injection class).
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          # The version is always the ref name: on a release event that is the
+          # release tag, and a manual dispatch must be started from a tag ref
+          # so the binaries are versioned and attached to that release. A
+          # dispatch from a branch would otherwise build branch code under an
+          # old release version.
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ "${REF_TYPE}" != "tag" ]; then
+              echo "::error::workflow_dispatch must be run from a release tag ref, not ${REF_TYPE} '${REF_NAME}'"
+              exit 1
+            fi
+            # "manifest" carries the auto-update manifest, not a release
+            # (NON_RELEASE_TAGS in scripts/build-version.sh), and any other tag
+            # must already have a published (non-draft) GitHub release to attach
+            # the assets to.
+            if [ "${REF_NAME}" = "manifest" ] || [ "$(gh release view "${REF_NAME}" --repo "${REPO}" --json isDraft -q .isDraft 2>/dev/null)" != "false" ]; then
+              echo "::error::workflow_dispatch tag '${REF_NAME}' is not a published release"
+              exit 1
+            fi
+          fi
+          VERSION="${REF_NAME}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building release version: ${VERSION}"
+
+      - name: Build BirdNET-Go binary
+        uses: ./.github/actions/build-birdnet-binary
+        with:
+          goos: ${{ matrix.goos }}
+          goarch: ${{ matrix.goarch }}
+          build-version: ${{ steps.ver.outputs.version }}
+          tarball-suffix: "-${{ steps.ver.outputs.version }}"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sentry-dsn: ${{ secrets.SENTRY_DSN }}
+          sentry-auth-token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
+      - name: Add Artifacts to GitHub Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          files: birdnet-go-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.ver.outputs.version }}.tar.gz
+          # Release event: attach to the triggering release (empty tag_name).
+          # Dispatch: attach to the release of the tag the run was started from.
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+  checksums:
+    if: ${{ !contains(github.ref, 'nightly') && (github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.action == 'created')) }}
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: birdnet-go-*
+
+      - name: Generate checksums
+        run: |
+          # SHA-256 of every tarball, keyed by basename so the manifest
+          # generator can map a checksum to a release asset by file name.
+          find artifacts -name '*.tar.gz' -print0 | while IFS= read -r -d '' f; do
+            echo "$(sha256sum "$f" | cut -d' ' -f1)  $(basename "$f")"
+          done | sort > checksums.txt
+          cat checksums.txt
+
+      - name: Add checksums to GitHub Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          files: checksums.txt
+          # For release events, attach to the triggering release; for
+          # workflow_dispatch, attach to the release of the dispatched tag ref.
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  get-version:
+    if: ${{ !contains(github.ref, 'nightly') && (github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.action == 'created')) }}
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Get version
+        id: get_version
+        env:
+          # Passed via env, not inline ${{ }}, so a crafted ref name cannot
+          # inject shell (matches the build job's hardening).
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          # The tag is the version: on a release event it is the release tag
+          # (a date-based 20260712 or a stable v1.2.3), and a manual dispatch
+          # must be started from a tag ref, matching the build job.
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ "${REF_TYPE}" != "tag" ]; then
+              echo "::error::workflow_dispatch must be run from a release tag ref, not ${REF_TYPE} '${REF_NAME}'"
+              exit 1
+            fi
+            # "manifest" carries the auto-update manifest, not a release
+            # (NON_RELEASE_TAGS in scripts/build-version.sh), and any other tag
+            # must already have a published (non-draft) GitHub release to attach
+            # the assets to.
+            if [ "${REF_NAME}" = "manifest" ] || [ "$(gh release view "${REF_NAME}" --repo "${REPO}" --json isDraft -q .isDraft 2>/dev/null)" != "false" ]; then
+              echo "::error::workflow_dispatch tag '${REF_NAME}' is not a published release"
+              exit 1
+            fi
+          fi
+          VERSION="${REF_NAME}"
+          echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
+  docker:
+    if: ${{ !contains(github.ref, 'nightly') && (github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.action == 'created')) }}
+    needs: get-version
+    uses: ./.github/workflows/docker-build-push.yml
+    with:
+      tag-strategy: "release"
+      version: ${{ needs.get-version.outputs.version }}
+      create-latest-tag: true
+      platforms: '["linux/amd64", "linux/arm64"]'
+      push-to-ghcr: true
+      push-to-dockerhub: true
+      cleanup-old-images: false
+      keep-images-count: 14
+    secrets: inherit
+
+  # Regenerate the release manifest after the tarballs (build), checksums.txt
+  # (checksums), and container images (docker) are all published, so it never
+  # races the asset uploads or advertises image tags before they are pushed.
+  # The if-guard mirrors the other jobs and must stay in sync with them.
+  manifest:
+    if: ${{ !contains(github.ref, 'nightly') && (github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.action == 'created')) }}
+    needs: [build, checksums, docker]
+    uses: ./.github/workflows/release-manifest.yml
+    permissions:
+      contents: write
+
+  # Scan the attached tarballs and append VirusTotal results to the release body.
+  # Runs after build + checksums so the assets already exist; replaces the old
+  # release:published trigger on virustotal.yml, which fired before the build
+  # attached any assets and always failed with "No Assets Found".
+  virustotal:
+    if: ${{ !contains(github.ref, 'nightly') && (github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.action == 'created')) }}
+    needs: [build, checksums]
+    uses: ./.github/workflows/virustotal.yml
+    secrets: inherit

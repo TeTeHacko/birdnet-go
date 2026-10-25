@@ -6,7 +6,6 @@ package birdweather
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"math/rand/v2"
 	"net"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/tphakala/birdnet-go/internal/errors"
+	"github.com/tphakala/birdnet-go/internal/httpclient"
 	"github.com/tphakala/birdnet-go/internal/logger"
 )
 
@@ -57,23 +57,22 @@ func generateTestPCMData() []byte {
 	return make([]byte, numSamples*testAudioBytesPerSample)
 }
 
-// newSecureHTTPClient creates an HTTP client with secure TLS configuration.
-// This helper reduces code duplication for creating HTTP clients with TLS settings.
-//
-// It is used only for one-shot connectivity and authentication probes (a single
-// HEAD/GET per call), so keep-alives are disabled: without this the probe's
-// persistent connection (and its read/write loops) would linger in the idle
-// pool after the request, outliving the probe as leaked goroutines.
+// newSecureHTTPClient creates an HTTP client for one-shot connectivity and
+// authentication probes (a single HEAD/GET per call). It clones
+// http.DefaultTransport (per golang/go#26013) to inherit proxy support, dial
+// timeouts, and other production defaults. Keep-alives are disabled: without
+// this the probe's persistent connection (and its read/write loops) would
+// linger in the idle pool after the request, outliving the probe as leaked
+// goroutines.
 func newSecureHTTPClient(timeout time.Duration) *http.Client {
+	transport := httpclient.CloneDefaultTransport()
+	transport.DisableKeepAlives = true
+	// Client.Timeout cannot interrupt in-flight dials (transport uses WithoutCancel),
+	// so we bound the dial independently to match the probe timeout.
+	transport.DialContext = (&net.Dialer{Timeout: timeout}).DialContext
 	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			DisableKeepAlives: true,
-			TLSClientConfig: &tls.Config{
-				MinVersion:         tls.VersionTLS12,
-				InsecureSkipVerify: false,
-			},
-		},
+		Timeout:   timeout,
+		Transport: transport,
 	}
 }
 
@@ -525,14 +524,12 @@ func isDNSError(err error) bool {
 	}
 
 	// Check if it's a DNSError type
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
+	if _, ok := errors.AsType[*net.DNSError](err); ok {
 		return true
 	}
 
 	// Check for URL errors with lookup operation
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) && strings.HasPrefix(urlErr.Op, "lookup") {
+	if urlErr, ok := errors.AsType[*url.Error](err); ok && strings.HasPrefix(urlErr.Op, "lookup") {
 		return true
 	}
 
@@ -555,8 +552,7 @@ func isDNSTimeout(err error) bool {
 	}
 
 	// Also check for net.Error timeout
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
+	if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
 		return true
 	}
 
@@ -600,11 +596,11 @@ func tryAPIConnection(ctx context.Context, apiEndpoint string, hostHeader ...str
 
 	// Create a temporary HTTP client with a shorter timeout for this test
 	client := newSecureHTTPClient(apiTimeout)
+	defer client.CloseIdleConnections() // golang/go#26563: eagerly tear down transport goroutines so goleak doesn't flag them
 
 	resp, err := client.Do(req)
 	if err != nil {
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
+		if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
 			return fmt.Errorf("API connectivity test timed out: %w", err)
 		}
 		// Check if this is a DNS error
@@ -751,6 +747,7 @@ func tryAuthenticationWithHostOverride(ctx context.Context, b *BwClient, station
 
 	// Create a client with custom transport to handle direct IP connection
 	client := newSecureHTTPClient(authTimeout)
+	defer client.CloseIdleConnections() // golang/go#26563: eagerly tear down transport goroutines so goleak doesn't flag them
 
 	maskedURL := maskURLForLogging(stationURL, b.BirdweatherID)
 	resp, err := client.Do(req)

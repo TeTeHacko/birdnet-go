@@ -161,7 +161,16 @@ birdnet:
       threshold: 0.01     # rangefilter species occurrence threshold
   modelpath: ""           # path to external model file (empty for embedded)
   labelpath: ""           # path to external label file (empty for embedded)
+  modelregion: auto       # regional model preference: auto (from coordinates), global (all species), or a region slug (e.g. iberia)
   usexnnpack: true        # true to use XNNPACK delegate for inference acceleration
+
+# Global acoustic model configuration. models.enabled is the authoritative, ordered list of
+# acoustic models to load; "birdnet" is the built-in BirdNET v2.4. Entries load in order, so
+# the first one loads first. An empty list means no acoustic model is loaded (a valid state).
+# Gallery-installed models are added here (e.g. perch_v2, birdnet_v3.0).
+models:
+  enabled:
+    - birdnet             # BirdNET v2.4 (built-in)
 
 # Optional taxonomy synonym overrides for image lookups.
 # Built-in mappings are always loaded first; entries below override/add to them.
@@ -195,34 +204,35 @@ realtime:
         - type: LowPass
           frequency: 15000
           passes: 0 
-    quiethours:
+    quietHours:
       enabled: false      # true to enable quiet hours (stop capture during specified times)
       mode: fixed         # "fixed" for clock times, "solar" for sunrise/sunset based
-      starttime: "22:00"  # start of quiet period (HH:MM, fixed mode)
-      endtime: "06:00"    # end of quiet period (HH:MM, fixed mode)
-      startevent: sunset  # solar event for start (solar mode): "sunrise" or "sunset"
-      startoffset: 0      # minutes offset from start event (solar mode, -180 to 180)
-      endevent: sunrise   # solar event for end (solar mode): "sunrise" or "sunset"
-      endoffset: 0        # minutes offset from end event (solar mode, -180 to 180)
+      startTime: "22:00"  # start of quiet period (HH:MM, fixed mode)
+      endTime: "06:00"    # end of quiet period (HH:MM, fixed mode)
+      startEvent: sunset  # solar event for start (solar mode): "sunrise" or "sunset"
+      startOffset: 0      # minutes offset from start event (solar mode, -180 to 180)
+      endEvent: sunrise   # solar event for end (solar mode): "sunrise" or "sunset"
+      endOffset: 0        # minutes offset from end event (solar mode, -180 to 180)
     export:
       enabled: true       # true to export audio clips containing indentified bird calls
       debug: false        # true to enable audio export debug messages
       path: clips/        # path to audio clip export directory
-      type: wav           # wav, flac, aac, opus, mp3. Formats other than wav require ffmpeg.
-      bitrate: 96k        # bitrate for aac and opus exports
+      type: wav           # wav, flac, aac, opus, mp3. All formats are encoded natively; ffmpeg is not required.
+      ultrasonictype: flac # wav or flac only; used for bat/ultrasonic captures above 48 kHz (stored losslessly at full source rate)
+      bitrate: 96k        # bitrate for aac, mp3 and opus exports
       retention:
         policy: usage     # retention policy: none, age or usage
         maxage: 30d       # age policy: maximum age of clips to keep before starting evictions
         maxusage: 80%     # usage policy: percentage of disk usage to trigger eviction
         minclips: 10      # minumum number of clips per species to keep before starting evictions
         keepspectrograms: true # true to keep spectrograms even when clips are deleted
-        checkInterval: 15 # cleanup check interval in minutes (default: 15)
+        checkinterval: 15 # cleanup check interval in minutes (default: 15)
 
 
   dashboard:
     thumbnails:
       debug: false        # true to enable debug mode for image provider
-      summary: false      # show thumbnails on summary table
+      summary: true       # show thumbnails on summary table
       recent: true        # show thumbnails on recent table
       imageprovider: avicommons # preferred image provider: avicommons, wikimedia, auto
       fallbackpolicy: none # fallback policy: none (no fallback), all (try all available providers)
@@ -256,8 +266,8 @@ realtime:
     #     url: udp://192.168.1.5:1234
     #     type: udp
     health:
-      healthyDataThreshold: 60  # Seconds of data to consider stream healthy
-      monitoringInterval: 30    # Seconds between health checks
+      healthydatathreshold: 60  # Seconds of data to consider stream healthy
+      monitoringinterval: 30    # Seconds between health checks
   
   log:
     enabled: false        # true to enable OBS chat log
@@ -290,6 +300,9 @@ realtime:
       endpoint: "https://api.openweathermap.org/data/2.5/weather" # OpenWeather API endpoint
       units: metric     # metric or imperial
       language: en      # language code
+    pirateweather:
+      apikey: ""        # Pirate Weather API key
+      endpoint: "https://api.pirateweather.net/forecast" # Pirate Weather API endpoint
 
   mqtt:
     enabled: false        # true to enable MQTT
@@ -301,10 +314,11 @@ realtime:
     retain: false         # true to retain messages
     retrysettings:
       enabled: true       # enable retry for failed publications
-      maxretries: 3       # maximum number of retry attempts
-      initialdelay: 10    # initial delay before first retry in seconds
-      maxdelay: 300       # maximum delay between retries in seconds
+      maxretries: 5       # maximum number of retry attempts
+      initialdelay: 30    # initial delay before first retry in seconds
+      maxdelay: 3600      # maximum delay between retries in seconds
       backoffmultiplier: 2.0  # multiplier for exponential backoff
+      # retries apply to publish errors; while the broker is down, publishes are skipped, not queued or retried
     tls:
       insecureskipverify: false  # skip certificate verification (use with caution)
       cacert: ""          # path to CA certificate file
@@ -353,7 +367,7 @@ realtime:
 
 webserver:
   enabled: true           # true to enable web server
-  port: 8080              # port for web server
+  port: "8080"            # port for web server
   allowembedding: false   # true to allow embedding in iframes (e.g., Home Assistant)
   livestream:
     debug: false
@@ -361,13 +375,6 @@ webserver:
     samplerate: 48000     # sample rate for live stream in Hz
     segmentlength: 2      # length of each HLS segment in seconds (1-30)
     ffmpegloglevel: warning
-  log:
-    enabled: false        # true to enable log file
-    path: webui.log       # path to log file
-    rotation: daily       # daily, weekly or size
-    maxsize: 1048576      # max size in bytes for size rotation
-    rotationday: 0        # day of the week for weekly rotation, 0 = Sunday
-
 security:
   # host is used for:
   # - AutoTLS certificate generation (when autotls: true)
@@ -399,7 +406,7 @@ security:
   # - Ports 80 and 443 must be accessible from the internet
   # - Domain must point to this server's IP address
   # - When using Docker, use docker-compose.autotls.yml instead of docker-compose.yml
-  autotls: false
+  autoTls: false
   
   # redirecttohttps forces HTTP connections to redirect to HTTPS
   # Only works when autotls is enabled or manual TLS certificates are configured
@@ -411,7 +418,7 @@ security:
   # CIDR ranges of reverse proxies whose forwarded client-IP headers
   # (CF-Connecting-IP, X-Forwarded-For, X-Real-IP) may be trusted. Loopback,
   # link-local, and private addresses are always trusted, so a local cloudflared
-  # or same-host reverse proxy needs no entry here. Add a proxy that connects
+  # or same-host reverse proxy needs no entry here (subnet bypass is stricter, see below). Add a proxy that connects
   # from a PUBLIC IP (e.g. Cloudflare's edge in front of a directly-exposed
   # instance, or an external load balancer) so its headers are honored. The
   # special value "cloudflare" expands to Cloudflare's published edge ranges.
@@ -420,7 +427,23 @@ security:
   # X-Forwarded-For (including private ones). Only explicitly listed hops are
   # skipped when resolving the real client; otherwise the request is attributed
   # to the nearest unlisted hop.
+  # Subnet bypass (allowsubnetbypass) honors a forwarded client address only from
+  # a proxy listed here, even a local or private one: list your reverse proxy's
+  # own address (not a range that also holds clients, since a client inside a
+  # listed range is trusted as a proxy and can name any address) if clients
+  # reach BirdNET-Go through it and should skip login. The proxy must append
+  # X-Forwarded-For or overwrite X-Real-IP, all client-IP headers it forwards (including True-Client-IP)
+  # must name the same client, and a Forwarded header is not accepted.
   trustedproxies: []         # e.g. ["cloudflare"], ["203.0.113.0/24"] or a bare IP ["203.0.113.5"]
+  # Exact IP addresses of clients that reach BirdNET-Go directly over plain HTTP
+  # (for example another container calling http://birdnet-go:8080) and therefore
+  # need session cookies without the Secure attribute. Matched by connection
+  # address only; ranges are not accepted. Never list the address your reverse
+  # proxy or tunnel (such as cloudflared) connects from: with host networking or
+  # a native install a proxy on the same host connects from 127.0.0.1, ::1 or
+  # the host's own address, and with bridge networking from the container
+  # network gateway. Give the listed clients fixed addresses.
+  plainhttpsessionclients: [] # e.g. ["172.18.0.5"]
   basicauth:
     enabled: false           # true to enable basic auth
     password: ""             # password hash for the settings interface
@@ -429,17 +452,17 @@ security:
     redirecturi: ""          # redirect uri prefix
     authcodeexp: 10m           # authorization code expiration
     accesstokenexp: 1h        # access token expiration
-  googleauth:
+  googleAuth:
     enabled: false           # true to enable Google OAuth2
     clientid: ""             # client id
     clientsecret: ""         # client secret
     userid: ""               # user id
-  githubauth:
+  githubAuth:
     enabled: false           # true to enable GitHub OAuth2
     clientid: ""             # client id
     clientsecret: ""         # client secret
     userid: ""               # user id
-  microsoftauth:
+  microsoftAuth:
     enabled: false           # true to enable Microsoft Account OAuth2
     clientid: ""             # client id from Azure App Registration
     clientsecret: ""         # client secret
@@ -448,10 +471,7 @@ security:
 # Ouput settings
 
 output:
-  file:
-    enabled: true         # true to enable file output for file and directory analysis
-    path: output/         # path to output directory
-    type: table           # ouput format, Raven table or csv
+  file: {}                # file output is configured via CLI flags, not config
   # Only one database is supported at a time
   # if both are enabled, SQLite will be used.
   sqlite:
@@ -463,11 +483,29 @@ output:
     password: secret      # mysql database user password
     database: birdnet     # mysql database name
     host: localhost       # mysql database host
-    port: 3306            # mysql database port
+    port: "3306"          # mysql database port
 
 # Sentry telemetry configuration (opt-in, respects EU privacy laws)
 sentry:
   enabled: false          # false by default, must be explicitly enabled by user (opt-in)
+
+# Developer diagnostics, off by default
+diagnostics:
+  profiling:
+    enabled: false        # true to serve Go pprof endpoints at /debug/pprof/ on the web server
+    # The pprof routes sit behind the web server's authentication. When no auth
+    # provider is configured, a token is generated here automatically once
+    # profiling is enabled, and must then be passed as ?token=... Keep it secret.
+    # token: ""
+
+    # Runtime sampling rates for the block and mutex profiles, both off by
+    # default and independent of the endpoint above: sampling costs CPU on the
+    # audio path whether or not anyone ever fetches a profile. The two use
+    # different units, and both sample less as the number grows. Edited here
+    # they apply at the next restart; changed through the settings API they
+    # apply immediately. See doc/PROFILING.md.
+    blockrate: 0          # ns of blocked time per sample; 0 disables. Try 10000
+    mutexfraction: 0      # report 1 in N contention events; 0 disables. Try 100
 
 # Notification settings
 notification:

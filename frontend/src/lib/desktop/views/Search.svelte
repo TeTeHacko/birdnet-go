@@ -2,10 +2,11 @@
   import WeatherInfo from '$lib/desktop/components/data/WeatherInfo.svelte';
   import SourceBadge from '$lib/desktop/features/dashboard/components/SourceBadge.svelte';
   import AudioPlayer from '$lib/desktop/components/media/AudioPlayer.svelte';
+  import SpectrogramImage from '$lib/desktop/components/media/SpectrogramImage.svelte';
   import MobileAudioPlayer from '$lib/desktop/components/media/MobileAudioPlayer.svelte';
   import DatePicker from '$lib/desktop/components/ui/DatePicker.svelte';
   import { handleBirdImageError } from '$lib/desktop/components/ui/image-utils';
-  import TimeOfDayIcon from '$lib/desktop/components/ui/TimeOfDayIcon.svelte';
+  import TimeOfDayIcon, { isTimeOfDay } from '$lib/desktop/components/ui/TimeOfDayIcon.svelte';
   import { getLocale, t } from '$lib/i18n';
   import { dashboardSettings } from '$lib/stores/settings';
   import { toastActions } from '$lib/stores/toast';
@@ -18,7 +19,6 @@
     ChevronDown,
     Eye,
     FrownIcon,
-    Music,
     Search,
     SquarePen,
     Volume2,
@@ -71,7 +71,10 @@
     verified: string;
     locked: boolean;
     hasAudio: boolean;
+    spectrogramOnly?: boolean; // audio removed by retention, spectrogram image kept
     source?: string;
+    modelType?: string;
+    clipSampleRate?: number; // Hz; omitted when the server does not know it yet
   }
 
   interface AudioSourceOption {
@@ -228,12 +231,16 @@
   let selectedAudioUrl = $state('');
   let selectedSpeciesName = $state('');
   let selectedDetectionId = $state<string | undefined>(undefined);
+  let selectedModelType = $state('');
+  let selectedClipSampleRate = $state<number | undefined>(undefined);
 
   function openMobilePlayer(result: SearchResult) {
     if (!result?.id) return;
     selectedAudioUrl = buildAppUrl(`/api/v2/audio/${result.id}`);
     selectedSpeciesName = localizeSpeciesName(result.scientificName, result.commonName);
     selectedDetectionId = result.id;
+    selectedModelType = result.modelType ?? '';
+    selectedClipSampleRate = result.clipSampleRate;
     showMobilePlayer = true;
   }
 
@@ -242,6 +249,8 @@
     selectedAudioUrl = '';
     selectedSpeciesName = '';
     selectedDetectionId = undefined;
+    selectedModelType = '';
+    selectedClipSampleRate = undefined;
   }
 
   // Form validation
@@ -867,7 +876,10 @@
                   <td>{formatDate(result.timestamp)}</td>
                   <td>
                     <div class="flex items-center">
-                      <TimeOfDayIcon timeOfDay={result.timeOfDay as any} className="mr-1" />
+                      <TimeOfDayIcon
+                        timeOfDay={isTimeOfDay(result.timeOfDay) ? result.timeOfDay : undefined}
+                        className="mr-1"
+                      />
                       <span>{result.timeOfDay || t('search.detailsPanel.unknownSpecies')}</span>
                     </div>
                   </td>
@@ -904,10 +916,12 @@
                           )}
                           alt={displayName || t('search.detailsPanel.unknownSpecies')}
                           class="w-full h-full object-cover"
+                          onload={e => {
+                            (e.currentTarget as HTMLImageElement).classList.remove('p-2');
+                          }}
                           onerror={e => {
-                            const target = e.currentTarget as HTMLImageElement;
-                            target.src = buildAppUrl('/ui/assets/bird-placeholder.svg');
-                            target.classList.add('p-2');
+                            (e.currentTarget as HTMLImageElement).classList.add('p-2');
+                            handleBirdImageError(e);
                           }}
                           loading="lazy"
                           decoding="async"
@@ -1031,20 +1045,6 @@
                       {/if}
                       <button
                         class="btn btn-xs btn-square"
-                        onclick={e => {
-                          e.preventDefault();
-                          // TODO: Implement audio playback function
-                        }}
-                        disabled={!result.hasAudio}
-                        aria-label={t('search.detailsPanel.playAudio', {
-                          species: displayName || t('search.detailsPanel.unknownSpecies'),
-                        })}
-                        aria-pressed="false"
-                      >
-                        <Music class="size-4" />
-                      </button>
-                      <button
-                        class="btn btn-xs btn-square"
                         onclick={() => navigation.navigate(`/ui/detections/${result.id}`)}
                         aria-label={t('search.detailsPanel.viewDetails', {
                           species: displayName || t('search.detailsPanel.unknownSpecies'),
@@ -1125,10 +1125,12 @@
                                 )}
                                 alt={displayName || t('search.detailsPanel.unknownSpecies')}
                                 class="w-full h-full object-cover"
+                                onload={e => {
+                                  (e.currentTarget as HTMLImageElement).classList.remove('p-2');
+                                }}
                                 onerror={e => {
-                                  const target = e.currentTarget as HTMLImageElement;
-                                  target.src = buildAppUrl('/ui/assets/bird-placeholder.svg');
-                                  target.classList.add('p-2');
+                                  (e.currentTarget as HTMLImageElement).classList.add('p-2');
+                                  handleBirdImageError(e);
                                 }}
                                 loading="lazy"
                                 decoding="async"
@@ -1137,22 +1139,31 @@
                             </div>
                           </div>
 
-                          <!-- Audio Player -->
-                          <div class="bg-[var(--color-base-200)] rounded-box p-4">
-                            <h3 class="text-lg font-semibold mb-2">
-                              {t('search.detailsPanel.audioPlayer')}
-                            </h3>
-                            <AudioPlayer
-                              audioUrl={buildAppUrl(`/api/v2/audio/${result.id}`)}
-                              detectionId={result.id}
-                              width={400}
-                              height={200}
-                              showDownload={true}
-                              showSpectrogram={true}
-                              enableClipExtraction={clipExtractionEnabled}
-                              clipLabel={`${result.commonName}_${result.timestamp.replace(/[: ]/g, '-')}`}
-                            />
-                          </div>
+                          <!-- Audio Player (shown only when this detection has a clip) -->
+                          {#if result.hasAudio}
+                            <div class="bg-[var(--color-base-200)] rounded-box p-4">
+                              <h3 class="text-lg font-semibold mb-2">
+                                {t('search.detailsPanel.audioPlayer')}
+                              </h3>
+                              <AudioPlayer
+                                audioUrl={buildAppUrl(`/api/v2/audio/${result.id}`)}
+                                detectionId={result.id}
+                                width={400}
+                                height={200}
+                                showDownload={true}
+                                showSpectrogram={true}
+                                enableClipExtraction={clipExtractionEnabled}
+                                clipLabel={`${result.commonName}_${result.timestamp.replace(/[: ]/g, '-')}`}
+                                modelType={result.modelType}
+                                clipSampleRate={result.clipSampleRate}
+                              />
+                            </div>
+                          {:else if result.spectrogramOnly}
+                            <!-- Retention removed the audio but kept the image: no player. -->
+                            <div class="bg-[var(--color-base-200)] rounded-box p-4">
+                              <SpectrogramImage detectionId={result.id} size="md" raw={false} />
+                            </div>
+                          {/if}
                         </div>
                       </div>
                     </td>
@@ -1172,7 +1183,10 @@
                 <!-- Time of Day + Date/Time -->
                 <div class="w-16 shrink-0 text-sm opacity-80">
                   <div class="flex items-center gap-1">
-                    <TimeOfDayIcon timeOfDay={result.timeOfDay as any} className="size-4" />
+                    <TimeOfDayIcon
+                      timeOfDay={isTimeOfDay(result.timeOfDay) ? result.timeOfDay : undefined}
+                      className="size-4"
+                    />
                     <span class="capitalize">{result.timeOfDay}</span>
                   </div>
                   <div class="mt-1 text-xs opacity-70 leading-tight">
@@ -1298,17 +1312,18 @@
                         {/if}
                       </div>
                     {/if}
-                    <button
-                      class="btn btn-primary btn-sm"
-                      onclick={() => openMobilePlayer(result)}
-                      disabled={!result.hasAudio}
-                      aria-label={t('search.detailsPanel.playAudio', {
-                        species: displayName || t('search.detailsPanel.unknownSpecies'),
-                      })}
-                    >
-                      <Volume2 class="size-4" />
-                      {t('common.actions.play')}
-                    </button>
+                    {#if result.hasAudio}
+                      <button
+                        class="btn btn-primary btn-sm"
+                        onclick={() => openMobilePlayer(result)}
+                        aria-label={t('search.detailsPanel.playAudio', {
+                          species: displayName || t('search.detailsPanel.unknownSpecies'),
+                        })}
+                      >
+                        <Volume2 class="size-4" />
+                        {t('common.actions.play')}
+                      </button>
+                    {/if}
                     <button
                       class="btn btn-outline btn-sm"
                       onclick={() => navigation.navigate(`/ui/detections/${result.id}`)}
@@ -1330,6 +1345,8 @@
                 audioUrl={selectedAudioUrl}
                 speciesName={selectedSpeciesName}
                 detectionId={selectedDetectionId}
+                modelType={selectedModelType}
+                clipSampleRate={selectedClipSampleRate}
                 onClose={closeMobilePlayer}
               />
             </div>
@@ -1412,13 +1429,13 @@
   }
 
   .status-badge.correct {
-    background-color: #10b981;
-    color: white;
+    background-color: var(--color-success);
+    color: var(--color-success-content);
   }
 
   .status-badge.false {
-    background-color: #ef4444;
-    color: white;
+    background-color: var(--color-error);
+    color: var(--color-error-content);
   }
 
   .status-badge.unverified {
@@ -1427,8 +1444,8 @@
   }
 
   .status-badge.locked {
-    background-color: #f59e0b;
-    color: white;
+    background-color: var(--color-warning);
+    color: var(--color-warning-content);
   }
 
   .expanded-row td {
@@ -1530,6 +1547,6 @@
 
   .review-dropdown-item.false-positive:hover {
     background-color: color-mix(in srgb, var(--color-error) 15%, transparent);
-    color: var(--color-error);
+    color: var(--text-error);
   }
 </style>

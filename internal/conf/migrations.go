@@ -2,12 +2,16 @@ package conf
 
 import (
 	"fmt"
+	"maps"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/spf13/viper"
 	"github.com/tphakala/birdnet-go/internal/errors"
 	"github.com/tphakala/birdnet-go/internal/logger"
+	"github.com/tphakala/birdnet-go/internal/privacy"
 )
 
 // persistMigration saves the config file after a successful migration.
@@ -21,6 +25,35 @@ func persistMigration(settings *Settings, label string) {
 	} else {
 		GetLogger().Info("Saved migrated "+label+" configuration", logger.String("path", configFile))
 	}
+}
+
+// migrateEmptyLossyExportBitrate fills the documented default into a lossy export
+// whose bitrate was left blank on disk (an explicit `bitrate: ""` from a save made
+// while export was disabled, or a hand-edit), returning whether it changed anything.
+//
+// viper reads the blank as "", so without a persisted repair the default would be
+// re-applied only in memory on every load, re-emitting the same telemetry warning on
+// every restart because nothing writes it back. Healing it here, before the file is
+// saved, writes the default to disk once. The warning is recorded here (once, on the
+// healing load, when the export is enabled); the persisted default then stops it
+// firing on later loads.
+//
+// It runs from Load before normalizeIncompleteFeatures on purpose: a persistMigration
+// of the returned change writes the file with every feature's on-disk enabled state
+// intact. The incomplete-feature pass disables switched-on-but-unconfigured
+// integrations only in memory, and those disables must never reach disk.
+func (s *Settings) migrateEmptyLossyExportBitrate() bool {
+	export := &s.Realtime.Audio.Export
+	if !isLossyExportFormat(export.Type) || export.Bitrate != "" {
+		return false
+	}
+	export.Bitrate = DefaultAudioExportBitrate
+	if export.Enabled {
+		s.recordValidationWarning(warnComponentAudio,
+			"audio export is enabled with the lossy format %s but no bitrate is set; using the default %s",
+			export.Type, DefaultAudioExportBitrate)
+	}
+	return true
 }
 
 // migrateStreamEnabledDefaults materializes missing enabled fields for legacy
@@ -40,19 +73,12 @@ func migrateStreamEnabledDefaults() bool {
 // configs that predate the field so session signing remains stable across
 // restarts. Unlike the security package's temporary runtime fallback, this
 // updates the loaded settings and best-effort saves the generated secret.
-func ensureSessionSecret(settings *Settings) error {
+func ensureSessionSecret(settings *Settings) {
 	if settings.Security.SessionSecret != "" {
-		return nil
+		return
 	}
 
-	sessionSecret, err := GenerateRandomSecret()
-	if err != nil {
-		return errors.New(err).
-			Component("conf").
-			Category(errors.CategoryConfiguration).
-			Context("operation", "generate_session_secret").
-			Build()
-	}
+	sessionSecret := GenerateRandomSecret()
 
 	settings.Security.SessionSecret = sessionSecret
 
@@ -66,21 +92,58 @@ func ensureSessionSecret(settings *Settings) error {
 	// This ensures the secret remains the same across restarts
 	configFile := viper.ConfigFileUsed()
 	if configFile == "" {
-		return nil
+		return
 	}
 
 	if err := SaveYAMLConfig(configFile, settings); err != nil {
 		// Log the error but don't fail - the generated secret will work for this session
 		GetLogger().Warn("Failed to save generated SessionSecret to config file", logger.Error(err))
-		return nil
+		return
 	}
 
 	// Set secure file permissions after saving
 	if err := os.Chmod(configFile, 0o600); err != nil {
 		GetLogger().Warn("Failed to set secure permissions on config file", logger.Error(err))
 	}
+}
 
-	return nil
+// EnsureProfilingToken mints diagnostics.profiling.token when the pprof
+// endpoints are enabled on an instance that has no way to authenticate a user.
+// It follows the SessionSecret pattern deliberately: a stable secret generated
+// from crypto/rand and persisted to the config file, so a profiling session
+// survives the restart it often spans.
+//
+// Nothing is generated when an authentication provider is configured. There the
+// web server's auth middleware already gates the routes, and a second
+// credential sitting in the config would only widen the way in.
+//
+// It runs on the config load path AND on every settings-save path, so switching
+// profiling on at runtime yields a usable credential rather than an endpoint
+// that refuses everything until the next restart.
+//
+// Unlike ensureSessionSecret this does NOT mirror the value into viper. That
+// mirror is vestigial there: nothing in this repository persists through viper
+// (SaveYAMLConfig marshals the struct), and viper.Set is not goroutine-safe, so
+// staging a value it would never write is cost without a payer.
+//
+// The caller owns persistence, and is told whether anything changed so it can
+// decide whether a write is needed.
+func EnsureProfilingToken(settings *Settings) bool {
+	if settings == nil {
+		return false
+	}
+
+	profiling := &settings.Diagnostics.Profiling
+	if !profiling.Enabled || profiling.Token != "" || settings.IsAuthProviderConfigured() {
+		return false
+	}
+
+	profiling.Token = GenerateRandomSecret()
+
+	// The value itself is never logged.
+	GetLogger().Info("Generated profiling token; no authentication provider is configured, so /debug/pprof/ requires the token from diagnostics.profiling.token")
+
+	return true
 }
 
 // migrateLegacyProvider converts a legacy SocialProvider to the new OAuthProviderConfig format.
@@ -158,34 +221,25 @@ func (s *Settings) MigrateOAuthConfig() bool {
 // inferStreamType detects the stream type from URL scheme.
 // Returns StreamTypeRTSP as default for unknown schemes.
 func inferStreamType(url string) string {
-	urlLower := strings.ToLower(url)
-
-	switch {
-	case strings.HasPrefix(urlLower, "rtsp://"), strings.HasPrefix(urlLower, "rtsps://"):
-		return StreamTypeRTSP
-	case strings.HasPrefix(urlLower, "rtmp://"), strings.HasPrefix(urlLower, "rtmps://"):
-		return StreamTypeRTMP
-	case strings.HasPrefix(urlLower, "udp://"), strings.HasPrefix(urlLower, "rtp://"):
-		return StreamTypeUDP
-	case strings.HasPrefix(urlLower, "http://"), strings.HasPrefix(urlLower, "https://"):
-		// Check for HLS (.m3u8) vs generic HTTP
-		if strings.Contains(urlLower, ".m3u8") {
-			return StreamTypeHLS
-		}
-		return StreamTypeHTTP
-	default:
-		return StreamTypeRTSP // Default to RTSP for unknown schemes
+	// Delegate to the strict scheme classifier and add the legacy default:
+	// unknown schemes fall back to RTSP (streamTypeForURL returns isStream=false
+	// for them). Sharing one scheme switch keeps the two classifiers from drifting.
+	if streamType, ok := streamTypeForURL(url); ok {
+		return streamType
 	}
+	return StreamTypeRTSP // Default to RTSP for unknown schemes
 }
 
 // MigrateRTSPConfig migrates legacy URLs []string to Streams []StreamConfig.
 // This migration:
-// - Skips if Streams already has entries (already migrated)
-// - Only migrates if URLs has data
-// - Trims whitespace and skips empty URLs
-// - Infers stream type from URL scheme
-// - Preserves the global Transport setting for RTSP/RTMP streams
-// - Returns true if migration occurred, false if skipped
+//   - Skips if Streams already has entries (already migrated)
+//   - Only migrates if URLs has data
+//   - Trims whitespace and skips empty URLs
+//   - Infers stream type from URL scheme
+//   - Copies the global Transport into each RTSP/RTMP stream entry AND keeps the
+//     global Transport in place, because the startup path reads the global value
+//     as the engine-wide default
+//   - Returns true if migration occurred, false if skipped
 func (s *Settings) MigrateRTSPConfig() bool {
 	rtsp := &s.Realtime.RTSP
 
@@ -199,11 +253,8 @@ func (s *Settings) MigrateRTSPConfig() bool {
 		return false
 	}
 
-	// Get global transport, default to tcp
-	globalTransport := rtsp.Transport
-	if globalTransport == "" {
-		globalTransport = DefaultTransport
-	}
+	// Get global transport via the single resolution owner (global else default).
+	globalTransport := rtsp.ResolveTransport("")
 
 	// Preallocate streams slice with capacity and track seen URLs for deduplication
 	rtsp.Streams = make([]StreamConfig, 0, len(rtsp.URLs))
@@ -249,9 +300,13 @@ func (s *Settings) MigrateRTSPConfig() bool {
 		return false
 	}
 
-	// Clear legacy fields
+	// Clear the legacy URLs list now that it has been migrated to Streams.
+	// Keep rtsp.Transport: it is copied into each per-stream entry above, but
+	// the startup path (cmd/serve/serve.go) still reads the global value as the
+	// engine-wide default transport. Clearing it made FFmpeg receive an empty
+	// -rtsp_transport and fail to open the stream on the next start (the value
+	// is present-but-empty, so the Viper default no longer applies).
 	rtsp.URLs = nil
-	rtsp.Transport = ""
 
 	GetLogger().Info("Migrated RTSP configuration to new streams format",
 		logger.Int("stream_count", len(rtsp.Streams)))
@@ -289,36 +344,126 @@ func (s *Settings) MigrateAudioSourceConfig() bool {
 	return true
 }
 
-// MigrateSourceModels migrates the legacy singular Model field to the new
-// Models list on AudioSourceConfig and StreamConfig. Sources with neither
-// Model nor Models set default to ["birdnet"]. Returns true if any migration
-// occurred.
+// MigrateSourceModels folds the legacy singular Model field into the Models list on
+// AudioSourceConfig. It no longer fills an empty list: an empty per-source model list
+// now means "the orchestrator's default targets" (model de-privilege epic, Phase 4),
+// and MigrateSourceTargetDefaults pins every pre-Phase-4 empty list once. StreamConfig
+// never had a singular field, so it is untouched here. Returns true if any source was
+// folded.
 func (s *Settings) MigrateSourceModels() bool {
 	migrated := false
 
 	for i := range s.Realtime.Audio.Sources {
 		src := &s.Realtime.Audio.Sources[i]
-		if len(src.Models) > 0 {
+		if len(src.Models) > 0 || src.Model == "" {
 			continue
 		}
-		if src.Model != "" {
-			src.Models = []string{src.Model}
-			src.Model = ""
-		} else {
-			src.Models = []string{ModelIDBirdNET}
-		}
-		migrated = true
-	}
-
-	for _, stream := range s.Realtime.RTSP.AllStreams() {
-		if len(stream.Models) > 0 {
-			continue
-		}
-		stream.Models = []string{ModelIDBirdNET}
+		src.Models = []string{src.Model}
+		src.Model = ""
 		migrated = true
 	}
 
 	return migrated
+}
+
+// Config file versions. Each constant names the one-shot migration that raises the file to
+// that version; currentConfigVersion is the newest one this build applies. A freshly
+// generated config is stamped with currentConfigVersion (stampConfigVersion) so this
+// build's one-shot migrations never rewrite a file it just created.
+//
+// A migration step that runs OUTSIDE conf.Load() must NEVER gate on ConfigVersion: Part A
+// of the models-enabled-authoritative migration stamps ConfigVersion=2 inside Load(), so a
+// later step (e.g. the classifier's one-shot auto-enable capture in ScanInstalled) that
+// gated on ConfigVersion<2 would be silently disabled by that stamp. Such steps use an
+// independent companion marker instead (see ModelsConfig.AutoEnableMigrated).
+const (
+	// configVersionSourceTargetDefaults: an empty per-source or per-stream model list changed
+	// meaning from "the built-in BirdNET v2.4" to "the orchestrator's default targets" (model
+	// de-privilege epic, Phase 4); MigrateSourceTargetDefaults pins every pre-Phase-4 empty
+	// list to ["birdnet"] once so no source changes targets.
+	configVersionSourceTargetDefaults = 1
+
+	// configVersionModelsEnabledAuthoritative: models.enabled became the only source of the
+	// enabled model set (model de-privilege epic, Phase 4). Before it the orchestrator enabled
+	// BirdNET v2.4 implicitly, ahead of every listed model, whether or not the list named it;
+	// MigrateModelsEnabledAuthoritative writes that implicit lead out once so every existing
+	// install keeps loading the same models in the same order.
+	configVersionModelsEnabledAuthoritative = 2
+
+	// currentConfigVersion is the newest config version this build applies.
+	currentConfigVersion = configVersionModelsEnabledAuthoritative
+)
+
+// MigrateSourceTargetDefaults writes ["birdnet"] into every source and stream whose
+// model list is empty, exactly once per config file, then stamps ConfigVersion.
+// Before Phase 4 an empty list meant BirdNET v2.4 (MigrateSourceModels filled it on
+// every load); after Phase 4 an empty list means DefaultTargets(), which can include
+// secondaries. Writing the old meaning out explicitly keeps every existing source on
+// exactly the models it analyzed with before the upgrade. v2.4 is embedded and
+// implicitly enabled at every config version below this one, so no runtime "is v2.4
+// loaded" check is needed: the version stamp is that evidence. Returns true when a
+// list or the stamp changed, so persistMigration writes the file.
+func (s *Settings) MigrateSourceTargetDefaults() bool {
+	if s.ConfigVersion >= configVersionSourceTargetDefaults {
+		return false
+	}
+	for i := range s.Realtime.Audio.Sources {
+		if src := &s.Realtime.Audio.Sources[i]; len(src.Models) == 0 {
+			src.Models = []string{ModelIDBirdNET}
+		}
+	}
+	for _, stream := range s.Realtime.RTSP.AllStreams() {
+		if len(stream.Models) == 0 {
+			stream.Models = []string{ModelIDBirdNET}
+		}
+	}
+	s.ConfigVersion = configVersionSourceTargetDefaults
+	return true
+}
+
+// MigrateModelsEnabledAuthoritative makes models.enabled the authoritative, ordered enable
+// set (model de-privilege epic, Phase 4). Before this version the orchestrator enabled
+// BirdNET v2.4 implicitly and ALWAYS loaded it first, whether or not the list named it;
+// once the orchestrator collapses to config-order loading, only the list order decides the
+// load order, so an existing install whose list omits v2.4 (or names it later) would change
+// its load order. Exactly once per config file, at a version below 2, this reproduces the
+// legacy v2.4-first order: if a v2.4 spelling is already present it is MOVED to the front
+// (keeping its spelling), otherwise "birdnet" is prepended; then ConfigVersion is stamped
+// to 2. An explicit empty list at a lower version still loaded v2.4 implicitly, so it gets
+// "birdnet" prepended too; after this version an empty list means "no acoustic model" and
+// is left alone. Runs after MigrateSourceTargetDefaults, so a version-0 file gets both.
+// Returns true when the list or the stamp changed, so persistMigration writes the file.
+func (s *Settings) MigrateModelsEnabledAuthoritative() bool {
+	if s.ConfigVersion >= configVersionModelsEnabledAuthoritative {
+		return false
+	}
+	switch idx := slices.IndexFunc(s.Models.Enabled, isBirdNETV24ConfigID); {
+	case idx < 0:
+		// v2.4 absent (including an explicit empty list): prepend the canonical spelling.
+		s.Models.Enabled = append([]string{ModelIDBirdNET}, s.Models.Enabled...)
+	case idx > 0:
+		// v2.4 present but not first: move it to the front keeping its spelling, so the
+		// config-order load reproduces the legacy v2.4-first order byte-for-byte. A later
+		// duplicate v2.4 spelling is left in place; the loader deduplicates it.
+		v24 := s.Models.Enabled[idx]
+		s.Models.Enabled = slices.Delete(s.Models.Enabled, idx, idx+1)
+		s.Models.Enabled = append([]string{v24}, s.Models.Enabled...)
+	default:
+		// idx == 0: v2.4 already leads; only the version stamp below changes.
+	}
+	s.ConfigVersion = configVersionModelsEnabledAuthoritative
+	return true
+}
+
+// isBirdNETV24ConfigID reports whether a models.enabled entry names the BirdNET v2.4 family
+// under either config spelling, case-insensitively. MigrateModelIDAliases runs later in
+// Load, so the catalog spelling ("birdnet-v2.4") can still be present here; matching it
+// keeps the migration from prepending a duplicate "birdnet". The conf package cannot read
+// the classifier registry (import cycle), so the two spellings are the alias set from
+// ModelRegistry[RegistryIDBirdNETV24].ConfigAliases; TestModelRegistry_V24AliasesMatchConf
+// pins the two lists in lockstep.
+func isBirdNETV24ConfigID(id string) bool {
+	return strings.EqualFold(id, ModelIDBirdNET) || strings.EqualFold(id, ModelIDBirdNETCatalog)
 }
 
 // normalizeRTSPStreamEnabledDefaults materializes enabled=true for legacy raw
@@ -345,9 +490,7 @@ func normalizeRTSPStreamEnabledDefaults(rawStreams any) ([]any, bool) {
 		}
 
 		copied := make(map[string]any, len(streamMap)+1)
-		for key, value := range streamMap {
-			copied[key] = value
-		}
+		maps.Copy(copied, streamMap)
 		copied["enabled"] = true
 		normalized[i] = copied
 		migrated = true
@@ -358,6 +501,151 @@ func normalizeRTSPStreamEnabledDefaults(rawStreams any) ([]any, bool) {
 	}
 
 	return normalized, true
+}
+
+// catalogModelIDAliases maps a hyphenated model *catalog* entry ID
+// (classifier/model_catalog.go) to its canonical config-level ID. Keys are
+// lowercase for case-insensitive matching. Bat is intentionally absent: it has
+// many regional catalog IDs mapping to one registry entry, so there is no
+// single canonical spelling to normalize toward.
+var catalogModelIDAliases = map[string]string{
+	ModelIDBirdNETCatalog:   ModelIDBirdNET,
+	ModelIDBirdNETV3Catalog: ModelIDBirdNETV3,
+	ModelIDPerchV2Catalog:   ModelIDPerchV2,
+	ModelIDBSGCatalog:       ModelIDBSG,
+}
+
+// canonicalizeModelID returns the canonical config ID for a catalog-style
+// (hyphenated) model ID, or the input unchanged when it is not an alias.
+// Matching is case-insensitive; the returned canonical form preserves the
+// registry's own casing.
+func canonicalizeModelID(id string) string {
+	if canonical, ok := catalogModelIDAliases[strings.ToLower(id)]; ok {
+		return canonical
+	}
+	return id
+}
+
+// normalizeModelIDList rewrites catalog-style model IDs to their canonical form
+// and drops any case-insensitive duplicate that the rewrite (or a pre-existing
+// mixed-spelling config) produced, preserving first-seen order. Returns the
+// normalized slice and whether anything changed.
+func normalizeModelIDList(ids []string) ([]string, bool) {
+	if len(ids) == 0 {
+		return ids, false
+	}
+	out := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	changed := false
+	for _, id := range ids {
+		canonical := canonicalizeModelID(id)
+		if canonical != id {
+			changed = true
+		}
+		key := strings.ToLower(canonical)
+		if seen[key] {
+			changed = true // a duplicate was collapsed
+			continue
+		}
+		seen[key] = true
+		out = append(out, canonical)
+	}
+	return out, changed
+}
+
+// MigrateModelIDAliases canonicalizes catalog-style (hyphenated) model IDs in
+// models.enabled and in every source/stream model list to their underscore/
+// short config IDs. A user who hand-edits a config with the catalog spelling
+// (e.g. "perch-v2") is otherwise left with an entry that validation and
+// resolution accept as an alias but that model install/uninstall bookkeeping
+// (which keys on the canonical alias) would duplicate on install and fail to
+// remove on uninstall. Normalizing at load keeps a single canonical spelling
+// persisted so that lifecycle code stays consistent. Returns true if any value
+// changed. See Sentry BIRDNET-GO-2FZ.
+func (s *Settings) MigrateModelIDAliases() bool {
+	changed := false
+
+	if normalized, did := normalizeModelIDList(s.Models.Enabled); did {
+		s.Models.Enabled = normalized
+		changed = true
+	}
+
+	for i := range s.Realtime.Audio.Sources {
+		src := &s.Realtime.Audio.Sources[i]
+		if canonical := canonicalizeModelID(src.Model); canonical != src.Model {
+			src.Model = canonical
+			changed = true
+		}
+		if normalized, did := normalizeModelIDList(src.Models); did {
+			src.Models = normalized
+			changed = true
+		}
+	}
+
+	for i := range s.Realtime.RTSP.Streams {
+		stream := &s.Realtime.RTSP.Streams[i]
+		if normalized, did := normalizeModelIDList(stream.Models); did {
+			stream.Models = normalized
+			changed = true
+		}
+	}
+
+	return changed
+}
+
+// Legacy birdnet.version field values. The orchestrator no longer selects the
+// BirdNET family from birdnet.version (model de-privilege epic, Phase 3): the family
+// is loaded like any other model. NewBirdNET still branches on the field for its
+// Tier-2 identity fallback (removed in a later phase), which is why the migration
+// clears it, so that fallback is not taken. These values are recognized only so the
+// migration can retire the field cleanly.
+const (
+	legacyBirdNETVersionV24 = "2.4"
+	legacyBirdNETVersionV30 = "3.0"
+)
+
+// MigrateBirdNETVersion retires the birdnet.version field. It used to select the
+// BirdNET model family; v2.4 is now loaded like any other model and the orchestrator
+// no longer selects the family from it. The migration clears it (which also disables
+// NewBirdNET's remaining Tier-2 fallback on the field) and, for the "3.0" value,
+// enables the v3.0 model
+// as a gallery-managed model so the config keeps working. A "3.0" config that also
+// carried a custom birdnet.modelpath/labelpath (a manually obtained v3.0 model run
+// as the primary) has those cleared here: the primary slot is now the embedded v2.4
+// baseline, and leaving a v3.0 model file on it would mispair the v2.4 identity
+// (48 kHz / 3 s) with a v3.0 model, so the paths are dropped and the v3.0 model
+// serves through the enabled gallery entry instead. An unknown value (which
+// previously aborted startup) is dropped with a warning. Returns whether anything
+// changed.
+func (s *Settings) MigrateBirdNETVersion() bool {
+	version := s.BirdNET.Version
+	if version == "" {
+		return false
+	}
+
+	switch version {
+	case legacyBirdNETVersionV24:
+		// v2.4 is the built-in model and is always loaded; only the dead field
+		// needs clearing.
+	case legacyBirdNETVersionV30:
+		if !slices.Contains(s.Models.Enabled, ModelIDBirdNETV3) {
+			s.Models.Enabled = append(s.Models.Enabled, ModelIDBirdNETV3)
+		}
+		// Drop any custom v3.0 primary paths so they are not mispaired with the
+		// embedded v2.4 baseline that now occupies the primary slot.
+		clearedCustomPath := s.BirdNET.ModelPath != "" || s.BirdNET.LabelPath != ""
+		s.BirdNET.ModelPath = ""
+		s.BirdNET.LabelPath = ""
+		GetLogger().Info("Migrated legacy birdnet.version=3.0 by enabling the v3.0 model",
+			logger.String("model", ModelIDBirdNETV3),
+			logger.Bool("cleared_custom_primary_path", clearedCustomPath))
+	default:
+		GetLogger().Warn("Dropping unknown birdnet.version during migration; the field is no longer used",
+			logger.String("version", version))
+	}
+
+	s.BirdNET.Version = ""
+	return true
 }
 
 // ValidateModelConfig checks model-related configuration for errors and
@@ -379,8 +667,11 @@ func (s *Settings) ValidateModelConfig(knownIDs map[string]bool, checkSourceRefs
 
 	// During early config loading, models.enabled is not yet synchronized
 	// with gallery-installed models (ScanInstalled runs later), so these
-	// checks produce false positives. The orchestrator re-validates with
-	// the authoritative model list after startup sync is complete.
+	// checks produce false positives. The only production caller passes
+	// false, and nothing re-runs this check with source references turned
+	// on, so a source or stream that lists a model missing from
+	// models.enabled is not rejected here; the analysis pipeline skips such
+	// aliases at runtime.
 	if checkSourceRefs {
 		enabledSet := make(map[string]bool, len(s.Models.Enabled))
 		for _, id := range s.Models.Enabled {
@@ -411,18 +702,21 @@ func (s *Settings) ValidateModelConfig(knownIDs map[string]bool, checkSourceRefs
 // errors are collected and returned together so the user can fix them in
 // one pass.
 func (s *Settings) applyModelValidation() error {
-	// Default known IDs - matches classifier.KnownConfigIDs() at compile time.
-	// This fallback is used during config loading before the classifier package
-	// is available. The orchestrator re-validates with the authoritative list.
-	knownIDs := map[string]bool{ModelIDBirdNET: true, ModelIDPerchV2: true, ModelIDBat: true, ModelIDBSG: true}
-	modelIssues := s.ValidateModelConfig(knownIDs, false)
+	// Known-ID set used during config loading, before the classifier package
+	// is available; classifier.KnownConfigIDs() is not consulted here. Reuse
+	// ValidAudioModels (the same canonical + catalog-alias set, kept in
+	// lockstep with the registry by
+	// TestKnownConfigIDs_MatchesConfValidAudioModels) rather than
+	// hand-maintaining a third copy that could drift. The extra "" default key
+	// is harmless here because models.enabled never contains an empty entry.
+	// ValidateModelConfig only reads the map.
+	modelIssues := s.ValidateModelConfig(ValidAudioModels, false)
 	var fatalErrors []string
 	for _, issue := range modelIssues {
 		if strings.HasPrefix(issue, "error:") {
 			fatalErrors = append(fatalErrors, strings.TrimPrefix(issue, "error: "))
 		} else {
-			GetLogger().Warn("model configuration issue", logger.String("issue", issue))
-			s.ValidationWarnings = append(s.ValidationWarnings, issue)
+			s.recordValidationWarning(warnComponentModels, "%s", strings.TrimPrefix(issue, "warning: "))
 		}
 	}
 	if len(fatalErrors) > 0 {
@@ -450,4 +744,282 @@ func (s *Settings) MigrateLocationConfigured() bool {
 
 	s.BirdNET.LocationConfigured = true
 	return true
+}
+
+// streamTypeForURL strictly classifies device as a network stream URL. It
+// returns a StreamType* constant and true only for recognized stream schemes;
+// unlike inferStreamType it never defaults an unknown or scheme-less value to
+// RTSP, so sound-card device names (hw:, plughw:, sysdefault, default, dsnoop,
+// "Loopback", bare names) and file paths classify as ("", false). Scheme
+// matching is case-insensitive and leading/trailing whitespace is trimmed
+// first.
+func streamTypeForURL(device string) (streamType string, isStream bool) {
+	lower := strings.ToLower(strings.TrimSpace(device))
+
+	switch {
+	case strings.HasPrefix(lower, "rtsp://"), strings.HasPrefix(lower, "rtsps://"):
+		return StreamTypeRTSP, true
+	case strings.HasPrefix(lower, "rtmp://"), strings.HasPrefix(lower, "rtmps://"):
+		return StreamTypeRTMP, true
+	case strings.HasPrefix(lower, "udp://"), strings.HasPrefix(lower, "rtp://"):
+		return StreamTypeUDP, true
+	case strings.HasPrefix(lower, "http://"), strings.HasPrefix(lower, "https://"):
+		if strings.Contains(lower, ".m3u8") {
+			return StreamTypeHLS, true
+		}
+		return StreamTypeHTTP, true
+	default:
+		return "", false
+	}
+}
+
+// ReconcileMisplacedAudioSources moves network stream URLs that were
+// misconfigured under realtime.audio.sources (meant for local sound cards)
+// into realtime.rtsp.streams, where the runtime opens them with FFmpeg. A
+// stream URL left in audio.sources is otherwise opened as an ALSA device,
+// which fails and breaks live audio.
+//
+// For each audio source whose device is a recognized stream URL:
+//   - If no rtsp.streams entry already has that URL, a new StreamConfig is
+//     appended carrying the source's per-source overrides (gain, models,
+//     equalizer, quiet hours) and the source entry is removed.
+//   - If an rtsp.streams entry already has that URL, non-default per-source
+//     fields are lightly merged into the existing stream without overwriting
+//     values the stream already sets, and the duplicate source entry is
+//     removed.
+//
+// Credentials embedded in a URL are preserved verbatim in the config;
+// sanitized URLs are used only in the recorded ValidationWarnings. The
+// function is idempotent: once every stream URL has been relocated, a second
+// call finds nothing to do and returns false. Returns true when at least one
+// source entry was moved or merged and removed.
+func (s *Settings) ReconcileMisplacedAudioSources() bool {
+	sources := s.Realtime.Audio.Sources
+	if len(sources) == 0 {
+		return false
+	}
+
+	changed := false
+	survivors := make([]AudioSourceConfig, 0, len(sources))
+
+	for i := range sources {
+		src := &sources[i]
+		device := strings.TrimSpace(src.Device)
+		streamType, isStream := streamTypeForURL(device)
+		if !isStream {
+			survivors = append(survivors, *src)
+			continue
+		}
+
+		if existing := s.findStreamByURL(device); existing != nil {
+			s.mergeSourceIntoStream(src, existing, device)
+		} else {
+			s.appendStreamFromSource(src, device, streamType)
+		}
+
+		if src.SampleRate > 0 {
+			s.recordValidationWarning(warnComponentStreams,
+				"audio source %q sample rate %d Hz was not carried to stream %q; a stream's sample rate is auto-detected",
+				src.Name, src.SampleRate, privacy.SanitizeStreamUrl(device))
+		}
+
+		changed = true
+	}
+
+	if !changed {
+		return false
+	}
+
+	s.Realtime.Audio.Sources = survivors
+
+	GetLogger().Info("Reconciled misplaced stream URLs from audio.sources into rtsp.streams",
+		logger.Int("stream_count", len(s.Realtime.RTSP.Streams)),
+		logger.Int("remaining_sources", len(survivors)))
+
+	return true
+}
+
+// findStreamByURL returns a pointer to the first configured stream whose URL
+// matches the given already-trimmed URL, or nil when none match. The compare
+// trims whitespace on the stored URL so cosmetic differences do not defeat
+// deduplication.
+func (s *Settings) findStreamByURL(url string) *StreamConfig {
+	for i := range s.Realtime.RTSP.Streams {
+		if strings.TrimSpace(s.Realtime.RTSP.Streams[i].URL) == url {
+			return &s.Realtime.RTSP.Streams[i]
+		}
+	}
+	return nil
+}
+
+// appendStreamFromSource creates a new StreamConfig from a misplaced audio
+// source and appends it to the RTSP streams. Credentials in url are preserved
+// verbatim; only the ValidationWarnings note uses a sanitized URL. The stream
+// name is made unique and length-bounded so the migration never produces a
+// config the stream validator would reject at load time.
+func (s *Settings) appendStreamFromSource(src *AudioSourceConfig, url, streamType string) {
+	name := s.uniqueStreamName(src.Name)
+
+	// Transport only applies to connection-oriented stream types.
+	transport := ""
+	if streamType == StreamTypeRTSP || streamType == StreamTypeRTMP {
+		transport = DefaultTransport
+	}
+
+	s.Realtime.RTSP.Streams = append(s.Realtime.RTSP.Streams, StreamConfig{
+		Name:       name,
+		URL:        url,
+		Enabled:    true,
+		Type:       streamType,
+		Transport:  transport,
+		Gain:       src.Gain,
+		Equalizer:  src.Equalizer,
+		QuietHours: src.QuietHours,
+		Models:     src.Models,
+	})
+
+	s.recordValidationWarning(warnComponentStreams,
+		"moved misplaced stream URL %q from realtime.audio.sources to realtime.rtsp.streams as %q",
+		privacy.SanitizeStreamUrl(url), name)
+}
+
+// uniqueStreamName derives a stream name from the requested source name that
+// the stream validator will accept at load time: unique (case-insensitively)
+// among the already-configured streams and within MaxStreamNameLength. An empty
+// requested name falls back to "Stream N" (N based on the current stream count).
+// An over-long name is truncated on a UTF-8 rune boundary; a name that collides
+// gets an incrementing " (2)", " (3)" suffix (with the base truncated further to
+// keep room for the suffix) until a free name is found. A misplaced source name
+// may be up to MaxAudioSourceNameLength, longer than a stream name is allowed to
+// be, so both the length clamp and the dedup are needed to keep
+// ReconcileMisplacedAudioSources from producing a name the validator would
+// reject with a fatal error at load time.
+func (s *Settings) uniqueStreamName(requested string) string {
+	base := strings.TrimSpace(requested)
+	if base == "" {
+		base = fmt.Sprintf("Stream %d", len(s.Realtime.RTSP.Streams)+1)
+	}
+	candidate := truncateStreamName(base, MaxStreamNameLength)
+	for n := 2; s.streamNameTaken(candidate); n++ {
+		suffix := fmt.Sprintf(" (%d)", n)
+		candidate = truncateStreamName(base, MaxStreamNameLength-len(suffix)) + suffix
+	}
+	return candidate
+}
+
+// truncateStreamName shortens name to at most maxBytes bytes on a UTF-8 rune
+// boundary (never splitting a multi-byte rune), trimming any trailing spaces
+// left by the cut. Stream names are byte-length-limited by the validator, so
+// this keeps a long source name from yielding a name the validator rejects.
+func truncateStreamName(name string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(name) <= maxBytes {
+		return name
+	}
+	// range over a string yields the byte index at each rune start; keep the
+	// largest start that still fits so the cut never lands inside a rune.
+	end := 0
+	for i := range name {
+		if i > maxBytes {
+			break
+		}
+		end = i
+	}
+	return strings.TrimRight(name[:end], " ")
+}
+
+// streamNameTaken reports whether any configured stream already uses name,
+// compared case-insensitively with surrounding whitespace trimmed, matching the
+// duplicate-name rule the stream validator enforces.
+func (s *Settings) streamNameTaken(name string) bool {
+	for i := range s.Realtime.RTSP.Streams {
+		if strings.EqualFold(strings.TrimSpace(s.Realtime.RTSP.Streams[i].Name), name) {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeSourceIntoStream lightly merges non-default per-source overrides from a
+// misplaced audio source into an existing stream that already has the same URL.
+// Stream values that are already set are never overwritten. A ValidationWarnings
+// note records which fields were applied and which were kept as-is because the
+// stream already carried a non-default value.
+func (s *Settings) mergeSourceIntoStream(src *AudioSourceConfig, stream *StreamConfig, url string) {
+	var applied, kept []string
+
+	if src.Gain != 0 {
+		if stream.Gain == 0 {
+			stream.Gain = src.Gain
+			applied = append(applied, "gain")
+		} else {
+			kept = append(kept, "gain")
+		}
+	}
+
+	if len(src.Models) > 0 {
+		if len(stream.Models) == 0 {
+			stream.Models = src.Models
+			applied = append(applied, "models")
+		} else {
+			kept = append(kept, "models")
+		}
+	}
+
+	if src.Equalizer != nil {
+		if stream.Equalizer == nil {
+			stream.Equalizer = src.Equalizer
+			applied = append(applied, "equalizer")
+		} else {
+			kept = append(kept, "equalizer")
+		}
+	}
+
+	// QuietHours merges only when the struct is safely comparable to its zero
+	// value. If QuietHoursConfig ever gains a non-comparable field, skip the
+	// merge and record it rather than risking a reflect panic or losing data.
+	switch {
+	case !quietHoursComparable():
+		kept = append(kept, "quietHours (QuietHoursConfig not comparable)")
+	case reflect.ValueOf(src.QuietHours).IsZero():
+		// Source has no quiet-hours override to contribute.
+	case reflect.ValueOf(stream.QuietHours).IsZero():
+		stream.QuietHours = src.QuietHours
+		applied = append(applied, "quietHours")
+	default:
+		kept = append(kept, "quietHours")
+	}
+
+	s.recordValidationWarning(warnComponentStreams, "%s",
+		formatReconcileMergeWarning(privacy.SanitizeStreamUrl(url), stream.Name, applied, kept))
+}
+
+// quietHoursComparable reports whether QuietHoursConfig can be compared to its
+// zero value. Merging quiet hours relies on a zero-value check; if the struct
+// ever gains a non-comparable field this returns false so the merge is skipped
+// rather than risking a runtime panic.
+func quietHoursComparable() bool {
+	// Keep reflect.TypeOf here, not reflect.TypeFor[QuietHoursConfig](): the
+	// generic form trips a Go linker bug (R_USEIFACE ... references type:.eqfunc
+	// which is not a type or itab) during deadcode elimination for this
+	// comparable-struct check.
+	//nolint:modernize // reflect.TypeOf is intentional; reflect.TypeFor breaks the linker here (see above)
+	return reflect.TypeOf(QuietHoursConfig{}).Comparable()
+}
+
+// formatReconcileMergeWarning builds the ValidationWarnings note for a duplicate
+// source merged into an existing stream. sanitizedURL must already be stripped
+// of credentials.
+func formatReconcileMergeWarning(sanitizedURL, streamName string, applied, kept []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "merged misplaced audio source for stream URL %q into existing stream %q", sanitizedURL, streamName)
+	if len(applied) > 0 {
+		fmt.Fprintf(&b, "; applied: %s", strings.Join(applied, ", "))
+	}
+	if len(kept) > 0 {
+		fmt.Fprintf(&b, "; kept existing stream values for: %s", strings.Join(kept, ", "))
+	}
+	return b.String()
 }

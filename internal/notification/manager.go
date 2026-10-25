@@ -3,8 +3,6 @@ package notification
 import (
 	"sync"
 	"sync/atomic"
-
-	"github.com/tphakala/birdnet-go/internal/errors"
 )
 
 var (
@@ -34,20 +32,6 @@ func GetService() *Service {
 	return instance
 }
 
-// SetServiceForTesting allows setting a custom service instance for testing only
-// It returns an error if the service is already initialized in production
-func SetServiceForTesting(service *Service) error {
-	mu.Lock()
-	defer mu.Unlock()
-
-	if instance != nil {
-		return errors.Newf("notification service already initialized").Component("notification").Category(errors.CategoryState).Build()
-	}
-
-	instance = service
-	return nil
-}
-
 // MustGetService returns the service instance or panics if not initialized
 func MustGetService() *Service {
 	service := GetService()
@@ -62,6 +46,23 @@ func IsInitialized() bool {
 	mu.RLock()
 	defer mu.RUnlock()
 	return instance != nil
+}
+
+// ResetForTest returns the global notification service to its uninitialized
+// state (nil instance, fresh sync.Once). It exists only for tests: the singleton
+// is guarded by a sync.Once that otherwise fires permanently for the rest of a
+// package's test run, so a test that calls Initialize would leak the service into
+// unrelated tests under shuffled ordering, and a test asserting the not-initialized
+// path could never run after it. It must never be called from production code.
+//
+// The caller is responsible for stopping any running service (svc.Stop) before
+// resetting, and for serializing use: tests calling this must not run in parallel
+// with anything that reads or initializes the singleton.
+func ResetForTest() {
+	mu.Lock()
+	defer mu.Unlock()
+	instance = nil
+	once = sync.Once{}
 }
 
 // SetAlertEngineActive marks the alert engine as active. Called by the alerting

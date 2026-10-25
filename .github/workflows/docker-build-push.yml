@@ -1,11 +1,545 @@
-# This workflow is kept from upstream to avoid merge conflicts.
-# It is disabled on this fork (Gitea Actions used instead).
 name: Docker Build and Push
 
-on: workflow_dispatch
+on:
+  workflow_call:
+    inputs:
+      tag-strategy:
+        description: "Tagging strategy: nightly, release, dev, or testing"
+        required: true
+        type: string
+      version:
+        description: "Version string for tagging"
+        required: true
+        type: string
+      create-latest-tag:
+        description: "Whether to create latest tag"
+        required: false
+        type: boolean
+        default: false
+      platforms:
+        description: "JSON array of platforms to build"
+        required: false
+        type: string
+        default: '["linux/amd64", "linux/arm64"]'
+      push-to-ghcr:
+        description: "Push to GitHub Container Registry"
+        required: false
+        type: boolean
+        default: true
+      push-to-dockerhub:
+        description: "Push to Docker Hub"
+        required: false
+        type: boolean
+        default: true
+      cleanup-old-images:
+        description: "Clean up old images"
+        required: false
+        type: boolean
+        default: true
+      validate-podman:
+        description: "Run the Podman pull/run compatibility job after the build"
+        required: false
+        type: boolean
+        default: true
+      keep-images-count:
+        description: "Number of images to keep during cleanup"
+        required: false
+        type: number
+        default: 14
+    outputs:
+      version:
+        description: "The version that was built"
+        value: ${{ jobs.build.outputs.version }}
+      ghcr-success:
+        description: "Whether GHCR push succeeded"
+        value: ${{ jobs.build.outputs.ghcr-success }}
+      dockerhub-success:
+        description: "Whether Docker Hub push succeeded"
+        value: ${{ jobs.build.outputs.dockerhub-success }}
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
-  noop:
-    runs-on: ubuntu-latest
+  # Ensure the heavy runtime base image exists before the app build. Content-
+  # addressed on the Dockerfile, so this is a no-op (manifest exists) on a normal
+  # release and only builds when the base recipe changed or was never published.
+  # Building it here (rather than on push-to-main) means the app build can never
+  # race a missing base, and there is no separate trigger to keep two concurrent
+  # app builds from regenerating the same base tag.
+  base:
+    uses: ./.github/workflows/base-image.yml
+    secrets: inherit
+
+  build:
+    needs: base
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ inputs.version }}
+      ghcr-success: ${{ steps.push-status.outputs.ghcr-success }}
+      dockerhub-success: ${{ steps.push-status.outputs.dockerhub-success }}
+      # The build date this run tagged with, so validate-podman pulls the exact
+      # dated tag the build published instead of recomputing it (which could
+      # differ across a UTC-midnight crossing between the two jobs).
+      build-date: ${{ steps.tags.outputs.date }}
+
     steps:
-      - run: 'echo "This workflow is disabled on this fork"'
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Compute app version
+        id: app-version
+        env:
+          # Inputs via env, not inline ${{ }}, so a crafted version cannot inject shell.
+          VERSION: ${{ inputs.version }}
+          STRATEGY: ${{ inputs.tag-strategy }}
+        run: |
+          # Dev images get the same <date>-g<hash>-dev string as local builds
+          # instead of the full commit SHA the dev and testing callers pass as
+          # inputs.version (release callers pass the tag, used as is). Image
+          # tags, OCI labels and job outputs keep inputs.version. An empty
+          # BUILD_VERSION disables any pin inherited from the environment.
+          if [ "${STRATEGY}" = "dev" ] || [ "${STRATEGY}" = "testing" ]; then
+            APP_VERSION=$(BUILD_VERSION='' sh scripts/build-version.sh)
+          else
+            APP_VERSION="${VERSION}"
+          fi
+          echo "version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Baking app version: ${APP_VERSION}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Generate repository names
+        id: repo-names
+        run: |
+          # GitHub Container Registry
+          echo "GHCR_REPO=ghcr.io/${GITHUB_REPOSITORY,,}" >> ${GITHUB_ENV}
+          echo "ghcr-repo=${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
+
+          # Docker Hub (extract just the repo name)
+          REPO_NAME=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f2)
+          echo "DOCKERHUB_REPO=tphakala/${REPO_NAME}" >> ${GITHUB_ENV}
+          echo "dockerhub-repo=tphakala/${REPO_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Login to GitHub Container Registry
+        if: inputs.push-to-ghcr
+        run: |
+          for attempt in 1 2 3; do
+            if echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin; then
+              echo "GHCR login succeeded"
+              exit 0
+            fi
+            echo "GHCR login attempt $attempt/3 failed, retrying in 15s..."
+            sleep 15
+          done
+          echo "GHCR login failed after 3 attempts"
+          exit 1
+
+      - name: Login to Docker Hub
+        if: inputs.push-to-dockerhub
+        continue-on-error: true
+        id: dockerhub-login
+        run: |
+          for attempt in 1 2 3; do
+            if echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u tphakala --password-stdin; then
+              echo "Docker Hub login succeeded"
+              exit 0
+            fi
+            echo "Docker Hub login attempt $attempt/3 failed, retrying in 15s..."
+            sleep 15
+          done
+          echo "Docker Hub login failed after 3 attempts"
+          exit 1
+
+      - name: Generate tags
+        id: tags
+        env:
+          # Inputs via env, not inline ${{ }}, so a crafted version cannot inject
+          # shell (inputs.version flows from github.ref_name on release builds).
+          VERSION: ${{ inputs.version }}
+          STRATEGY: ${{ inputs.tag-strategy }}
+          WANT_LATEST: ${{ inputs.create-latest-tag }}
+          PUSH_GHCR: ${{ inputs.push-to-ghcr }}
+          PUSH_DH: ${{ inputs.push-to-dockerhub }}
+          DH_LOGIN: ${{ steps.dockerhub-login.outcome }}
+        run: |
+          # Final multi-arch tags only, split by registry. The single multi-
+          # platform build-push below publishes the GHCR manifest lists directly;
+          # Docker Hub is mirrored from GHCR afterwards (see the mirror step), so
+          # a Docker Hub blip cannot fail the GHCR publish. No per-arch
+          # (-amd64/-arm64) intermediates and no manifest-assembly job (buildx
+          # emits the manifest list natively).
+          #
+          # Invariant: GHCR is both the build target and the Docker Hub mirror
+          # source, so push-to-ghcr must be true whenever Docker Hub is enabled.
+          # All callers (release-build.yml, docker-build.yml) set push-to-ghcr
+          # true.
+          DATE=$(date +'%Y%m%d')
+
+          acc=""
+          emit() { acc="${acc}${1}"$'\n'; }
+
+          # Accumulate the tag set for one registry repo into "acc". The podman-*
+          # aliases are the same manifest list, published under discovery-
+          # friendly names.
+          gen() {
+            local repo="$1"
+            if [ "$STRATEGY" = "nightly" ]; then
+              emit "${repo}:nightly-${DATE}"
+              emit "${repo}:nightly"
+              emit "${repo}:podman-nightly-${DATE}"
+              emit "${repo}:podman-nightly"
+            elif [ "$STRATEGY" = "release" ]; then
+              emit "${repo}:${VERSION}"
+              emit "${repo}:podman-${VERSION}"
+              # Also publish the version without the leading "v" (e.g. 1.2.3)
+              # for users who pin the unprefixed tag.
+              local no_v="${VERSION#v}"
+              if [ "$no_v" != "$VERSION" ]; then
+                emit "${repo}:${no_v}"
+                emit "${repo}:podman-${no_v}"
+              fi
+              # Date-based release (YYYYMMDD): also move the :nightly alias so
+              # the install.sh userbase that pins :nightly keeps receiving each
+              # dated release. Gated to date tags so a stable vX.Y.Z release does
+              # not move :nightly.
+              if printf '%s' "$VERSION" | grep -qE '^[0-9]{8}$'; then
+                emit "${repo}:nightly"
+                emit "${repo}:podman-nightly"
+              fi
+            elif [ "$STRATEGY" = "dev" ]; then
+              # Dev images built on every push to main: a floating :dev alias and
+              # the immutable commit SHA (passed in as version), plus podman
+              # discovery aliases.
+              emit "${repo}:dev"
+              emit "${repo}:${VERSION}"
+              emit "${repo}:podman-dev"
+              emit "${repo}:podman-${VERSION}"
+            elif [ "$STRATEGY" = "testing" ]; then
+              # Manual branch builds handed to users for testing: a floating
+              # :testing alias and the immutable commit SHA. Leaves :dev,
+              # :nightly and :latest untouched.
+              emit "${repo}:testing"
+              emit "${repo}:${VERSION}"
+              emit "${repo}:podman-testing"
+              emit "${repo}:podman-${VERSION}"
+            fi
+            if [ "$WANT_LATEST" = "true" ]; then
+              emit "${repo}:latest"
+              emit "${repo}:podman-latest"
+            fi
+          }
+
+          ghcr_tags=""
+          if [ "$PUSH_GHCR" = "true" ]; then
+            acc=""; gen "${GHCR_REPO}"; ghcr_tags="$acc"
+          fi
+          # Only mirror to Docker Hub when its (continue-on-error) login actually
+          # succeeded, so a Docker Hub outage never blocks the GHCR publish.
+          dockerhub_tags=""
+          if [ "$PUSH_DH" = "true" ] && [ "$DH_LOGIN" = "success" ]; then
+            acc=""; gen "${DOCKERHUB_REPO}"; dockerhub_tags="$acc"
+          fi
+
+          # Stable GHCR ref used as the mirror source: a manifest list that all
+          # the other GHCR tags for this run also point at.
+          # Use an immutable per-run ref (dated tag / version / commit SHA), not
+          # a floating alias, so nothing can re-point it between build and use.
+          case "$STRATEGY" in
+            nightly) source_ref="${GHCR_REPO}:nightly-${DATE}" ;;
+            *)       source_ref="${GHCR_REPO}:${VERSION}" ;;
+          esac
+
+          {
+            echo "ghcr-tags<<__GHCR_EOF__"
+            printf '%s' "$ghcr_tags"
+            echo "__GHCR_EOF__"
+            echo "dockerhub-tags<<__DH_EOF__"
+            printf '%s' "$dockerhub_tags"
+            echo "__DH_EOF__"
+            echo "source-ref=${source_ref}"
+            echo "date=${DATE}"
+            # RFC3339 build timestamp for the org.opencontainers.image.created label.
+            echo "created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          } >> "$GITHUB_OUTPUT"
+          echo "GHCR tags:"
+          printf '%s' "$ghcr_tags"
+          echo "Docker Hub tags (mirrored from ${source_ref}):"
+          printf '%s' "$dockerhub_tags"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        id: build-push
+        with:
+          context: .
+          push: true
+          # Single multi-arch build: buildx builds every platform and publishes
+          # one manifest list per GHCR tag, replacing the old per-arch matrix +
+          # `docker manifest create/push` assembly. Docker Hub is mirrored from
+          # GHCR in the next step, not pushed here, so a Docker Hub push flake
+          # cannot fail this (GHCR-authoritative) build.
+          platforms: ${{ join(fromJson(inputs.platforms), ',') }}
+          build-args: |
+            BUILD_VERSION=${{ steps.app-version.outputs.version }}
+            SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+            BUILDKIT_INLINE_CACHE=1
+            BASE_IMAGE=${{ needs.base.outputs.base-ref }}
+          tags: ${{ steps.tags.outputs.ghcr-tags }}
+          # OCI image labels. Set on the GHCR build; the Docker Hub mirror copies
+          # the image config, so the Docker Hub tags inherit these automatically.
+          labels: |
+            org.opencontainers.image.title=birdnet-go
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.created=${{ steps.tags.outputs.created }}
+          cache-from: |
+            type=gha
+            type=registry,ref=ghcr.io/${{ steps.repo-names.outputs.ghcr-repo }}:buildcache
+          cache-to: |
+            type=gha,mode=max
+            type=registry,ref=ghcr.io/${{ steps.repo-names.outputs.ghcr-repo }}:buildcache,mode=max
+          provenance: false
+
+      - name: Mirror image to Docker Hub
+        id: dockerhub-mirror
+        # Copy the GHCR manifest list to the Docker Hub tags with imagetools
+        # (no rebuild, cross-registry blob copy) instead of pushing Docker Hub
+        # in the build itself. continue-on-error keeps a transient Docker Hub
+        # failure non-fatal; GHCR has already published, and the retry loop
+        # restores the resilience the removed create-manifests job used to give.
+        if: ${{ inputs.push-to-ghcr && inputs.push-to-dockerhub && steps.dockerhub-login.outcome == 'success' && steps.build-push.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          DOCKERHUB_TAGS: ${{ steps.tags.outputs.dockerhub-tags }}
+          SOURCE_REF: ${{ steps.tags.outputs.source-ref }}
+        run: |
+          set -euo pipefail
+          # One -t target per Docker Hub tag; imagetools create copies the
+          # multi-arch manifest list from the GHCR source to every target at once.
+          targets=()
+          count=0
+          while IFS= read -r t; do
+            if [ -n "$t" ]; then
+              targets+=( -t "$t" )
+              count=$((count + 1))
+            fi
+          done <<< "$DOCKERHUB_TAGS"
+          if [ "$count" -eq 0 ]; then
+            echo "No Docker Hub tags to mirror"
+            exit 0
+          fi
+          echo "Mirroring ${count} Docker Hub tag(s) from ${SOURCE_REF}"
+          for attempt in 1 2 3; do
+            if docker buildx imagetools create "${targets[@]}" "$SOURCE_REF"; then
+              echo "Docker Hub mirror succeeded"
+              exit 0
+            fi
+            echo "Docker Hub mirror attempt ${attempt}/3 failed, retrying in 15s..."
+            sleep 15
+          done
+          echo "Docker Hub mirror failed after 3 attempts"
+          exit 1
+
+      - name: Check push status
+        id: push-status
+        env:
+          PUSH_DH: ${{ inputs.push-to-dockerhub }}
+          MIRROR_OUTCOME: ${{ steps.dockerhub-mirror.outcome }}
+        run: |
+          # GHCR is published by the build-push step (fatal on failure, so we
+          # only reach here on GHCR success). Docker Hub is published by the
+          # (continue-on-error) mirror step; report its real outcome so a Docker
+          # Hub failure is visible in the outputs without failing the job.
+          echo "ghcr-success=true" >> "$GITHUB_OUTPUT"
+          if [ "$PUSH_DH" != "true" ] || [ "$MIRROR_OUTCOME" = "success" ]; then
+            echo "dockerhub-success=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Docker Hub mirror did not succeed (outcome=${MIRROR_OUTCOME}); GHCR publish is unaffected"
+            echo "dockerhub-success=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  validate-podman:
+    needs: build
+    runs-on: ubuntu-24.04
+    if: always() && needs.build.result != 'cancelled' && inputs.validate-podman
+
+    steps:
+      - name: Generate repository names
+        id: repo-names
+        run: |
+          echo "GHCR_REPO=ghcr.io/${GITHUB_REPOSITORY,,}" >> ${GITHUB_ENV}
+          REPO_NAME=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f2)
+          echo "DOCKERHUB_REPO=tphakala/${REPO_NAME}" >> ${GITHUB_ENV}
+
+      # This job does not check out the repo, so it cannot use the shared
+      # ./.github/actions/setup-apt-packages composite; the continue-on-error +
+      # outcome-checked reinstall fallback is inlined instead so a corrupt apt
+      # cache (tar exit 2) cannot hard-fail the podman-compatibility test.
+      - name: Install Podman
+        id: apt-podman
+        continue-on-error: true
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+        with:
+          packages: podman
+          version: 1.0
+      - name: Verify Podman
+        run: |
+          # Reinstall directly if the cache restore did not succeed or podman is
+          # missing/broken after the (continue-on-error) cached install above.
+          if [ "${{ steps.apt-podman.outcome }}" != "success" ] || ! podman --version > /dev/null 2>&1; then
+            echo "::warning::Podman apt cache restore did not succeed (outcome=${{ steps.apt-podman.outcome }}); reinstalling directly"
+            sudo apt-get update -qq -o Acquire::Retries=3 -o Acquire::http::Timeout=30
+            sudo apt-get install -y --fix-broken -o Acquire::Retries=3 -o Acquire::http::Timeout=30 podman
+          fi
+          podman --version
+
+      - name: Test Podman compatibility
+        env:
+          # Inputs via env, not inline ${{ }}, so a crafted value cannot inject
+          # shell (inputs.version flows from github.ref_name on release builds).
+          STRATEGY: ${{ inputs.tag-strategy }}
+          PUSH_GHCR: ${{ inputs.push-to-ghcr }}
+          PUSH_DH: ${{ inputs.push-to-dockerhub }}
+          VERSION: ${{ inputs.version }}
+          BUILD_DATE: ${{ needs.build.outputs.build-date }}
+        run: |
+          set +e  # Don't exit on error - we want to test both registries
+
+          # Validate the exact image this run built: for nightly use the dated
+          # tag (nightly-<DATE>), not the floating :nightly, so a failed build
+          # cannot false-pass by pulling a previous day's :nightly image. Reuse
+          # the build job's date rather than recomputing it here, so a run that
+          # crosses UTC midnight between the build and this job cannot try to
+          # pull a nightly-<DATE> tag the build never published.
+          DATE="${BUILD_DATE}"
+          if [ -z "$DATE" ]; then
+            echo "::warning::build-date output was empty; falling back to current date"
+            DATE=$(date +'%Y%m%d')
+          fi
+
+          # Determine which image to test based on strategy and availability
+          if [ "$STRATEGY" = "nightly" ]; then
+            if [ "$PUSH_GHCR" = "true" ]; then
+              TEST_IMAGE="${GHCR_REPO}:nightly-${DATE}"
+            elif [ "$PUSH_DH" = "true" ]; then
+              TEST_IMAGE="${DOCKERHUB_REPO}:nightly-${DATE}"
+            else
+              echo "No image to test - both registries disabled"
+              exit 0
+            fi
+          elif [ "$STRATEGY" = "release" ]; then
+            if [ "$PUSH_GHCR" = "true" ]; then
+              TEST_IMAGE="${GHCR_REPO}:${VERSION}"
+            elif [ "$PUSH_DH" = "true" ]; then
+              TEST_IMAGE="${DOCKERHUB_REPO}:${VERSION}"
+            else
+              echo "No image to test - both registries disabled"
+              exit 0
+            fi
+          elif [ "$STRATEGY" = "dev" ]; then
+            # Test the immutable commit-SHA tag, not the floating :dev, so a
+            # concurrent push cannot make this pull a different image.
+            if [ "$PUSH_GHCR" = "true" ]; then
+              TEST_IMAGE="${GHCR_REPO}:${VERSION}"
+            elif [ "$PUSH_DH" = "true" ]; then
+              TEST_IMAGE="${DOCKERHUB_REPO}:${VERSION}"
+            else
+              echo "No image to test - both registries disabled"
+              exit 0
+            fi
+          fi
+
+          echo "TEST_IMAGE=$TEST_IMAGE" >> $GITHUB_ENV
+          echo "Testing Podman compatibility with image: $TEST_IMAGE"
+
+          # Test basic Podman functionality
+          echo "✅ Testing Podman pull..."
+          if podman pull "$TEST_IMAGE"; then
+            echo "✅ Podman pull successful"
+          else
+            echo "❌ Podman pull failed"
+            exit 1
+          fi
+
+          # Test container creation and basic run
+          echo "✅ Testing Podman run..."
+          if podman run --rm --name test-podman-compat \
+            -e BIRDNET_UID=1000 \
+            -e BIRDNET_GID=1000 \
+            "$TEST_IMAGE" \
+            /bin/sh -c "echo 'Podman compatibility test passed'; id"; then
+            echo "✅ Podman run successful"
+          else
+            echo "❌ Podman run failed"
+            exit 1
+          fi
+
+          # Test rootless capabilities
+          echo "✅ Testing rootless execution..."
+          if podman run --rm --name test-rootless \
+            --user 1000:1000 \
+            "$TEST_IMAGE" \
+            /bin/sh -c "whoami && id"; then
+            echo "✅ Rootless execution successful"
+          else
+            echo "❌ Rootless execution failed"
+            exit 1
+          fi
+
+          echo "🎉 All Podman compatibility tests passed!"
+
+      - name: Update build summary with Podman validation
+        if: always()
+        run: |
+          echo "## Podman Compatibility Validation" >> $GITHUB_STEP_SUMMARY
+          echo "- Image tested: $TEST_IMAGE" >> $GITHUB_STEP_SUMMARY
+          echo "- Podman version: $(podman --version)" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "- ✅ Podman compatibility: **PASSED**" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Image works with both Docker and Podman" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ❌ Podman compatibility: **FAILED**" >> $GITHUB_STEP_SUMMARY
+            echo "- ⚠️ Image may have compatibility issues with Podman" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  cleanup:
+    needs: [build, validate-podman]
+    runs-on: ubuntu-24.04
+    if: always() && inputs.cleanup-old-images && needs.build.result != 'cancelled'
+
+    steps:
+      - name: Generate repository names
+        id: repo-names
+        run: |
+          echo "GHCR_REPO=ghcr.io/${GITHUB_REPOSITORY,,}" >> ${GITHUB_ENV}
+          REPO_NAME=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f2)
+          echo "DOCKERHUB_REPO=tphakala/${REPO_NAME}" >> ${GITHUB_ENV}
+
+      - name: Cleanup old GHCR images
+        if: inputs.push-to-ghcr && inputs.tag-strategy == 'nightly'
+        continue-on-error: true
+        run: |
+          echo "Note: GHCR cleanup would be implemented here"
+          echo "This requires additional API calls to GitHub's package API"
+          echo "For now, relying on GitHub's built-in retention policies"
+
+      - name: Cleanup old Docker Hub images
+        if: inputs.push-to-dockerhub && inputs.tag-strategy == 'nightly'
+        continue-on-error: true
+        run: |
+          echo "Note: Docker Hub cleanup would be implemented here"
+          echo "This requires Docker Hub API integration"
+          echo "For now, manual cleanup or Docker Hub retention policies recommended"
+
+      - name: Cleanup summary
+        run: |
+          echo "## Cleanup Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- GHCR cleanup: ${{ inputs.push-to-ghcr && 'Enabled' || 'Disabled' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Docker Hub cleanup: ${{ inputs.push-to-dockerhub && 'Enabled' || 'Disabled' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Keep images count: ${{ inputs.keep-images-count }}" >> $GITHUB_STEP_SUMMARY

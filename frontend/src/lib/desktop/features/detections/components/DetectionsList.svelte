@@ -32,7 +32,6 @@
 <script lang="ts">
   import Checkbox from '$lib/desktop/components/forms/Checkbox.svelte';
   import SelectDropdown from '$lib/desktop/components/forms/SelectDropdown.svelte';
-  import MobileAudioPlayer from '$lib/desktop/components/media/MobileAudioPlayer.svelte';
   import ConfirmModal from '$lib/desktop/components/modals/ConfirmModal.svelte';
   import Button from '$lib/desktop/components/ui/Button.svelte';
   import EmptyState from '$lib/desktop/components/ui/EmptyState.svelte';
@@ -57,11 +56,18 @@
     Trash2,
     XCircle,
   } from '@lucide/svelte';
-  import { untrack } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { useSelectionMode } from '../composables/useSelectionMode.svelte';
+  import { useDetectionActions } from '../composables/useDetectionActions.svelte';
+  import {
+    isExcluded as isSpeciesExcluded,
+    setExcluded,
+    hydrateExcludedSpecies,
+  } from '$lib/stores/excludedSpecies.svelte';
   import DetectionCardMobile from './DetectionCardMobile.svelte';
   import DetectionRow from './DetectionRow.svelte';
   import DetectionsCardView from './DetectionsCardView.svelte';
+  import { appState } from '$lib/stores/appState.svelte';
 
   type SortField = 'dateTime' | 'species' | 'confidence' | 'status';
   type SortDirection = 'asc' | 'desc';
@@ -89,6 +95,16 @@
     onSortChange,
     className = '',
   }: Props = $props();
+
+  // Show the Recording column when audio export is enabled (so it stays visible
+  // even for a page that happens to have no clips yet) OR when any visible row
+  // actually has a clip (so historical clips remain reachable after export is
+  // turned off), or has a kept spectrogram image after retention removed its audio.
+  // The per-row player is still gated on detection.clipName.
+  let showRecordingColumn = $derived(
+    appState.audioExportEnabled ||
+      (data?.notes ?? []).some(d => Boolean(d.clipName) || Boolean(d.spectrogramOnly))
+  );
 
   // Generate title based on query type
   const title = $derived.by(() => {
@@ -231,33 +247,22 @@
     onSortChange?.(toBackendSortBy(sortField, sortDirection));
   }
 
-  // Mobile audio player state
-  let showMobilePlayer = $state(false);
-  let selectedAudioUrl = $state('');
-  let selectedSpeciesName = $state('');
-  let selectedDetectionId = $state<number | undefined>(undefined);
-
-  function handlePlayMobileAudio(payload: {
-    audioUrl: string;
-    speciesName: string;
-    detectionId: number;
-  }) {
-    selectedAudioUrl = payload.audioUrl;
-    selectedSpeciesName = payload.speciesName;
-    selectedDetectionId = payload.detectionId;
-    showMobilePlayer = true;
-  }
-
-  function handleCloseMobilePlayer() {
-    showMobilePlayer = false;
-    selectedAudioUrl = '';
-    selectedSpeciesName = '';
-    selectedDetectionId = undefined;
-  }
-
   // Selection mode
   let canEdit = $derived(!$auth.security.enabled || $auth.security.accessAllowed);
   const selection = useSelectionMode(() => data?.totalResults ?? 0);
+
+  // Per-detection action handlers (review/correct/false-positive/ignore/lock/
+  // delete) shared by the table rows and mobile cards, backed by the
+  // server-hydrated excludedSpecies store. Distinct from the bulk-action modal.
+  const detectionActions = useDetectionActions({
+    onRefresh: () => onRefresh?.(),
+    isSpeciesExcluded,
+    onToggleExclusion: setExcluded,
+  });
+
+  onMount(() => {
+    void hydrateExcludedSpecies();
+  });
 
   const pageIds = $derived((data?.notes ?? []).map(d => String(d.id)));
 
@@ -472,6 +477,7 @@
 
         <SelectDropdown
           options={RESULTS_OPTIONS}
+          aria-label={t('detections.aria.resultsPerPage')}
           value={selectedNumResults}
           size="sm"
           menuSize="sm"
@@ -624,8 +630,11 @@
                   direction={sortDirection}
                   onSort={handleSort}
                 />
-                <th scope="col" class="hidden md:table-cell">{t('detections.headers.recording')}</th
-                >
+                {#if showRecordingColumn}
+                  <th scope="col" class="hidden md:table-cell"
+                    >{t('detections.headers.recording')}</th
+                  >
+                {/if}
                 <th scope="col">{t('detections.headers.actions')}</th>
               </tr>
             </thead>
@@ -642,12 +651,18 @@
                 >
                   <DetectionRow
                     {detection}
+                    {showRecordingColumn}
                     {onDetailsClick}
-                    {onRefresh}
-                    onPlayMobileAudio={handlePlayMobileAudio}
+                    isExcluded={isSpeciesExcluded(detection.commonName)}
                     selectionActive={selection.selectionActive}
                     selected={selection.isSelected(String(detection.id))}
                     onToggleSelect={handleToggleSelect}
+                    onReview={() => detectionActions.handleReview(detection)}
+                    onMarkCorrect={() => detectionActions.handleMarkCorrect(detection)}
+                    onMarkFalsePositive={() => detectionActions.handleMarkFalsePositive(detection)}
+                    onToggleSpecies={() => detectionActions.handleToggleSpecies(detection)}
+                    onToggleLock={() => detectionActions.handleToggleLock(detection)}
+                    onDelete={() => detectionActions.handleDelete(detection)}
                   />
                 </tr>
               {/each}
@@ -664,7 +679,13 @@
           <DetectionCardMobile
             {detection}
             {onDetailsClick}
-            onPlayMobileAudio={handlePlayMobileAudio}
+            isExcluded={isSpeciesExcluded(detection.commonName)}
+            onReview={() => detectionActions.handleReview(detection)}
+            onMarkCorrect={() => detectionActions.handleMarkCorrect(detection)}
+            onMarkFalsePositive={() => detectionActions.handleMarkFalsePositive(detection)}
+            onToggleSpecies={() => detectionActions.handleToggleSpecies(detection)}
+            onToggleLock={() => detectionActions.handleToggleLock(detection)}
+            onDelete={() => detectionActions.handleDelete(detection)}
           />
         {/each}
       </div>
@@ -694,18 +715,7 @@
     </div>
   {/if}
 
-  <!-- Mobile Audio Player Overlay -->
-  {#if showMobilePlayer}
-    <div class="md:hidden">
-      <MobileAudioPlayer
-        audioUrl={selectedAudioUrl}
-        speciesName={selectedSpeciesName}
-        detectionId={selectedDetectionId}
-        onClose={handleCloseMobilePlayer}
-      />
-    </div>
-  {/if}
-
+  <!-- Bulk-action confirmation (select mode) -->
   <ConfirmModal
     isOpen={showBulkConfirmModal}
     title={bulkConfirmConfig.title}
@@ -717,4 +727,16 @@
       showBulkConfirmModal = false;
     }}
   />
+
+  <!-- Per-detection confirmation (review/ignore/lock/delete from a row or card) -->
+  {#if detectionActions.selectedDetection}
+    <ConfirmModal
+      isOpen={detectionActions.showConfirmModal}
+      title={detectionActions.confirmModalConfig.title}
+      message={detectionActions.confirmModalConfig.message}
+      confirmLabel={detectionActions.confirmModalConfig.confirmLabel}
+      onClose={detectionActions.closeModal}
+      onConfirm={detectionActions.confirmModal}
+    />
+  {/if}
 </div>

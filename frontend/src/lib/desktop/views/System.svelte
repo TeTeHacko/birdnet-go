@@ -7,6 +7,7 @@
   import { DatabaseDashboard } from '$lib/desktop/components/database';
   import TerminalPage from '$lib/desktop/features/system/TerminalPage.svelte';
   import SystemInference from '$lib/desktop/views/SystemInference.svelte';
+  import ImportExportPage from '$lib/desktop/features/import-export/pages/ImportExportPage.svelte';
   import { t } from '$lib/i18n';
   import { api, ApiError } from '$lib/utils/api';
   import { navigation } from '$lib/stores/navigation.svelte';
@@ -29,6 +30,7 @@
     if (path === '/ui/system/database') return 'database';
     if (path === '/ui/system/terminal') return 'terminal';
     if (path === '/ui/system/inference') return 'inference';
+    if (path === '/ui/system/import-export') return 'import-export';
     return 'overview';
   });
 
@@ -132,9 +134,18 @@
   }
 
   // System information state
-  let systemInfo = $state<SystemInfo>({} as SystemInfo);
+  // Empty until /api/v2/system/info loads; the template falls back for each missing field
+  let systemInfo = $state<Partial<SystemInfo>>({});
   let diskUsage = $state<DiskInfo[]>([]);
-  let memoryUsage = $state<MemoryInfo>({} as MemoryInfo);
+  let memoryUsage = $state<MemoryInfo>({
+    total: 0,
+    used: 0,
+    free: 0,
+    available: 0,
+    buffers: 0,
+    cached: 0,
+    usedPercent: 0,
+  });
   let systemTemperature = $state<TemperatureInfo>({ is_available: false });
   let processes = $state<ProcessInfo[]>([]);
   // Sparkline history arrays
@@ -164,7 +175,7 @@
   });
   let tempSymbol = $derived(getTemperatureSymbol(temperatureUnit));
 
-  // Computed values for MetricStrip — derived from history arrays so they
+  // Computed values for MetricStrip, derived from history arrays so they
   // stay in sync with both SSE and polling updates
   let cpuPercent = $derived(cpuHistory.length > 0 ? cpuHistory[cpuHistory.length - 1] : 0);
   let memoryPercent = $derived(
@@ -296,7 +307,7 @@
           temperatureHistory = appendHistory(temperatureHistory, temp.celsius);
         }
       } catch {
-        // Temperature may not be available — that's fine
+        // Temperature may not be available; that's fine
       }
 
       if (active.current) {
@@ -323,7 +334,6 @@
 
     metricsSSE.addEventListener('metrics', (event: Event) => {
       try {
-        // eslint-disable-next-line no-undef
         const messageEvent = event as MessageEvent;
         const metrics = JSON.parse(messageEvent.data) as Record<string, MetricPoint>;
 
@@ -507,7 +517,7 @@
 
   // Start/stop slow refresh based on active subpage.
   // The active guard lives inside startSlowRefresh's tick(), so no need to
-  // check componentActive here — avoids an ordering dependency between effects.
+  // check componentActive here; this avoids an ordering dependency between effects.
   $effect(() => {
     if (currentSubpage === 'overview') {
       startSlowRefresh(componentActive);
@@ -541,6 +551,11 @@
   <!-- AI Models & Inference Page -->
   <div class="col-span-12 space-y-4" role="region" aria-label={t('system.sections.inference')}>
     <SystemInference />
+  </div>
+{:else if currentSubpage === 'import-export'}
+  <!-- Import / Export Page -->
+  <div class="col-span-12 space-y-4" role="region" aria-label={t('system.sections.importExport')}>
+    <ImportExportPage />
   </div>
 {:else}
   <!-- System Overview Page -->

@@ -63,6 +63,8 @@ This package serves as the MQTT integration layer for BirdNET-Go, allowing:
 ### Connection Management
 
 - **Automatic Reconnection**: Configurable reconnection with exponential backoff
+- **Startup Recovery**: `StartReconnectLoop` recovers a client whose _initial_
+  connect failed, which the connection-lost handler cannot cover
 - **Connection Cooldown**: Prevents rapid reconnection attempts
 - **DNS Resolution**: Pre-flight DNS checks with proper error handling
 - **Thread Safety**: All operations are protected by appropriate locking
@@ -140,11 +142,15 @@ func setupMQTT(settings *conf.Settings, metrics *observability.Metrics) error {
         return fmt.Errorf("failed to create MQTT client: %w", err)
     }
 
-    // Connect
+    // Connect. A failed connect is recoverable: retain the client and arm its
+    // reconnect loop, otherwise a broker that is briefly unreachable (e.g. while
+    // the network comes up at boot) costs MQTT for the whole process lifetime,
+    // because the connection-lost handler only fires for connections that
+    // succeeded at least once. Publishes are suppressed while it reconnects.
     ctx := context.Background()
     if err := client.Connect(ctx); err != nil {
-        log.Warn("connection failed", logger.Error(err))
-        return err
+        log.Warn("connection failed, retrying in background", logger.Error(err))
+        client.StartReconnectLoop()
     }
 
     // Publish message
@@ -387,7 +393,7 @@ The MQTT integration settings are managed through the web interface.
    - Detailed error messages for troubleshooting
 
 3. **Frontend State Management**:
-   - Uses Alpine.js for reactive UI updates
+   - Uses Svelte 5 reactive state for UI updates
    - Watches for setting changes to enable save button
    - Clears test results when settings change
    - Handles anonymous authentication toggle logic

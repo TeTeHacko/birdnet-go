@@ -1,10 +1,12 @@
 package resample
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	dsppcm "github.com/tphakala/go-audio-dsp/pcm"
 )
 
 // makePCM16 builds a synthetic 16-bit PCM byte slice with sampleCount samples.
@@ -13,7 +15,7 @@ func makePCM16(t *testing.T, sampleCount int) []byte {
 	t.Helper()
 	buf := make([]byte, sampleCount*bytesPerSample)
 	for i := range sampleCount {
-		// Produce a simple ramp pattern: value cycles 0..32767..−32768..0
+		// Produce a simple ramp pattern: value cycles 0..32767..-32768..0
 		v := int16((i % 65536) - 32768) //nolint:gosec // G115: intentional narrowing for test data
 		buf[i*2] = byte(v)
 		buf[i*2+1] = byte(v >> 8)
@@ -57,7 +59,7 @@ func TestResampler_48kTo32k(t *testing.T) {
 func TestResampler_SameRate(t *testing.T) {
 	r, err := NewResampler(48000, 48000)
 	require.NoError(t, err)
-	assert.Nil(t, r, "NewResampler with equal rates should return nil — no resampling needed")
+	assert.Nil(t, r, "NewResampler with equal rates should return nil, no resampling needed")
 }
 
 // TestResampler_BufferReuse verifies that internal buffers (outBuf and outFloats)
@@ -74,12 +76,12 @@ func TestResampler_BufferReuse(t *testing.T) {
 
 	input := makePCM16(t, inputSamples)
 
-	// First call — populates and sizes the internal buffers.
+	// First call: populates and sizes the internal buffers.
 	out1, err := r.ResampleInto(input)
 	require.NoError(t, err)
 	require.NotEmpty(t, out1)
 
-	// Second call — sizes the output buffer to accommodate any library variance.
+	// Second call: sizes the output buffer to accommodate any library variance.
 	out2, err := r.ResampleInto(input)
 	require.NoError(t, err)
 	require.NotEmpty(t, out2)
@@ -295,6 +297,94 @@ func TestResampleTo_HighRatio(t *testing.T) {
 		"output sample count should be approximately %d (got %d)", expectedSamples, outputSamples)
 }
 
+// TestResampleFloat32Into_Downsamples verifies the float32-native path produces
+// a plausible downsampled length with all samples within the normalised range
+// plus filter overshoot.
+func TestResampleFloat32Into_Downsamples(t *testing.T) {
+	const fromRate = 48000
+	const toRate = 16000
+	const inputSamples = 4800 // 100 ms at 48 kHz
+
+	r, err := NewResampler(fromRate, toRate)
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	t.Cleanup(func() { require.NoError(t, r.Close()) })
+
+	input := makePCM16(t, inputSamples)
+	out, err := r.ResampleFloat32Into(input)
+	require.NoError(t, err)
+
+	// 48k -> 16k is a 3:1 ratio, so the ideal output is inputSamples/3. A single
+	// independent resample also swallows the polyphase filter's warmup latency,
+	// so the first (and only) call returns somewhat fewer samples. Assert a sane
+	// range rather than an exact count: non-empty, never more than ideal.
+	ideal := inputSamples * toRate / fromRate
+	assert.NotEmpty(t, out, "output must be non-empty")
+	assert.LessOrEqual(t, len(out), ideal, "output must not exceed the ideal ratio length")
+	assert.Greater(t, len(out), ideal*3/4, "output should be within warmup latency of the ideal length")
+
+	// The ramp starts at full scale, so the anti-alias filter overshoots at the
+	// onset (Gibbs ringing); allow that, but nothing near a gain error.
+	const maxOvershoot = 1.25
+	for i, f := range out {
+		require.GreaterOrEqual(t, f, float32(-maxOvershoot), "sample %d below -%v", i, maxOvershoot)
+		require.LessOrEqual(t, f, float32(maxOvershoot), "sample %d above %v", i, maxOvershoot)
+	}
+}
+
+// TestResampleFloat32Into_MatchesResampleInto asserts the float32 output is
+// byte-for-byte equivalent to ResampleInto once re-quantised with go-audio-dsp
+// pcm (x32768, round half to even, saturating), confirming the two paths share the same resampler math.
+func TestResampleFloat32Into_MatchesResampleInto(t *testing.T) {
+	const fromRate = 48000
+	const toRate = 16000
+	const inputSamples = 3200
+
+	input := makePCM16(t, inputSamples)
+
+	rf, err := NewResampler(fromRate, toRate)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, rf.Close()) })
+	floats, err := rf.ResampleFloat32Into(input)
+	require.NoError(t, err)
+
+	rb, err := NewResampler(fromRate, toRate)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, rb.Close()) })
+	bytesOut, err := rb.ResampleInto(input)
+	require.NoError(t, err)
+
+	require.Len(t, bytesOut, len(floats)*bytesPerSample,
+		"float32 length must match PCM16 byte length / 2")
+
+	want := make([]byte, len(bytesOut))
+	_, err = dsppcm.Float32ToBytes(want, floats)
+	require.NoError(t, err)
+	assert.True(t, bytes.Equal(want, bytesOut),
+		"PCM16 output must equal the float32 output encoded by go-audio-dsp pcm")
+}
+
+// TestResampleFloat32Into_EmptyInput returns an empty slice without error.
+func TestResampleFloat32Into_EmptyInput(t *testing.T) {
+	r, err := NewResampler(48000, 16000)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, r.Close()) })
+
+	out, err := r.ResampleFloat32Into(nil)
+	require.NoError(t, err)
+	assert.Empty(t, out)
+}
+
+// TestResampleFloat32Into_OddByteInput rejects a non-even byte count.
+func TestResampleFloat32Into_OddByteInput(t *testing.T) {
+	r, err := NewResampler(48000, 16000)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, r.Close()) })
+
+	_, err = r.ResampleFloat32Into([]byte{0x01, 0x02, 0x03})
+	require.Error(t, err)
+}
+
 // resampleBenchCases defines the rate pairs used across benchmarks.
 var resampleBenchCases = []struct {
 	name     string
@@ -305,6 +395,114 @@ var resampleBenchCases = []struct {
 	{"48k_to_32k", 48000, 32000, 100},
 	{"256k_to_48k", 256000, 48000, 100},
 	{"192k_to_48k", 192000, 48000, 100},
+}
+
+// constPCM16 builds sampleCount samples that all hold v.
+func constPCM16(sampleCount int, v int16) []byte {
+	buf := make([]byte, sampleCount*bytesPerSample)
+	for i := range sampleCount {
+		buf[i*2] = byte(v)
+		buf[i*2+1] = byte(v >> 8)
+	}
+	return buf
+}
+
+// pcm16At returns sample i of a little-endian PCM16 byte slice.
+func pcm16At(b []byte, i int) int16 {
+	return int16(uint16(b[i*2]) | uint16(b[i*2+1])<<8) //nolint:gosec // G115: little-endian PCM16 decode
+}
+
+// TestResampleTo_EncodesWithRoundingAndFullScale pins the int16 encoding: x32768
+// with round half to even and saturation, so a constant full-scale block settles
+// to exactly -32768 and +32767 (x32767 truncation gave -32767 for the negative
+// rail) and a mid-scale constant has no truncation bias.
+func TestResampleTo_EncodesWithRoundingAndFullScale(t *testing.T) {
+	const (
+		fromRate    = 48000
+		toRate      = 32000
+		blockLen    = 19200
+		settleSkip  = 4000
+		midScaleVal = 12345
+	)
+
+	tests := []struct {
+		name  string
+		value int16
+		check func(t *testing.T, out []byte)
+	}{
+		{"negative rail", -32768, func(t *testing.T, out []byte) {
+			t.Helper()
+			for i := settleSkip; i < len(out)/bytesPerSample-settleSkip; i++ {
+				require.Equal(t, int16(-32768), pcm16At(out, i), "sample %d", i)
+			}
+		}},
+		{"positive rail", 32767, func(t *testing.T, out []byte) {
+			t.Helper()
+			for i := settleSkip; i < len(out)/bytesPerSample-settleSkip; i++ {
+				require.Equal(t, int16(32767), pcm16At(out, i), "sample %d", i)
+			}
+		}},
+		{"mid scale has no bias", midScaleVal, func(t *testing.T, out []byte) {
+			t.Helper()
+			var sum float64
+			n := 0
+			for i := settleSkip; i < len(out)/bytesPerSample-settleSkip; i++ {
+				d := float64(pcm16At(out, i)) - midScaleVal
+				require.InDelta(t, 0, d, 1, "sample %d", i)
+				sum += d
+				n++
+			}
+			assert.InDelta(t, 0, sum/float64(n), 0.1, "mean error must show no truncation bias")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, err := NewResampler(fromRate, toRate)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, r.Close()) })
+
+			input := constPCM16(blockLen, tt.value)
+			dst := make([]byte, r.EstimateOutputBytes(len(input)))
+			n, err := r.ResampleTo(input, dst)
+			require.NoError(t, err)
+			tt.check(t, dst[:n])
+		})
+	}
+}
+
+// TestResampleTo_ChunkingDoesNotChangeOutput asserts the encoding is a pure
+// per-sample function of the resampler output: one call over a signal and many
+// small calls on a fresh resampler produce identical bytes.
+func TestResampleTo_ChunkingDoesNotChangeOutput(t *testing.T) {
+	const (
+		fromRate = 48000
+		toRate   = 32000
+		total    = 14400
+		chunk    = 1440
+	)
+	input := makePCM16(t, total)
+
+	whole, err := NewResampler(fromRate, toRate)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, whole.Close()) })
+	wholeDst := make([]byte, whole.EstimateOutputBytes(len(input)))
+	wn, err := whole.ResampleTo(input, wholeDst)
+	require.NoError(t, err)
+
+	chunked, err := NewResampler(fromRate, toRate)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, chunked.Close()) })
+	var got []byte
+	for off := 0; off < len(input); off += chunk * bytesPerSample {
+		part := input[off : off+chunk*bytesPerSample]
+		dst := make([]byte, chunked.EstimateOutputBytes(len(part)))
+		n, cErr := chunked.ResampleTo(part, dst)
+		require.NoError(t, cErr)
+		got = append(got, dst[:n]...)
+	}
+
+	assert.True(t, bytes.Equal(wholeDst[:wn], got),
+		"chunked and whole resampling must produce identical bytes")
 }
 
 func BenchmarkResampleTo(b *testing.B) {

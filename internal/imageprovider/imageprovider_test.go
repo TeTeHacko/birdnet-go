@@ -16,11 +16,18 @@ import (
 	"github.com/tphakala/birdnet-go/internal/conf/conftest"
 	"github.com/tphakala/birdnet-go/internal/datastore"
 	"github.com/tphakala/birdnet-go/internal/detection"
+	"github.com/tphakala/birdnet-go/internal/diskmanager"
 	"github.com/tphakala/birdnet-go/internal/errors"
 	"github.com/tphakala/birdnet-go/internal/imageprovider"
 	"github.com/tphakala/birdnet-go/internal/observability"
 	"go.uber.org/goleak"
 	"gorm.io/gorm"
+)
+
+const (
+	// backgroundFetchWaitTimeout bounds how long a test waits for the background
+	// refresh goroutine to issue its first fetch. Generous for slow CI runners.
+	backgroundFetchWaitTimeout = 10 * time.Second
 )
 
 // mockImageProvider is a mock implementation of the ImageProvider interface
@@ -30,6 +37,14 @@ type mockImageProvider struct {
 	fetchDelay   time.Duration
 	mu           sync.Mutex
 	lastURL      string // Track last generated URL for consistency
+}
+
+// getFetchCount returns the number of Fetch calls under the mock's lock, so tests
+// can read it from a background refresh goroutine without racing.
+func (m *mockImageProvider) getFetchCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.fetchCounter
 }
 
 func (m *mockImageProvider) Fetch(scientificName string) (imageprovider.BirdImage, error) {
@@ -48,7 +63,7 @@ func (m *mockImageProvider) Fetch(scientificName string) (imageprovider.BirdImag
 	}
 
 	// Generate consistent URL for the same fetch count
-	url := fmt.Sprintf("http://example.com/%s_%d.jpg", scientificName, currentCount)
+	url := fmt.Sprintf("http://127.0.0.1/%s_%d.jpg", scientificName, currentCount)
 
 	m.mu.Lock()
 	m.lastURL = url
@@ -60,7 +75,7 @@ func (m *mockImageProvider) Fetch(scientificName string) (imageprovider.BirdImag
 		LicenseName:    "CC BY-SA 4.0",
 		LicenseURL:     "https://creativecommons.org/licenses/by-sa/4.0/",
 		AuthorName:     fmt.Sprintf("Mock Author %d", currentCount),
-		AuthorURL:      "http://example.com/author",
+		AuthorURL:      "http://127.0.0.1/author",
 		CachedAt:       time.Now(),
 	}, nil
 }
@@ -86,11 +101,26 @@ func (m *mockStore) GetAllTestEntries() []*datastore.ImageCache {
 }
 
 // Implement only the methods we need for testing
+// copyImageCache returns a copy of a stored mock row so callers cannot mutate
+// the mock database in place.
+func copyImageCache(img *datastore.ImageCache) *datastore.ImageCache {
+	if img == nil {
+		return nil
+	}
+	cp := *img
+	return &cp
+}
+
 func (m *mockStore) GetImageCache(query datastore.ImageCacheQuery) (*datastore.ImageCache, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if img, ok := m.images[query.ScientificName+"_"+query.ProviderName]; ok {
-		return img, nil
+		// Copy: SaveImageCache copies on write, but handing out the stored
+		// pointer let code under test mutate this mock DB row in place. That
+		// matters now that the negative-cache tests assert exact DB-vs-provider
+		// call counts, and a background refresh mutating the returned struct
+		// while the test reads it is a latent -race hit.
+		return copyImageCache(img), nil
 	}
 	return nil, datastore.ErrImageCacheNotFound
 }
@@ -145,7 +175,7 @@ func (m *mockStore) GetImageCacheBatch(providerName string, scientificNames []st
 	for _, name := range scientificNames {
 		key := name + "_" + providerName
 		if img, exists := m.images[key]; exists {
-			result[name] = img
+			result[name] = copyImageCache(img)
 		}
 	}
 
@@ -166,7 +196,7 @@ func (m *mockStore) GetAllNotes() ([]datastore.Note, error)                     
 func (m *mockStore) GetTopBirdsData(_ context.Context, date string, minConf float64, limit int) ([]datastore.Note, error) {
 	return []datastore.Note{}, nil
 }
-func (m *mockStore) GetBatchHourlyOccurrences(_ context.Context, date string, species []string, minConf float64) (map[string][24]int, error) {
+func (m *mockStore) GetBatchHourlyOccurrences(_ context.Context, startDate, endDate string, species []string, minConf float64) (map[string][24]int, error) {
 	return make(map[string][24]int), nil
 }
 func (m *mockStore) SpeciesDetections(species, date, hour string, duration int, asc bool, limit, offset int) ([]datastore.Note, error) {
@@ -182,17 +212,25 @@ func (m *mockStore) SearchNotesAdvanced(filters *datastore.AdvancedSearchFilters
 }
 func (m *mockStore) GetNoteClipPath(noteID string) (string, error) { return "", nil }
 func (m *mockStore) GetNoteModelType(_ string) (string, error)     { return "bird", nil }
-func (m *mockStore) DeleteNoteClipPath(noteID string) error        { return nil }
+func (m *mockStore) GetNoteKeptSpectrogram(_ string) (clipName, modelType string, err error) {
+	return "", "bird", nil
+}
+
+func (m *mockStore) RecordClipSampleRate(_ context.Context, _ uint, _ string, _ int) error {
+	return nil
+}
+
+func (m *mockStore) FillClipSampleRate(_ context.Context, _ uint, _ string, _ int) (bool, error) {
+	return false, nil
+}
+func (m *mockStore) DeleteNoteClipPath(noteID string) error { return nil }
 func (m *mockStore) GetClipsQualifyingForRemoval(minHours, minClips int) ([]datastore.ClipForRemoval, error) {
 	return nil, nil
 }
 func (m *mockStore) GetNoteReview(noteID string) (*datastore.NoteReview, error) {
 	return nil, datastore.ErrNoteReviewNotFound
 }
-func (m *mockStore) SaveNoteReview(review *datastore.NoteReview) error { return nil }
-func (m *mockStore) ListAnalyticsSourcesData(_ context.Context) ([]datastore.AnalyticsSourceInfo, error) {
-	return nil, nil
-}
+func (m *mockStore) SaveNoteReview(review *datastore.NoteReview) error              { return nil }
 func (m *mockStore) GetNoteComments(noteID string) ([]datastore.NoteComment, error) { return nil, nil }
 func (m *mockStore) GetNoteResults(noteID string) ([]datastore.Results, error)      { return nil, nil }
 func (m *mockStore) SaveNoteComment(comment *datastore.NoteComment) error           { return nil }
@@ -222,19 +260,25 @@ func (m *mockStore) GetNoteLock(noteID string) (*datastore.NoteLock, error) {
 func (m *mockStore) IsNoteLocked(noteID string) (bool, error)            { return false, nil }
 func (m *mockStore) GetLockedNotesClipPaths() ([]string, error)          { return nil, nil }
 func (m *mockStore) ClearNoteClipPathsByNames(_ []string) (int64, error) { return 0, nil }
+func (m *mockStore) RetainNoteSpectrogramsByClipNames(_ []string) (int64, error) {
+	return 0, nil
+}
+func (m *mockStore) GetNoteClipReferences(_ uint, _ int) ([]diskmanager.ClipReference, error) {
+	return nil, nil
+}
 func (m *mockStore) CountHourlyDetections(date, hour string, duration int) (int64, error) {
 	return 0, nil
 }
-func (m *mockStore) GetDailyAnalyticsData(ctx context.Context, startDate, endDate, species string, sourceIDs ...uint) ([]datastore.DailyAnalyticsData, error) {
+func (m *mockStore) GetDailyAnalyticsData(ctx context.Context, startDate, endDate, species string) ([]datastore.DailyAnalyticsData, error) {
 	return []datastore.DailyAnalyticsData{}, nil
 }
-func (m *mockStore) GetDetectionTrends(ctx context.Context, period string, limit int, sourceIDs ...uint) ([]datastore.DailyAnalyticsData, error) {
+func (m *mockStore) GetDetectionTrends(ctx context.Context, period string, limit int) ([]datastore.DailyAnalyticsData, error) {
 	return []datastore.DailyAnalyticsData{}, nil
 }
-func (m *mockStore) GetHourlyAnalyticsData(ctx context.Context, date, species string, sourceIDs ...uint) ([]datastore.HourlyAnalyticsData, error) {
+func (m *mockStore) GetHourlyAnalyticsData(ctx context.Context, date, species string) ([]datastore.HourlyAnalyticsData, error) {
 	return []datastore.HourlyAnalyticsData{}, nil
 }
-func (m *mockStore) GetSpeciesSummaryData(ctx context.Context, startDate, endDate string, sourceIDs ...uint) ([]datastore.SpeciesSummaryData, error) {
+func (m *mockStore) GetSpeciesSummaryData(ctx context.Context, startDate, endDate string) ([]datastore.SpeciesSummaryData, error) {
 	return []datastore.SpeciesSummaryData{}, nil
 }
 func (m *mockStore) SearchDetections(filters *datastore.SearchFilters) ([]datastore.DetectionRecord, int, error) {
@@ -243,7 +287,7 @@ func (m *mockStore) SearchDetections(filters *datastore.SearchFilters) ([]datast
 
 // Dynamic threshold methods
 func (m *mockStore) SaveDynamicThreshold(threshold *datastore.DynamicThreshold) error { return nil }
-func (m *mockStore) GetDynamicThreshold(speciesName, modelName string) (*datastore.DynamicThreshold, error) {
+func (m *mockStore) GetDynamicThreshold(speciesName string) (*datastore.DynamicThreshold, error) {
 	return nil, fmt.Errorf("not found")
 }
 func (m *mockStore) GetAllDynamicThresholds(limit ...int) ([]datastore.DynamicThreshold, error) {
@@ -276,47 +320,73 @@ func (m *mockStore) DeleteThresholdEvents(string) error       { return nil }
 func (m *mockStore) DeleteAllThresholdEvents() (int64, error) { return 0, nil }
 
 // GetHourlyDistribution implements the datastore.Interface GetHourlyDistribution method
-func (m *mockStore) GetHourlyDistribution(ctx context.Context, startDate, endDate, species string, sourceIDs ...uint) ([]datastore.HourlyDistributionData, error) {
+func (m *mockStore) GetHourlyDistribution(ctx context.Context, startDate, endDate, species string) ([]datastore.HourlyDistributionData, error) {
 	// Default implementation returns empty array for this mock
 	return []datastore.HourlyDistributionData{}, nil
 }
 
 // GetNewSpeciesDetections implements the datastore.Interface GetNewSpeciesDetections method
-func (m *mockStore) GetNewSpeciesDetections(ctx context.Context, startDate, endDate string, limit, offset int, sourceIDs ...uint) ([]datastore.NewSpeciesData, error) {
+func (m *mockStore) GetNewSpeciesDetections(ctx context.Context, startDate, endDate string, limit, offset int) ([]datastore.NewSpeciesData, error) {
 	// This is a mock test implementation, so we'll return empty data
 	return []datastore.NewSpeciesData{}, nil
 }
 
 // GetSpeciesFirstDetectionInPeriod implements the datastore.Interface GetSpeciesFirstDetectionInPeriod method
-func (m *mockStore) GetSpeciesFirstDetectionInPeriod(ctx context.Context, startDate, endDate string, limit, offset int, sourceIDs ...uint) ([]datastore.NewSpeciesData, error) {
+func (m *mockStore) GetSpeciesFirstDetectionInPeriod(ctx context.Context, startDate, endDate string, limit, offset int) ([]datastore.NewSpeciesData, error) {
 	// This is a mock test implementation, so we'll return empty data
 	return []datastore.NewSpeciesData{}, nil
 }
 
-func (m *mockStore) GetSpeciesDiversityData(_ context.Context, _, _ string, _ ...uint) ([]datastore.DailyAnalyticsData, error) {
+func (m *mockStore) GetSpeciesDiversityData(_ context.Context, _, _ string) ([]datastore.DailyAnalyticsData, error) {
 	return nil, nil
+}
+func (m *mockStore) GetActivityHeatmap(_ context.Context, _, _, _ string) (datastore.ActivityHeatmapData, error) {
+	return datastore.ActivityHeatmapData{}, nil
+}
+func (m *mockStore) GetHourlyDistributionBySpecies(_ context.Context, _, _ string, _ []string, _ int) ([]datastore.SpeciesHourlyDistribution, error) {
+	return []datastore.SpeciesHourlyDistribution{}, nil
+}
+func (m *mockStore) GetDailyActivityOnset(_ context.Context, _, _, _ string) ([]datastore.DailyActivityOnset, error) {
+	return []datastore.DailyActivityOnset{}, nil
+}
+
+func (m *mockStore) GetConfidenceHistogram(_ context.Context, _, _, _ string, _, _ int) ([]datastore.SpeciesConfidenceHistogram, error) {
+	return []datastore.SpeciesConfidenceHistogram{}, nil
+}
+func (m *mockStore) GetSpeciesAccumulation(_ context.Context, _, _ string) ([]datastore.SpeciesAccumulationPoint, error) {
+	return []datastore.SpeciesAccumulationPoint{}, nil
+}
+func (m *mockStore) GetAudioSources(_ context.Context, _, _ string) ([]datastore.AudioSourceSummary, error) {
+	return []datastore.AudioSourceSummary{}, nil
+}
+func (m *mockStore) GetYearOverYear(_ context.Context, _ string) (datastore.YearOverYearResult, error) {
+	return datastore.YearOverYearResult{Points: []datastore.YearOverYearPoint{}}, nil
+}
+func (m *mockStore) GetSpeciesPhenology(_ context.Context, _, _ string, _ int) ([]datastore.SpeciesPhenologyPoint, error) {
+	return []datastore.SpeciesPhenologyPoint{}, nil
+}
+func (m *mockStore) GetAcousticSuccession(_ context.Context, _, _ string, _ []string, _ int) ([]datastore.SpeciesHourlyCounts, error) {
+	return []datastore.SpeciesHourlyCounts{}, nil
 }
 
 // BG-17 fix: Add notification history methods
-func (m *mockStore) GetActiveNotificationHistory(after time.Time) ([]datastore.NotificationHistory, error) {
+func (m *mockStore) GetActiveNotificationHistory(_ context.Context, after time.Time) ([]datastore.NotificationHistory, error) {
 	return []datastore.NotificationHistory{}, nil
 }
 
-func (m *mockStore) GetNotificationHistory(scientificName, notificationType string) (*datastore.NotificationHistory, error) {
+func (m *mockStore) GetNotificationHistory(_ context.Context, scientificName, notificationType string) (*datastore.NotificationHistory, error) {
 	return nil, datastore.ErrNotificationHistoryNotFound
 }
 
-func (m *mockStore) SaveNotificationHistory(history *datastore.NotificationHistory) error {
+func (m *mockStore) SaveNotificationHistory(_ context.Context, history *datastore.NotificationHistory) error {
 	return nil
 }
 
-func (m *mockStore) DeleteExpiredNotificationHistory(before time.Time) (int64, error) {
+func (m *mockStore) DeleteExpiredNotificationHistory(_ context.Context, before time.Time) (int64, error) {
 	return 0, nil
 }
 
-func (m *mockStore) SchemaVersion() string                           { return datastore.SchemaVersionLegacy }
-func (m *mockStore) UpdateNameMaps(_ []string)                       {}
-func (m *mockStore) SetNameResolver(_ datastore.SpeciesNameResolver) {}
+func (m *mockStore) SchemaVersion() string { return datastore.SchemaVersionLegacy }
 func (m *mockStore) GetDatabaseStats(_ context.Context) (*datastore.DatabaseStats, error) {
 	return &datastore.DatabaseStats{
 		Type:      "mock",
@@ -379,9 +449,7 @@ type mockFailingStore struct {
 
 func newMockFailingStore() *mockFailingStore {
 	return &mockFailingStore{
-		mockStore: mockStore{
-			images: make(map[string]*datastore.ImageCache),
-		},
+		images: make(map[string]*datastore.ImageCache),
 	}
 }
 
@@ -413,57 +481,66 @@ func (m *mockFailingStore) GetImageCacheBatch(providerName string, scientificNam
 	return m.mockStore.GetImageCacheBatch(providerName, scientificNames)
 }
 
-func (m *mockFailingStore) GetDailyAnalyticsData(ctx context.Context, startDate, endDate, species string, sourceIDs ...uint) ([]datastore.DailyAnalyticsData, error) {
+func (m *mockFailingStore) GetDailyAnalyticsData(ctx context.Context, startDate, endDate, species string) ([]datastore.DailyAnalyticsData, error) {
 	if m.failGetAllCache {
 		return nil, fmt.Errorf("simulated database error")
 	}
-	return m.mockStore.GetDailyAnalyticsData(ctx, startDate, endDate, species, sourceIDs...)
+	return m.mockStore.GetDailyAnalyticsData(ctx, startDate, endDate, species)
 }
 
-func (m *mockFailingStore) GetDetectionTrends(ctx context.Context, period string, limit int, sourceIDs ...uint) ([]datastore.DailyAnalyticsData, error) {
+func (m *mockFailingStore) GetDetectionTrends(ctx context.Context, period string, limit int) ([]datastore.DailyAnalyticsData, error) {
 	if m.failGetAllCache {
 		return nil, fmt.Errorf("simulated database error")
 	}
-	return m.mockStore.GetDetectionTrends(ctx, period, limit, sourceIDs...)
+	return m.mockStore.GetDetectionTrends(ctx, period, limit)
 }
 
-func (m *mockFailingStore) GetHourlyAnalyticsData(ctx context.Context, date, species string, sourceIDs ...uint) ([]datastore.HourlyAnalyticsData, error) {
+func (m *mockFailingStore) GetHourlyAnalyticsData(ctx context.Context, date, species string) ([]datastore.HourlyAnalyticsData, error) {
 	if m.failGetAllCache {
 		return nil, fmt.Errorf("simulated database error")
 	}
-	return m.mockStore.GetHourlyAnalyticsData(ctx, date, species, sourceIDs...)
+	return m.mockStore.GetHourlyAnalyticsData(ctx, date, species)
 }
 
-func (m *mockFailingStore) GetSpeciesSummaryData(ctx context.Context, startDate, endDate string, sourceIDs ...uint) ([]datastore.SpeciesSummaryData, error) {
-	return m.mockStore.GetSpeciesSummaryData(ctx, startDate, endDate, sourceIDs...)
+func (m *mockFailingStore) GetSpeciesSummaryData(ctx context.Context, startDate, endDate string) ([]datastore.SpeciesSummaryData, error) {
+	return m.mockStore.GetSpeciesSummaryData(ctx, startDate, endDate)
 }
 
-func (m *mockFailingStore) GetNewSpeciesDetections(ctx context.Context, startDate, endDate string, limit, offset int, sourceIDs ...uint) ([]datastore.NewSpeciesData, error) {
+func (m *mockFailingStore) GetNewSpeciesDetections(ctx context.Context, startDate, endDate string, limit, offset int) ([]datastore.NewSpeciesData, error) {
 	if m.failGetAllCache {
 		return nil, fmt.Errorf("simulated database error")
 	}
-	return m.mockStore.GetNewSpeciesDetections(ctx, startDate, endDate, limit, offset, sourceIDs...)
+	return m.mockStore.GetNewSpeciesDetections(ctx, startDate, endDate, limit, offset)
 }
 
-func (m *mockFailingStore) GetSpeciesFirstDetectionInPeriod(ctx context.Context, startDate, endDate string, limit, offset int, sourceIDs ...uint) ([]datastore.NewSpeciesData, error) {
+func (m *mockFailingStore) GetSpeciesFirstDetectionInPeriod(ctx context.Context, startDate, endDate string, limit, offset int) ([]datastore.NewSpeciesData, error) {
 	if m.failGetAllCache {
 		return nil, fmt.Errorf("simulated database error")
 	}
-	return m.mockStore.GetSpeciesFirstDetectionInPeriod(ctx, startDate, endDate, limit, offset, sourceIDs...)
+	return m.mockStore.GetSpeciesFirstDetectionInPeriod(ctx, startDate, endDate, limit, offset)
 }
 
 // verifyCacheEntry validates that an image was cached correctly in the store.
 // Note: CreateDefaultCache uses "wikimedia" as the provider name.
+//
+// The entry must exist. Treating "not cached yet" as acceptable made this helper
+// vacuous: a total saveToDB breakage would return ErrImageCacheNotFound for every
+// species and every caller would still pass. saveToDB is asynchronous, so the
+// lookup is retried briefly rather than checked once.
 func verifyCacheEntry(t *testing.T, store *mockStore, scientificName, expectedURL string) {
 	t.Helper()
-	cached, err := store.GetImageCache(datastore.ImageCacheQuery{ScientificName: scientificName, ProviderName: "wikimedia"})
-	if errors.Is(err, datastore.ErrImageCacheNotFound) {
-		return // Not cached yet is acceptable
-	}
-	require.NoError(t, err, "Failed to get cached image")
-	if cached != nil {
-		assert.Equal(t, expectedURL, cached.URL, "Cached URL mismatch")
-	}
+
+	var cached *datastore.ImageCache
+	require.Eventuallyf(t, func() bool {
+		entry, err := store.GetImageCache(datastore.ImageCacheQuery{ScientificName: scientificName, ProviderName: "wikimedia"})
+		if err != nil || entry == nil {
+			return false
+		}
+		cached = entry
+		return true
+	}, 2*time.Second, 10*time.Millisecond, "image for %q was never written to the DB cache", scientificName)
+
+	assert.Equal(t, expectedURL, cached.URL, "Cached URL mismatch")
 }
 
 // TestBirdImageCache tests the BirdImageCache implementation
@@ -561,11 +638,11 @@ func TestCreateDefaultCache(t *testing.T) {
 func TestBirdImageEstimateSize(t *testing.T) {
 	t.Parallel()
 	img := imageprovider.BirdImage{
-		URL:         "http://example.com/bird.jpg",
+		URL:         "http://127.0.0.1/bird.jpg",
 		LicenseName: "CC BY-SA 4.0",
 		LicenseURL:  "https://creativecommons.org/licenses/by-sa/4.0/",
 		AuthorName:  "Test Author",
-		AuthorURL:   "http://example.com/author",
+		AuthorURL:   "http://127.0.0.1/author",
 		CachedAt:    time.Now(),
 	}
 
@@ -681,11 +758,11 @@ func TestBirdImageCacheRefresh(t *testing.T) {
 	// Create a cache entry that's older than TTL
 	oldEntry := &datastore.ImageCache{
 		ScientificName: "Turdus merula",
-		URL:            "http://example.com/old.jpg",
+		URL:            "http://127.0.0.1/old.jpg",
 		LicenseName:    "CC BY-SA 4.0",
 		LicenseURL:     "https://creativecommons.org/licenses/by-sa/4.0/",
 		AuthorName:     "Old Author",
-		AuthorURL:      "http://example.com/old-author",
+		AuthorURL:      "http://127.0.0.1/old-author",
 		CachedAt:       time.Now().Add(-31 * 24 * time.Hour), // 31 days old
 		ProviderName:   "wikimedia",                          // Add provider name to match the default cache provider
 	}
@@ -924,12 +1001,14 @@ func TestUserRequestsNotRateLimited(t *testing.T) {
 
 	duration := time.Since(start)
 
-	// If rate limiting was applied (2 req/s), 10 requests would take at least 5 seconds
-	// Without rate limiting, it should complete much faster (allowing for actual API latency)
-	// Increase timeout to 4 seconds to account for network variability
-	assert.LessOrEqual(t, duration, 4*time.Second, "User requests appear to be rate limited. Duration: %v, expected < 4s", duration)
+	// Rate limiting at 2 req/s would put 10 requests at 5 seconds or more, so the
+	// bound has to sit below that to detect it at all. The provider is a 1ms
+	// mock, so the real figure is milliseconds and 4s is pure CI headroom.
+	const rateLimitDetectionBound = 4 * time.Second
+	assert.LessOrEqual(t, duration, rateLimitDetectionBound,
+		"User requests appear to be rate limited. Duration: %v, expected < %v", duration, rateLimitDetectionBound)
 
-	t.Logf("10 user requests completed in %v (no rate limiting, threshold: 4s)", duration)
+	t.Logf("10 user requests completed in %v (no rate limiting, threshold: %v)", duration, rateLimitDetectionBound)
 }
 
 // populateStaleEntries adds stale cache entries to the store to trigger background refresh.
@@ -941,67 +1020,90 @@ func populateStaleEntries(t *testing.T, store *mockStore, count int) {
 		err := store.SaveImageCache(&datastore.ImageCache{
 			ScientificName: species,
 			ProviderName:   "wikimedia",
-			URL:            fmt.Sprintf("http://example.com/old_%s.jpg", species),
+			URL:            fmt.Sprintf("http://127.0.0.1/old_%s.jpg", species),
 			CachedAt:       staleTime,
 		})
 		require.NoError(t, err, "Failed to save stale cache entry")
 	}
 }
 
-// monitorBackgroundFetches collects fetch attempts and returns when enough are detected or timeout.
-func monitorBackgroundFetches(t *testing.T, fetchAttempts <-chan struct{}, maxExpected int) {
+// awaitPacedBackgroundFetches waits for the background sweep's first two fetches and
+// asserts they are spaced by at least the configured refresh delay.
+//
+// Zero fetches is a failure, not a skip: background refresh not running at all is
+// exactly the regression this helper exists to catch, and the earlier version skipped
+// on that condition, which made the test green for the bug.
+//
+// The gap is the assertion that actually pins pacing. A count ceiling does not: the
+// sweep waits refreshDelay (2s) before each entry, so within any short window the count
+// is deterministically 1 and "count <= number of stale entries" can never fail, even
+// with the pacing removed entirely.
+func awaitPacedBackgroundFetches(t *testing.T, fetchAttempts <-chan time.Time) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), backgroundFetchWaitTimeout)
 	defer cancel()
 
-	fetchCount := 0
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
+	first, ok := awaitFetch(ctx, fetchAttempts)
+	if !ok {
+		t.Fatalf("no background fetch observed within %s: background refresh did not run", backgroundFetchWaitTimeout)
+	}
+	second, ok := awaitFetch(ctx, fetchAttempts)
+	if !ok {
+		t.Fatalf("only one background fetch observed within %s: cannot verify pacing", backgroundFetchWaitTimeout)
+	}
 
-	for {
-		select {
-		case <-fetchAttempts:
-			fetchCount++
-			t.Logf("Background fetch attempt %d detected", fetchCount)
-		case <-ticker.C:
-			if fetchCount > 0 && fetchCount <= maxExpected {
-				t.Logf("Background fetches completed: %d (expected <= %d)", fetchCount, maxExpected)
-				return
-			}
-		case <-ctx.Done():
-			if fetchCount == 0 {
-				t.Skip("No background fetches detected - background refresh might not have started")
-			}
-			t.Logf("Test completed with %d background fetches", fetchCount)
-			return
-		}
+	gap := second.Sub(first)
+	t.Logf("Gap between the first two background fetches: %s (minimum %s)", gap, imageprovider.RefreshDelay)
+
+	// Allow a small tolerance: the sweep sleeps refreshDelay, and the timestamp is taken
+	// inside the provider, so scheduling can shave a little off the observed gap.
+	minGap := imageprovider.RefreshDelay - imageprovider.RefreshDelay/10
+	assert.GreaterOrEqual(t, gap, minGap,
+		"background refresh must pace its fetches by at least %s", imageprovider.RefreshDelay)
+}
+
+// awaitFetch returns the next fetch timestamp, or ok=false if the context expires first.
+func awaitFetch(ctx context.Context, fetchAttempts <-chan time.Time) (ts time.Time, ok bool) {
+	select {
+	case ts = <-fetchAttempts:
+		return ts, true
+	case <-ctx.Done():
+		return time.Time{}, false
 	}
 }
 
-// TestBackgroundRequestsRateLimited tests that background requests are subject to rate limiting
+// TestBackgroundRequestsRateLimited tests that background requests are subject to rate limiting.
+//
+// Ordering here is load-bearing. refreshInterval is one hour, so the only prompt sweep
+// is the immediate one startCacheRefresh runs at construction. The previous version
+// created the cache first and populated the stale entries afterwards, so that sweep
+// almost always read an empty store and no background fetch ever happened; the test
+// only passed by winning a race. The store is now seeded first, and the provider is
+// passed to InitCache rather than attached afterwards with SetImageProvider, so the
+// sweep cannot start before the provider exists.
 func TestBackgroundRequestsRateLimited(t *testing.T) {
 	t.Parallel()
 
-	fetchAttempts := make(chan struct{}, 10)
+	const numStaleEntries = 5
+
+	fetchAttempts := make(chan time.Time, 2*numStaleEntries)
 	mockProvider := &mockProviderWithContext{
-		mockImageProvider: mockImageProvider{fetchDelay: 5 * time.Millisecond},
-		fetchChannel:      fetchAttempts,
+		fetchDelay:   5 * time.Millisecond,
+		fetchChannel: fetchAttempts,
 	}
 
 	store := newMockStore()
 	metrics, err := observability.NewMetrics()
 	require.NoError(t, err, "Failed to create metrics")
 
-	cache, err := imageprovider.CreateDefaultCache(metrics, store)
-	require.NoError(t, err, "Failed to create default cache")
-	cache.SetImageProvider(mockProvider)
+	populateStaleEntries(t, store, numStaleEntries)
+
+	cache := imageprovider.InitCache("wikimedia", mockProvider, metrics, store)
 	t.Cleanup(func() {
 		require.NoError(t, cache.Close(), "Failed to close cache")
 	})
 
-	numStaleEntries := 5
-	populateStaleEntries(t, store, numStaleEntries)
-	monitorBackgroundFetches(t, fetchAttempts, numStaleEntries)
+	awaitPacedBackgroundFetches(t, fetchAttempts)
 }
 
 // mockProviderWithContext extends mockImageProvider to support context-aware fetching
@@ -1009,13 +1111,13 @@ type mockProviderWithContext struct {
 	mockImageProvider
 	backgroundFetches int
 	mu2               sync.Mutex
-	fetchChannel      chan<- struct{}
+	fetchChannel      chan<- time.Time
 }
 
 func (m *mockProviderWithContext) FetchWithContext(ctx context.Context, scientificName string) (imageprovider.BirdImage, error) {
 	// Check if it's a background operation
 	if ctx != nil {
-		if bg, ok := ctx.Value("background").(bool); ok && bg {
+		if imageprovider.IsBackgroundContext(ctx) {
 			m.mu2.Lock()
 			m.backgroundFetches++
 			m.mu2.Unlock()
@@ -1023,7 +1125,7 @@ func (m *mockProviderWithContext) FetchWithContext(ctx context.Context, scientif
 			// Signal through channel if available
 			if m.fetchChannel != nil {
 				select {
-				case m.fetchChannel <- struct{}{}:
+				case m.fetchChannel <- time.Now():
 				default:
 				}
 			}
@@ -1037,11 +1139,8 @@ func TestMain(m *testing.M) {
 	conftest.NewTestSettings().Apply()
 
 	goleak.VerifyTestMain(m,
-		goleak.IgnoreTopFunction("testing.(*T).Run"),
-		goleak.IgnoreTopFunction("runtime.gopark"),
-		goleak.IgnoreTopFunction("gopkg.in/natefinch/lumberjack%2ev2.(*Logger).millRun"),
-		// Ignore the cache refresh goroutine pattern - it should be properly cleaned up by Close()
-		goleak.IgnoreTopFunction("github.com/tphakala/birdnet-go/internal/imageprovider.(*BirdImageCache).startCacheRefresh.func1"),
+		// NOTE: startCacheRefresh.func1 is deliberately NOT ignored. Close() stops it, so
+		// ignoring it hid every test that constructed a cache and never closed it.
 		// Ignore HTTP/2 client connection goroutines from the shared imageHTTPClient
 		goleak.IgnoreAnyFunction("net/http.(*http2clientConnReadLoop).run"),
 	)

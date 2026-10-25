@@ -1,9 +1,15 @@
 package processor
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/tphakala/birdnet-go/internal/classifier"
 	"github.com/tphakala/birdnet-go/internal/conf"
 )
 
@@ -224,27 +230,6 @@ func TestHelperFunctions(t *testing.T) {
 		}
 	})
 
-	t.Run("getHardwareRequirementForLevel", func(t *testing.T) {
-		tests := []struct {
-			level    int
-			hardware string
-		}{
-			{0, "Any (RPi 3B or better)"},
-			{1, "Any (RPi 3B or better)"},
-			{2, "Any (RPi 3B or better)"},
-			{3, "Any (RPi 3B or better)"},
-			{4, "RPi 4 or better required"},
-			{5, "RPi 4 or better required"},
-			{99, "Unknown"}, // Invalid level should return "Unknown"
-			{-1, "Unknown"}, // Invalid level should return "Unknown"
-		}
-
-		for _, tt := range tests {
-			result := getHardwareRequirementForLevel(tt.level)
-			assert.Equal(t, tt.hardware, result, "Level %d", tt.level)
-		}
-	})
-
 	t.Run("getLevelDescription", func(t *testing.T) {
 		tests := []struct {
 			level         int
@@ -254,8 +239,8 @@ func TestHelperFunctions(t *testing.T) {
 			{1, []string{"Lenient", "2 confirmations", "RTSP", "surveillance"}},
 			{2, []string{"Moderate", "3 confirmations", "Balanced", "hobby"}},
 			{3, []string{"Balanced", "5 confirmations", "Original", "pre-September"}},
-			{4, []string{"Strict", "12 confirmations", "RPi 4+", "high-quality"}},
-			{5, []string{"Maximum", "21 confirmations", "RPi 4+", "professional-grade"}},
+			{4, []string{"Strict", "12 confirmations", "high-quality"}},
+			{5, []string{"Maximum", "21 confirmations", "professional-grade"}},
 		}
 
 		for _, tt := range tests {
@@ -265,6 +250,11 @@ func TestHelperFunctions(t *testing.T) {
 			for _, phrase := range tt.shouldContain {
 				assert.Contains(t, result, phrase, "Level %d: description missing expected phrase", tt.level)
 			}
+		}
+
+		// No description makes a fixed hardware claim.
+		for level := 0; level <= 5; level++ {
+			assert.NotContains(t, getLevelDescription(level), "RPi", "Level %d", level)
 		}
 
 		// Test invalid level
@@ -694,111 +684,6 @@ func TestValidateOverlapForLevel(t *testing.T) {
 	}
 }
 
-// TestWarnAboutHardwareRequirements verifies hardware warning logic for high filter levels.
-func TestWarnAboutHardwareRequirements(t *testing.T) {
-	tests := []struct {
-		name          string
-		level         int
-		overlap       float64
-		expectWarning bool
-		description   string
-	}{
-		{
-			name:          "level_0_no_warning",
-			level:         0,
-			overlap:       2.0,
-			expectWarning: false,
-			description:   "Level 0 should not trigger hardware warnings",
-		},
-		{
-			name:          "level_1_no_warning",
-			level:         1,
-			overlap:       2.0,
-			expectWarning: false,
-			description:   "Level 1 should not trigger hardware warnings",
-		},
-		{
-			name:          "level_2_no_warning",
-			level:         2,
-			overlap:       2.2,
-			expectWarning: false,
-			description:   "Level 2 should not trigger hardware warnings",
-		},
-		{
-			name:          "level_3_no_warning",
-			level:         3,
-			overlap:       2.4,
-			expectWarning: false,
-			description:   "Level 3 should not trigger hardware warnings",
-		},
-		{
-			name:          "level_4_valid_overlap",
-			level:         4,
-			overlap:       2.7,
-			expectWarning: true,
-			description:   "Level 4 should warn about hardware requirements",
-		},
-		{
-			name:          "level_5_valid_overlap",
-			level:         5,
-			overlap:       2.8,
-			expectWarning: true,
-			description:   "Level 5 should warn about hardware requirements",
-		},
-		{
-			name:          "level_4_overlap_too_high",
-			level:         4,
-			overlap:       3.0,
-			expectWarning: true,
-			description:   "Level 4 with overlap >= 3.0 should warn about invalid calculation",
-		},
-		{
-			name:          "level_5_overlap_too_high",
-			level:         5,
-			overlap:       3.1,
-			expectWarning: true,
-			description:   "Level 5 with overlap >= 3.0 should warn about invalid calculation",
-		},
-		{
-			name:          "level_4_overlap_2.5",
-			level:         4,
-			overlap:       2.5,
-			expectWarning: true,
-			description:   "Level 4 with overlap 2.5 should calculate 500ms max inference time",
-		},
-		{
-			name:          "level_5_overlap_2.9",
-			level:         5,
-			overlap:       2.9,
-			expectWarning: true,
-			description:   "Level 5 with overlap 2.9 should calculate 100ms max inference time",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Call the function - it will log but we mainly verify it doesn't panic
-			warnAboutHardwareRequirements(tt.level, tt.overlap)
-
-			// Verify the warning condition
-			shouldWarn := tt.level >= 4
-			assert.Equal(t, tt.expectWarning, shouldWarn,
-				"%s: level=%d", tt.description, tt.level)
-
-			// For high levels with valid overlap, verify inference time calculation logic
-			if tt.level >= 4 && tt.overlap < 3.0 {
-				stepSize := 3.0 - tt.overlap
-				maxInferenceTime := stepSize * 1000
-				t.Logf("Level %d with overlap %.1f requires inference < %.0fms",
-					tt.level, tt.overlap, maxInferenceTime)
-
-				// Sanity check the calculation
-				assert.Greater(t, maxInferenceTime, 0.0, "Invalid max inference time calculation: %.0fms", maxInferenceTime)
-			}
-		})
-	}
-}
-
 // TestValidateAndLogFilterConfig_Integration verifies the main validation function
 // correctly delegates to helper functions based on filter level configuration.
 func TestValidateAndLogFilterConfig_Integration(t *testing.T) {
@@ -827,16 +712,16 @@ func TestValidateAndLogFilterConfig_Integration(t *testing.T) {
 			description: "Level 3 should call validateOverlapForLevel",
 		},
 		{
-			name:        "level_4_calls_validate_and_warn",
+			name:        "level_4_calls_validate",
 			level:       4,
 			overlap:     2.7,
-			description: "Level 4 should call both validateOverlapForLevel and warnAboutHardwareRequirements",
+			description: "Level 4 should call validateOverlapForLevel",
 		},
 		{
-			name:        "level_5_calls_validate_and_warn",
+			name:        "level_5_calls_validate",
 			level:       5,
 			overlap:     2.8,
-			description: "Level 5 should call both validateOverlapForLevel and warnAboutHardwareRequirements",
+			description: "Level 5 should call validateOverlapForLevel",
 		},
 	}
 
@@ -946,9 +831,9 @@ func TestCalculateBatMinDetections(t *testing.T) {
 	}
 }
 
-// TestCalculateMinDetectionsForModel verifies that the model-aware router
+// TestMinDetectionsForModel verifies that the model-aware router
 // dispatches to the correct calculation based on model ID.
-func TestCalculateMinDetectionsForModel(t *testing.T) {
+func TestMinDetectionsForModel(t *testing.T) {
 	t.Parallel()
 
 	settings := &conf.Settings{}
@@ -956,8 +841,8 @@ func TestCalculateMinDetectionsForModel(t *testing.T) {
 	settings.BirdNET.Overlap = 2.4
 	settings.Bat.FalsePositiveFilter.Level = 3
 
-	birdResult := calculateMinDetectionsForModel(settings, "BirdNET_V2.4")
-	batResult := calculateMinDetectionsForModel(settings, "Bat")
+	birdResult := MinDetectionsForModel(settings, "BirdNET_V2.4", classifier.ConfiguredBaseOverlap(settings))
+	batResult := MinDetectionsForModel(settings, "Bat", classifier.ConfiguredBaseOverlap(settings))
 
 	// Bird: level 3, overlap 2.4, step 0.6s, max 10, 50% = 5
 	assert.Equal(t, 5, birdResult, "BirdNET model should use bird FP filter calculation")
@@ -1001,6 +886,81 @@ func TestGetBaseConfidenceThreshold_CustomOverridesModel(t *testing.T) {
 	assert.InDelta(t, 0.5, float64(threshold), 0.001, "custom species threshold should override bat global threshold")
 }
 
+// TestModelGlobalConfidenceThreshold verifies the per-model base threshold
+// selection: Bat always uses its own threshold, Perch v2 and BirdNET v3.0 use
+// theirs only when their override toggle is on, and everything else follows the
+// primary BirdNET threshold.
+func TestModelGlobalConfidenceThreshold(t *testing.T) {
+	t.Parallel()
+
+	newSettings := func() *conf.Settings {
+		s := &conf.Settings{}
+		s.BirdNET.Threshold = 0.8
+		s.Bat.Threshold = 0.3
+		s.Perch.Threshold = 0.5
+		s.BirdNETV3.Threshold = 0.6
+		return s
+	}
+
+	tests := []struct {
+		name          string
+		modelID       string
+		perchOverride bool
+		v3Override    bool
+		want          float64
+	}{
+		{"birdnet primary uses birdnet threshold", "BirdNET_V2.4", false, false, 0.8},
+		{"bat always uses bat threshold", classifier.RegistryIDBat, false, false, 0.3},
+		{"perch without override follows birdnet", classifier.RegistryIDPerchV2, false, false, 0.8},
+		{"perch with override uses perch threshold", classifier.RegistryIDPerchV2, true, false, 0.5},
+		{"birdnetv3 without override follows birdnet", classifier.RegistryIDBirdNETV3, false, false, 0.8},
+		{"birdnetv3 with override uses its threshold", classifier.RegistryIDBirdNETV3, false, true, 0.6},
+		{"unknown model follows birdnet", "SomeOtherModel", true, true, 0.8},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			settings := newSettings()
+			settings.Perch.OverrideThreshold = tt.perchOverride
+			settings.BirdNETV3.OverrideThreshold = tt.v3Override
+
+			got := modelGlobalConfidenceThreshold(settings, tt.modelID)
+			assert.InDelta(t, tt.want, float64(got), 0.001)
+		})
+	}
+}
+
+// TestGetBaseConfidenceThreshold_PerchOverride verifies Perch v2 detections
+// follow the BirdNET threshold unless the Perch override toggle is enabled, and
+// that a per-species custom threshold still wins regardless of the toggle.
+func TestGetBaseConfidenceThreshold_PerchOverride(t *testing.T) {
+	t.Parallel()
+
+	settings := &conf.Settings{}
+	settings.BirdNET.Threshold = 0.8
+	settings.Perch.Threshold = 0.5
+
+	p := &Processor{Settings: settings}
+
+	// Override off: Perch follows BirdNET.
+	settings.Perch.OverrideThreshold = false
+	off := p.getBaseConfidenceThreshold(settings, "American Robin", "Turdus migratorius", classifier.RegistryIDPerchV2)
+	assert.InDelta(t, 0.8, float64(off), 0.001, "perch without override should follow BirdNET threshold")
+
+	// Override on: Perch uses its own threshold.
+	settings.Perch.OverrideThreshold = true
+	on := p.getBaseConfidenceThreshold(settings, "American Robin", "Turdus migratorius", classifier.RegistryIDPerchV2)
+	assert.InDelta(t, 0.5, float64(on), 0.001, "perch with override should use Perch threshold")
+
+	// Per-species custom threshold wins even with the override on.
+	settings.Realtime.Species.Config = map[string]conf.SpeciesConfig{
+		"american robin": {Threshold: 0.42},
+	}
+	custom := p.getBaseConfidenceThreshold(settings, "American Robin", "Turdus migratorius", classifier.RegistryIDPerchV2)
+	assert.InDelta(t, 0.42, float64(custom), 0.001, "custom species threshold should override the perch override")
+}
+
 // TestValidateAndLogBatFilterConfig verifies that invalid bat FP filter levels
 // are reset to 0 and valid levels are accepted.
 func TestValidateAndLogBatFilterConfig(t *testing.T) {
@@ -1029,4 +989,151 @@ func TestValidateAndLogBatFilterConfig(t *testing.T) {
 		validateAndLogBatFilterConfig(settings)
 		assert.Equal(t, 0, settings.Bat.FalsePositiveFilter.Level)
 	})
+}
+
+// TestFPInterval_MatchesBufferInterval is the regression guard for issue #4096:
+// the analysis step the false-positive filter assumes when computing
+// minDetections must equal the step the allocated analysis buffer actually
+// advances by (ModelSpec.BufferInterval with the resolved overlap). Before the
+// fix the buffer was hardcoded at 50% while the FP math used the configured
+// overlap, so the two diverged and legitimate detections were discarded.
+func TestFPInterval_MatchesBufferInterval(t *testing.T) {
+	t.Parallel()
+
+	birdSpec := classifier.ModelSpec{SampleRate: 48000, ClipLength: 3 * time.Second}
+
+	// BirdNET (3s clip): the FP filter's assumed segment is (3.0 - overlap)s.
+	// The buffer step is BufferInterval(ResolveModelOverlap), which must match.
+	for _, overlap := range []float64{0.0, 1.0, 1.5, 2.0, 2.4, 2.9} {
+		s := &conf.Settings{}
+		s.BirdNET.Overlap = overlap
+		resolved := classifier.ResolveModelOverlap("BirdNET_V2.4", birdSpec, classifier.ConfiguredBaseOverlap(s))
+		bufferStep := birdSpec.BufferInterval(resolved).Seconds()
+		fpSegment := 3.0 - overlap // the segment length calculateMinDetectionsFromSettings uses
+		assert.InDelta(t, fpSegment, bufferStep, 1e-6,
+			"overlap %.1f: FP segment %.3fs != buffer step %.3fs", overlap, fpSegment, bufferStep)
+	}
+
+	// Bat: fixed 50% overlap -> fixed 1.5s step, matching calculateBatMinDetections.
+	batSpec := classifier.ModelSpec{SampleRate: 48000, ClipLength: 3 * time.Second, RawSampleRate: 256000}
+	s := &conf.Settings{}
+	s.BirdNET.Overlap = 2.4 // ignored for bat
+	batStep := batSpec.BufferInterval(classifier.ResolveModelOverlap(classifier.RegistryIDBat, batSpec, classifier.ConfiguredBaseOverlap(s))).Seconds()
+	assert.InDelta(t, 1.5, batStep, 1e-6, "bat step must stay fixed at 1.5s regardless of overlap")
+}
+
+// TestCalculateBatMinDetections_AllLevels pins the bat model's minDetections
+// (fixed 1.5s step -> 4 possible detections in the 6s window) before the shared
+// formula refactor, so any behavior drift surfaces as a failure.
+func TestCalculateBatMinDetections_AllLevels(t *testing.T) {
+	t.Parallel()
+	cases := map[int]int{0: 1, 1: 1, 2: 2, 3: 2, 4: 3, 5: 3}
+	for level, want := range cases {
+		s := &conf.Settings{}
+		s.Bat.FalsePositiveFilter.Level = level
+		assert.Equal(t, want, calculateBatMinDetections(s), "bat level %d", level)
+	}
+}
+
+// TestMinDetectionsForModel_PerModelClip verifies that the runtime flush
+// path (MinDetectionsForModel) aligns the FP confirmation window with the
+// buffer cadence per model: BirdNET (3s) stays identical to the bird default,
+// while a 5s model (Perch) derives its step from its own clip and overlap so the
+// two subsystems agree (issue #4096).
+func TestMinDetectionsForModel_PerModelClip(t *testing.T) {
+	t.Parallel()
+
+	for _, overlap := range []float64{0.0, 1.5, 2.4} {
+		s := &conf.Settings{}
+		s.Realtime.FalsePositiveFilter.Level = 3
+		s.BirdNET.Overlap = overlap
+
+		// BirdNET 3s: routed path must equal the unchanged bird default.
+		assert.Equal(t, calculateMinDetectionsFromSettings(s, classifier.ConfiguredBaseOverlap(s)),
+			MinDetectionsForModel(s, "BirdNET_V2.4", classifier.ConfiguredBaseOverlap(s)),
+			"BirdNET routed minDetections must match the bird default (overlap %.1f)", overlap)
+
+		// Perch 5s: FP step must equal the model's buffer step (ratio-scaled overlap).
+		perchSpec := classifier.ModelRegistry[classifier.RegistryIDPerchV2].Spec
+		wantStep := perchSpec.BufferInterval(classifier.ResolveModelOverlap(classifier.RegistryIDPerchV2, perchSpec, classifier.ConfiguredBaseOverlap(s))).Seconds()
+		wantMin := minDetectionsForSegment(wantStep, 3)
+		assert.Equal(t, wantMin, MinDetectionsForModel(s, classifier.RegistryIDPerchV2, classifier.ConfiguredBaseOverlap(s)),
+			"Perch routed minDetections must derive from its 5s buffer step (overlap %.1f)", overlap)
+	}
+}
+
+// TestMinDetections_UsesEffectiveBaseOverlap pins that the confirmation count is
+// derived from the effective base overlap (the cadence cap) and not from the
+// configured birdnet.overlap, so the count matches the buffer's real step.
+func TestMinDetections_UsesEffectiveBaseOverlap(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		modelID   string
+		level     int
+		configure float64
+		effective time.Duration
+		want      int
+	}{
+		{"level 5 capped 3s path", "BirdNET_V2.4", 5, 2.8, 1800 * time.Millisecond, 4}, // step 1.2s: ceil(5*0.7) = 4
+		{"level 5 uncapped 3s path", "BirdNET_V2.4", 5, 2.8, 2800 * time.Millisecond, 21},
+		{"level 5 capped Perch 5s", classifier.RegistryIDPerchV2, 5, 2.8, 1800 * time.Millisecond, 3}, // overlap 3.0s, step 2.0s: ceil(3*0.7) = 3
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := &conf.Settings{}
+			s.Realtime.FalsePositiveFilter.Level = tt.level
+			s.BirdNET.Overlap = tt.configure
+			assert.Equal(t, tt.want, MinDetectionsForModel(s, tt.modelID, tt.effective))
+		})
+	}
+
+	t.Run("bat ignores base overlap", func(t *testing.T) {
+		t.Parallel()
+		s := &conf.Settings{}
+		s.Bat.FalsePositiveFilter.Level = 4
+		a := MinDetectionsForModel(s, classifier.RegistryIDBat, 0)
+		b := MinDetectionsForModel(s, classifier.RegistryIDBat, 2800*time.Millisecond)
+		assert.Equal(t, a, b)
+	})
+}
+
+func TestProcessorEffectiveBaseOverlap_NilBnUsesConfigured(t *testing.T) {
+	t.Parallel()
+	s := &conf.Settings{}
+	s.BirdNET.Overlap = 2.4
+	p := &Processor{}
+	assert.Equal(t, 2400*time.Millisecond, p.effectiveBaseOverlap(s))
+}
+
+// TestMinDetections_ParityFixture pins the confirmation counts in the fixture
+// shared with the frontend (frontend fpCadence.test.ts reads the same file), so
+// the settings page's estimate before saving cannot drift from the backend.
+func TestMinDetections_ParityFixture(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(filepath.Join("testdata", "fp_confirmations.json"))
+	require.NoError(t, err)
+	var rows []struct {
+		ModelID       string  `json:"modelId"`
+		ClipMs        int64   `json:"clipMs"`
+		OverlapSec    float64 `json:"overlapSec"`
+		Level         int     `json:"level"`
+		Confirmations int     `json:"confirmations"`
+	}
+	require.NoError(t, json.Unmarshal(data, &rows))
+	require.NotEmpty(t, rows)
+
+	for _, row := range rows {
+		info, ok := classifier.ModelRegistry[row.ModelID]
+		require.True(t, ok, row.ModelID)
+		assert.Equal(t, row.ClipMs, info.Spec.ClipLength.Milliseconds(), "fixture clip of %s", row.ModelID)
+		s := &conf.Settings{}
+		s.Realtime.FalsePositiveFilter.Level = row.Level
+		s.BirdNET.Overlap = row.OverlapSec
+		assert.Equal(t, row.Confirmations, MinDetectionsForModel(s, row.ModelID, classifier.ConfiguredBaseOverlap(s)),
+			"%s overlap %.1f level %d", row.ModelID, row.OverlapSec, row.Level)
+	}
 }

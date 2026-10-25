@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -90,15 +91,17 @@ type Server struct {
 	staticServer *StaticFileServer
 	spaHandler   *SPAHandler
 
-	// HTTP redirect server (when TLS is enabled with manual/self-signed certs)
-	httpRedirectServer *http.Server
+	// HTTP server for redirect/ACME challenges (when TLS is enabled). Stored from
+	// the startBlocking goroutine and read from ShutdownWithContext on another
+	// goroutine, so access goes through atomic load/store.
+	httpRedirectServer atomic.Pointer[http.Server]
 
 	// Lifecycle management
 	startTime time.Time
 }
 
 // currentSettings returns the latest *conf.Settings snapshot published via
-// conf.StoreSettings, or the server's constructor-provided pointer when no
+// conf.UpdateSettings, or the server's constructor-provided pointer when no
 // snapshot has been published yet (test harnesses that skip the global
 // publish, or early startup before the first Load). Routing the hot-path
 // middleware through this helper keeps the basepath resolution race-free
@@ -348,7 +351,7 @@ func (s *Server) initAuth() {
 
 // setupMiddleware configures the Echo middleware stack.
 func (s *Server) setupMiddleware() {
-	// HEAD→GET rewrite — runs before routing so HEAD requests match GET routes.
+	// HEAD→GET rewrite: runs before routing so HEAD requests match GET routes.
 	// Per RFC 9110 §9.3.2, HEAD must return the same status as GET.
 	// Go's net/http automatically suppresses the response body for HEAD.
 	s.echo.Pre(mw.NewHeadToGet())
@@ -366,7 +369,7 @@ func (s *Server) setupMiddleware() {
 	s.echo.Pre(func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			// Read the current *conf.Settings through the atomic pointer so a
-			// settings hot-reload (CoW publish via conf.StoreSettings) takes
+			// settings hot-reload (CoW publish via conf.UpdateSettings) takes
 			// effect for the next request without restart, and so readers
 			// never observe a torn view of the basepath field. Fall back to
 			// the constructor-provided pointer if no snapshot has been
@@ -404,7 +407,7 @@ func (s *Server) setupMiddleware() {
 					// sees mismatched Path/RawPath and may route inconsistently.
 					// hasPercentEncodedPrefix treats %XX hex digits
 					// case-insensitively so lowercase-hex-forwarding proxies
-					// also match. Fixes Forgejo #447.
+					// also match.
 					if req.URL.RawPath != "" {
 						encodedBP := (&url.URL{Path: bp}).EscapedPath()
 						if n := hasPercentEncodedPrefix(req.URL.RawPath, encodedBP); n >= 0 {
@@ -430,7 +433,7 @@ func (s *Server) setupMiddleware() {
 	// Recovery middleware - should be first
 	s.echo.Use(echomw.Recover())
 
-	// Base path context — makes the effective base path available to all handlers
+	// Base path context: makes the effective base path available to all handlers
 	// via c.Get("basePath"). Computed per-request from ingressPath() which checks
 	// proxy headers and config in priority order.
 	s.echo.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
@@ -443,7 +446,7 @@ func (s *Server) setupMiddleware() {
 	// Request logging using custom middleware package (uses centralized logger)
 	s.echo.Use(mw.NewRequestLogger())
 
-	// Security middleware configuration — start from defaults, override server-specific values
+	// Security middleware configuration: start from defaults, override server-specific values
 	securityConfig := mw.DefaultSecurityConfig()
 	securityConfig.AllowedOrigins = s.config.AllowedOrigins
 	securityConfig.AllowCredentials = true
@@ -452,15 +455,13 @@ func (s *Server) setupMiddleware() {
 	// CORS middleware
 	s.echo.Use(mw.NewCORS(securityConfig))
 
-	// CSRF protection middleware (uses centralized logger)
+	// CSRF protection middleware (uses centralized logger). NewCSRF neutralizes
+	// Echo v4.15's Sec-Fetch-Site short-circuit so every non-skipped state-changing
+	// request is token-validated, and Echo's token path refreshes the cookie's
+	// expiry on each request (GHSA-9fhj-f35q-w532).
 	s.echo.Use(mw.NewCSRF(&mw.CSRFConfig{
 		SecureCookie: s.config.TLSEnabled,
 	}))
-
-	// Refresh CSRF cookie expiration on every API request.
-	// Echo v4.15's Sec-Fetch-Site check short-circuits before the built-in
-	// cookie refresh code, so the cookie expires after 30 minutes without this.
-	s.echo.Use(mw.CSRFCookieRefresh(nil))
 
 	// Body limit middleware
 	s.echo.Use(mw.NewBodyLimit(s.config.BodyLimit))
@@ -472,14 +473,23 @@ func (s *Server) setupMiddleware() {
 	s.echo.Use(mw.NewSecureHeaders(securityConfig))
 }
 
+// healthCheckPath is the unauthenticated health endpoint. It is served over every
+// listener, including the plain-HTTP AutoTLS/redirect listener, so a container
+// healthcheck or load balancer can verify the server without a valid certificate.
+const healthCheckPath = "/health"
+
 // setupRoutes configures all HTTP routes.
 func (s *Server) setupRoutes() error {
 	// Health check endpoint at root level
-	s.echo.GET("/health", s.healthCheck)
+	s.echo.GET(healthCheckPath, s.healthCheck)
 
 	// Social OAuth routes (Google, GitHub, Microsoft)
 	// These must be at /auth/:provider to match frontend expectations
 	s.registerOAuthRoutes()
+
+	// pprof endpoints, registered unconditionally and gated per request so the
+	// setting hot-reloads. They are refused with 404 until profiling is enabled.
+	s.registerPprofRoutes()
 
 	// Initialize static file server for frontend assets (uses centralized logger)
 	s.staticServer = NewStaticFileServer()
@@ -512,6 +522,13 @@ func (s *Server) setupRoutes() error {
 	}
 	if s.healthErrors != nil {
 		v2Opts = append(v2Opts, apiv2.WithHealthErrorBuffer(s.healthErrors))
+	}
+	// Share the orchestrator-owned species-name index with the facade so it reads
+	// the same snapshot the orchestrator rebuilds from the union of loaded labels,
+	// rather than a facade-owned copy seeded only from the primary's labels. Without
+	// a processor (and thus an orchestrator) the facade keeps its own fallback.
+	if s.processor != nil && s.processor.Bn != nil {
+		v2Opts = append(v2Opts, apiv2.WithSpeciesIndex(s.processor.Bn.SpeciesIndex()))
 	}
 
 	// Initialize API v2 controller with auth middleware and service injected
@@ -611,8 +628,6 @@ func (s *Server) startBlocking() error {
 	var err error
 	switch {
 	case s.config.AutoTLS:
-		// AutoTLS with Let's Encrypt
-		s.slogger.Info("Starting with AutoTLS (Let's Encrypt)")
 		// Configure persistent cert cache so certificates survive restarts.
 		// Without this, Echo's AutoTLSManager has no storage backend and certs
 		// are lost on every shutdown, triggering a fresh ACME request each time
@@ -639,7 +654,51 @@ func (s *Server) startBlocking() error {
 				Build()
 		}
 		s.echo.AutoTLSManager.HostPolicy = autocert.HostWhitelist(host)
-		err = s.echo.StartAutoTLS(addr)
+
+		// Start HTTP server on the configured port for ACME HTTP-01 challenges.
+		// autocert.HTTPHandler serves the ACME challenges and passes non-ACME
+		// traffic to the fallback:
+		// - RedirectToHTTPS=false: serve the app over plain HTTP.
+		// - RedirectToHTTPS=true: 308-redirect to the external HTTPS URL. The
+		//   target authority is the advertised base URL / host (RedirectAuthority),
+		//   never the internal TLS port, which is unreachable behind container port
+		//   mappings such as host 443 -> container 8443.
+		var httpFallback http.Handler
+		if s.config.RedirectToHTTPS {
+			// Redirect non-ACME traffic to HTTPS, but keep serving the
+			// unauthenticated /health endpoint as JSON so a container healthcheck
+			// probing this plain-HTTP listener is answered with health status, not
+			// a 308 (which has no JSON body and fails the healthcheck's jq check).
+			httpFallback = s.healthOrRedirect(httpsRedirectHandler(s.config.RedirectAuthority, ""))
+		} else {
+			httpFallback = s.echo
+		}
+		redirectSrv := &http.Server{
+			Addr:         addr,
+			Handler:      s.echo.AutoTLSManager.HTTPHandler(httpFallback),
+			ReadTimeout:  s.config.ReadTimeout,
+			WriteTimeout: s.config.WriteTimeout,
+		}
+		s.httpRedirectServer.Store(redirectSrv)
+
+		// Pre-bind the HTTP listener so ACME challenges work. Fail fast if the
+		// port is unavailable rather than discovering it asynchronously.
+		httpLn, listenErr := net.Listen("tcp", addr)
+		if listenErr != nil {
+			return fmt.Errorf("AutoTLS: cannot bind HTTP listener on %s (required for ACME HTTP-01 challenges): %w", addr, listenErr)
+		}
+		go s.serveHTTPOnListener(redirectSrv, httpLn)
+
+		// Start HTTPS server on TLS port (this blocks)
+		tlsAddr := s.config.TLSAddress()
+		s.slogger.Info("Starting with AutoTLS (Let's Encrypt)",
+			logger.String("https_address", tlsAddr),
+			logger.String("http_address", addr),
+		)
+		err = s.echo.StartAutoTLS(tlsAddr)
+		if err != nil {
+			_ = redirectSrv.Close()
+		}
 	case s.config.TLSEnabled:
 		// Manual/Self-signed TLS: HTTPS on TLSPort, HTTP stays on configured port
 		tlsAddr := s.config.TLSAddress()
@@ -652,15 +711,18 @@ func (s *Server) startBlocking() error {
 
 		// Start HTTP redirect server on the regular port if configured
 		if s.config.RedirectToHTTPS {
-			s.httpRedirectServer = s.newHTTPRedirectServer(addr, s.config.TLSPort)
-			go s.serveHTTPRedirect()
+			redirectSrv := s.newHTTPRedirectServer(addr, s.config.TLSPort)
+			s.httpRedirectServer.Store(redirectSrv)
+			go s.serveHTTPRedirect(redirectSrv)
 		}
 
 		// Start HTTPS server on TLS port (this blocks)
 		err = s.echo.StartTLS(tlsAddr, s.config.TLSCertFile, s.config.TLSKeyFile)
 		// If HTTPS startup failed, shut down the redirect server
-		if err != nil && s.httpRedirectServer != nil {
-			_ = s.httpRedirectServer.Close()
+		if err != nil {
+			if srv := s.httpRedirectServer.Load(); srv != nil {
+				_ = srv.Close()
+			}
 		}
 	default:
 		// Plain HTTP
@@ -710,8 +772,8 @@ func (s *Server) ShutdownWithContext(ctx context.Context) error {
 	}
 
 	// Shutdown HTTP redirect server if running
-	if s.httpRedirectServer != nil {
-		if err := s.httpRedirectServer.Shutdown(ctx); err != nil && !errors.Is(err, net.ErrClosed) {
+	if srv := s.httpRedirectServer.Load(); srv != nil {
+		if err := srv.Shutdown(ctx); err != nil && !errors.Is(err, net.ErrClosed) {
 			s.slogger.Warn("Error shutting down HTTP redirect server", logger.Error(err))
 		}
 	}
@@ -721,7 +783,7 @@ func (s *Server) ShutdownWithContext(ctx context.Context) error {
 		s.apiController.Shutdown()
 	}
 
-	// Shutdown Echo server — since the listener is already closed and SSE
+	// Shutdown Echo server: since the listener is already closed and SSE
 	// clients are disconnected, this should complete quickly.
 	if err := s.echo.Shutdown(ctx); err != nil {
 		// Ignore "use of closed network connection" since we closed the listener above
@@ -742,43 +804,86 @@ func (s *Server) ShutdownWithContext(ctx context.Context) error {
 	return nil
 }
 
+// httpsRedirectHandler returns an http.Handler that 308-redirects requests to
+// HTTPS. When externalAuthority is non-empty it is used verbatim as the target
+// host[:port] (the externally advertised address). Otherwise the request host is
+// reused with fallbackPort appended; an empty or "443" fallbackPort omits the
+// port, assuming the standard HTTPS port. IPv6 hosts are bracketed correctly.
+func httpsRedirectHandler(externalAuthority, fallbackPort string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hostPort := externalAuthority
+		if hostPort == "" {
+			host := r.Host
+			if h, _, err := net.SplitHostPort(host); err == nil {
+				host = h
+			}
+			host = strings.TrimPrefix(host, "[")
+			host = strings.TrimSuffix(host, "]")
+			switch fallbackPort {
+			case "", conf.DefaultHTTPSPort:
+				hostPort = host
+				if strings.Contains(host, ":") {
+					hostPort = "[" + host + "]"
+				}
+			default:
+				hostPort = net.JoinHostPort(host, fallbackPort)
+			}
+		}
+		target := "https://" + hostPort + r.URL.RequestURI()
+		http.Redirect(w, r, target, http.StatusPermanentRedirect)
+	})
+}
+
+// healthOrRedirect returns an http.Handler that serves the unauthenticated health
+// endpoint via echo (so a plain-HTTP container healthcheck receives JSON rather
+// than a 308) and delegates every other request to next. It backs the AutoTLS
+// ACME/redirect listener and the manual-TLS HTTP redirect server, both of which
+// otherwise 308 all traffic (including /health) to HTTPS.
+func (s *Server) healthOrRedirect(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == healthCheckPath {
+			s.echo.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // newHTTPRedirectServer creates an HTTP server that redirects all requests to HTTPS.
 // The server is created synchronously to avoid a race between assignment and shutdown.
 func (s *Server) newHTTPRedirectServer(httpAddr, tlsPort string) *http.Server {
 	if tlsPort == "" {
-		tlsPort = "8443"
+		tlsPort = defaultTLSPort
 	}
-
-	redirectHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Extract hostname, stripping any port from the Host header
-		host := r.Host
-		if h, _, err := net.SplitHostPort(r.Host); err == nil {
-			host = h
-		}
-		target := "https://" + host
-		if tlsPort != "443" {
-			target += ":" + tlsPort
-		}
-		target += r.URL.RequestURI()
-		http.Redirect(w, r, target, http.StatusPermanentRedirect)
-	})
 
 	return &http.Server{
 		Addr:         httpAddr,
-		Handler:      redirectHandler,
+		Handler:      s.healthOrRedirect(httpsRedirectHandler(s.config.RedirectAuthority, tlsPort)),
 		ReadTimeout:  s.config.ReadTimeout,
 		WriteTimeout: s.config.WriteTimeout,
 	}
 }
 
 // serveHTTPRedirect starts listening on the HTTP redirect server.
-// Must be called in a goroutine after newHTTPRedirectServer.
-func (s *Server) serveHTTPRedirect() {
+// Must be called in a goroutine after newHTTPRedirectServer, with the server it
+// stored, so it does not race with a concurrent shutdown reading the field.
+func (s *Server) serveHTTPRedirect(srv *http.Server) {
 	s.slogger.Info("Starting HTTP->HTTPS redirect server",
-		logger.String("http_address", s.httpRedirectServer.Addr),
+		logger.String("http_address", srv.Addr),
 	)
 
-	if err := s.httpRedirectServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		s.slogger.Error("HTTP redirect server error", logger.Error(err))
+	}
+}
+
+// serveHTTPOnListener serves the HTTP redirect/ACME server on a pre-bound listener.
+func (s *Server) serveHTTPOnListener(srv *http.Server, ln net.Listener) {
+	s.slogger.Info("Starting HTTP->HTTPS redirect server",
+		logger.String("http_address", srv.Addr),
+	)
+
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		s.slogger.Error("HTTP redirect server error", logger.Error(err))
 	}
 }
@@ -809,14 +914,14 @@ func (s *Server) IsDevMode() bool {
 
 // registerSPARoutes registers all frontend SPA routes.
 // These routes serve the HTML shell that loads the Svelte application.
-// All SPA routes are public so the SPA can bootstrap and render the login
+// Most SPA routes are public so the SPA can bootstrap and render the login
 // form when Security.PrivateMode is enabled. The data layer (v2 API
 // endpoints) is the actual security boundary: it is gated by
 // privateModeAuth in api/v2/api.go and returns 401 to unauthenticated
 // requests in private mode, prompting the SPA to render the login form.
-// Settings and system routes remain auth-gated at this layer too so deep
-// links to those pages still server-side redirect to /login for unauth
-// browser navigations.
+// Settings and system routes (including the /ui/settings/* and /ui/system/*
+// sub-paths) remain auth-gated at this layer too so deep links to those pages
+// still server-side redirect to /login for unauth browser navigations.
 func (s *Server) registerSPARoutes() {
 	// Redirect root path to dashboard
 	s.echo.GET("/", func(c echo.Context) error {
@@ -825,7 +930,7 @@ func (s *Server) registerSPARoutes() {
 
 	authMiddleware := s.getAuthMiddleware()
 
-	// Public SPA shell routes — the SPA itself decides what to render
+	// Public SPA shell routes: the SPA itself decides what to render
 	// based on Security.PrivateMode and the authenticated/guest state
 	// returned by /api/v2/app/config.
 	publicRoutes := []string{
@@ -839,6 +944,14 @@ func (s *Server) registerSPARoutes() {
 		"/ui/analytics",
 		"/ui/analytics/species",
 		"/ui/analytics/advanced",
+		"/ui/analytics/summary",
+		"/ui/analytics/activity",
+		"/ui/analytics/trends",
+		"/ui/analytics/biodiversity",
+		"/ui/analytics/review",
+		"/ui/analytics/nocturnal",
+		"/ui/analytics/weather",
+		"/ui/analytics/soundscape",
 		"/ui/search",
 		"/ui/about",
 	}
@@ -861,6 +974,12 @@ func (s *Server) registerSPARoutes() {
 		"/ui/settings/species",
 		"/ui/settings/support",
 		"/ui/settings/userinterface",
+		// Catch-alls for the sub-paths, so deep links such as
+		// /ui/system/database or /ui/system/health redirect unauthenticated
+		// browsers to /login. Echo prefers them over the public /ui/*
+		// catch-all because they are more specific.
+		"/ui/settings/*",
+		"/ui/system/*",
 	}
 	for _, route := range protectedRoutes {
 		if authMiddleware != nil {
@@ -868,13 +987,6 @@ func (s *Server) registerSPARoutes() {
 		} else {
 			s.echo.GET(route, s.spaHandler.ServeApp)
 		}
-	}
-
-	// Protected catch-all for settings routes
-	if authMiddleware != nil {
-		s.echo.GET("/ui/settings/*", s.spaHandler.ServeApp, authMiddleware)
-	} else {
-		s.echo.GET("/ui/settings/*", s.spaHandler.ServeApp)
 	}
 
 	// Public catch-all for any other unmatched /ui/* paths so the SPA can

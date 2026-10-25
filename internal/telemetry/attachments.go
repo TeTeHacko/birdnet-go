@@ -34,6 +34,20 @@ func flushWithContext(ctx context.Context, operation string) error {
 	log := GetLogger()
 	log.Debug("flushing event to Sentry", logger.String("operation", operation))
 
+	// Honor an already-cancelled context deterministically. Without this early
+	// check, a pre-cancelled context races the flush goroutine in the select
+	// below (Go picks a ready case at random), which is especially likely when
+	// sentry.Flush returns immediately (e.g. no DSN configured in test builds).
+	if err := ctx.Err(); err != nil {
+		log.Warn(operation+" cancelled before flush", logger.Error(err))
+		return errors.New(err).
+			Component("telemetry").
+			Category(errors.CategoryNetwork).
+			Context("operation", operation).
+			Context("reason", "context_cancelled_before_flush").
+			Build()
+	}
+
 	flushDone := make(chan struct{})
 	go func() {
 		sentry.Flush(sentryFlushTimeout)
@@ -53,6 +67,18 @@ func flushWithContext(ctx context.Context, operation string) error {
 		log.Debug("flush completed successfully", logger.String("operation", operation))
 		return nil
 	}
+}
+
+// eventTypeTagKey is the event tag that names what kind of event was sent.
+const eventTypeTagKey = "type"
+
+// supportDumpEventType is the eventTypeTagKey value that marks a
+// user-requested support dump upload.
+const supportDumpEventType = "support_dump"
+
+// isSupportDumpEvent reports whether event is a support dump upload.
+func isSupportDumpEvent(event *sentry.Event) bool {
+	return event != nil && event.Tags[eventTypeTagKey] == supportDumpEventType
 }
 
 // AttachmentUploader handles uploading support dumps as Sentry attachments
@@ -152,8 +178,8 @@ func (au *AttachmentUploader) UploadSupportDump(ctx context.Context, dumpData []
 
 	// Add tags for filtering
 	event.Tags = map[string]string{
-		"type":      "support_dump",
-		"system_id": systemID,
+		eventTypeTagKey: supportDumpEventType,
+		"system_id":     systemID,
 	}
 	if traceID != "" {
 		event.Tags["trace_id"] = traceID
@@ -161,6 +187,10 @@ func (au *AttachmentUploader) UploadSupportDump(ctx context.Context, dumpData []
 	if githubIssue != "" {
 		event.Tags["github_issue"] = githubIssue
 	}
+
+	// A user-requested upload should probe the host now rather than wait out
+	// a backoff left by earlier failures.
+	sentryDeliveryGate.expedite()
 
 	// Capture the event with attachment using WithScope
 	var eventID *sentry.EventID
@@ -176,7 +206,7 @@ func (au *AttachmentUploader) UploadSupportDump(ctx context.Context, dumpData []
 		})
 		log.Debug("attachment added to scope",
 			logger.String("filename", filename),
-			logger.String("attachment_type", "support_dump"),
+			logger.String("attachment_type", supportDumpEventType),
 			logger.String("content_type", "application/zip"),
 			logger.Int("size_bytes", len(dumpData)),
 			logger.String("system_id", systemID))
@@ -294,9 +324,13 @@ func (au *AttachmentUploader) CreateSupportEvent(ctx context.Context, systemID, 
 
 	// Add tags
 	event.Tags = map[string]string{
-		"type":      "support_request",
-		"system_id": systemID,
+		eventTypeTagKey: "support_request",
+		"system_id":     systemID,
 	}
+
+	// A user-requested upload should probe the host now rather than wait out
+	// a backoff left by earlier failures.
+	sentryDeliveryGate.expedite()
 
 	// Capture event
 	log.Debug("capturing support event")

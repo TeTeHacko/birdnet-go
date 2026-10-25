@@ -25,7 +25,6 @@
   import { getLogger } from '$lib/utils/logger';
   import { t } from '$lib/i18n';
   import type { Snippet } from 'svelte';
-  import { saveGuestLayout } from '$lib/stores/guestDashboardLayout';
 
   const logger = getLogger('dashboard');
 
@@ -35,7 +34,6 @@
   interface Props {
     layout: DashboardLayout;
     editMode: boolean;
-    isGuest?: boolean;
     onLayoutChange: (_layout: DashboardLayout) => void;
     onEditModeChange: (_editing: boolean) => void;
     renderElement: Snippet<
@@ -46,15 +44,8 @@
     >;
   }
 
-  let {
-    layout,
-    editMode,
-    isGuest = false,
-    onLayoutChange,
-    onEditModeChange,
-    renderElement,
-    renderSettings,
-  }: Props = $props();
+  let { layout, editMode, onLayoutChange, onEditModeChange, renderElement, renderSettings }: Props =
+    $props();
 
   let editElements = $state<(DashboardElement & { id: string })[]>([]);
   let isSaving = $state(false);
@@ -131,19 +122,15 @@
     return { elements: cleanElements };
   }
 
-  // Save: persist layout via dashboard API (authenticated) or localStorage (guest)
+  // Save: persist layout via the dashboard settings API. Edit mode is only
+  // reachable by authenticated users (guests view read-only; issue #4112).
   async function saveLayout() {
     addDropdownOpen = false;
     isSaving = true;
     try {
       const newLayout = buildCleanLayout();
 
-      if (isGuest) {
-        // Guest users: persist to localStorage since the settings API requires auth
-        saveGuestLayout(newLayout);
-      } else {
-        await api.patch('/api/v2/settings/dashboard', { layout: newLayout });
-      }
+      await api.patch('/api/v2/settings/dashboard', { layout: newLayout });
 
       onLayoutChange(newLayout);
       editElements = [];
@@ -221,7 +208,7 @@
     <button
       onclick={saveLayout}
       disabled={isSaving}
-      class="flex items-center gap-1.5 rounded-lg bg-[var(--color-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-primary-content)] transition-colors hover:opacity-90 disabled:opacity-50"
+      class="flex items-center gap-1.5 rounded-lg bg-[var(--color-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-primary-content)] transition-colors hover:not-disabled:bg-[var(--color-primary-hover)] disabled:opacity-50"
     >
       <Save class="size-3.5" />
       {isSaving ? t('dashboard.editMode.saving') : t('dashboard.editMode.save')}

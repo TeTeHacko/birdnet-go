@@ -1,12 +1,13 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/svelte';
 import DetectionRow from './DetectionRow.svelte';
 import type { Detection } from '$lib/types/detection.types';
-import { navigation } from '$lib/stores/navigation.svelte';
-import { fetchWithCSRF } from '$lib/utils/api';
-import { toastActions } from '$lib/stores/toast';
+import { downloadDetectionAudio } from '$lib/utils/audioDownload';
 
-// Mock the navigation store
+// DetectionRow is presentational for mutation actions: opening the action menu
+// and clicking one must invoke the callback the parent passed. Audio download
+// is wired directly through the shared download helper.
+
 vi.mock('$lib/stores/navigation.svelte', () => ({
   navigation: {
     currentPath: '/ui/detections',
@@ -15,169 +16,213 @@ vi.mock('$lib/stores/navigation.svelte', () => ({
   },
 }));
 
-// Mock fetchWithCSRF
-vi.mock('$lib/utils/api', () => ({
-  fetchWithCSRF: vi.fn(),
+vi.mock('$lib/utils/audioDownload', () => ({
+  downloadDetectionAudio: vi.fn(),
 }));
 
-// Create a mock detection for testing
 function createMockDetection(overrides: Partial<Detection> = {}): Detection {
   return {
     id: 123,
     date: '2024-01-15',
     time: '10:30:00',
+    beginTime: '2024-01-15T10:30:00',
+    endTime: '2024-01-15T10:30:03',
+    speciesCode: 'amerob',
     commonName: 'American Robin',
     scientificName: 'Turdus migratorius',
     confidence: 0.85,
+    verified: 'unverified',
     locked: false,
-    sourceType: 'microphone',
-    sourceName: 'default',
     clipName: 'clip_001.wav',
-    spectrogramPath: '/spectrograms/clip_001.png',
     ...overrides,
-  } as Detection;
+  };
 }
 
-describe('DetectionRow navigation tests', () => {
+async function openMenuAndClick(itemName: RegExp) {
+  const menuButton = screen.getByRole('button', { name: /actions menu/i });
+  await fireEvent.click(menuButton);
+  const item = screen.getByRole('menuitem', { name: itemName });
+  await fireEvent.click(item);
+}
+
+describe('DetectionRow action callbacks', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  afterEach(() => {
-    vi.clearAllMocks();
+  it('invokes onReview when the review menu item is clicked', async () => {
+    const onReview = vi.fn();
+    render(DetectionRow, { props: { detection: createMockDetection({ id: 456 }), onReview } });
+
+    await openMenuAndClick(/review detection/i);
+
+    expect(onReview).toHaveBeenCalledTimes(1);
   });
 
-  it('navigates to review tab when review action is clicked', async () => {
-    const detection = createMockDetection({ id: 456 });
+  it('invokes onDelete when the delete menu item is clicked', async () => {
+    const onDelete = vi.fn();
+    render(DetectionRow, { props: { detection: createMockDetection({ id: 100 }), onDelete } });
 
-    render(DetectionRow, {
-      props: {
-        detection,
-      },
-    });
+    await openMenuAndClick(/delete detection/i);
 
-    // Open the action menu
-    const menuButton = screen.getByRole('button', { name: /actions menu/i });
-    await fireEvent.click(menuButton);
-
-    // Click review action
-    const reviewButton = screen.getByRole('menuitem', { name: /review detection/i });
-    await fireEvent.click(reviewButton);
-
-    // Verify navigation was called with correct URL including query parameter
-    expect(navigation.navigate).toHaveBeenCalledWith('/ui/detections/456?tab=review');
+    expect(onDelete).toHaveBeenCalledTimes(1);
   });
 
-  it('provides handleReview callback that navigates with query params', async () => {
-    // This test verifies the pattern: navigation.navigate is called with ?tab=review
-    // which requires the navigation store to properly separate pathname from query
-    const detection = createMockDetection({ id: 999 });
-
+  it('invokes onToggleLock when the lock menu item is clicked', async () => {
+    const onToggleLock = vi.fn();
     render(DetectionRow, {
-      props: {
-        detection,
-      },
+      props: { detection: createMockDetection({ id: 200, locked: false }), onToggleLock },
     });
 
-    const menuButton = screen.getByRole('button', { name: /actions menu/i });
-    await fireEvent.click(menuButton);
+    await openMenuAndClick(/lock detection/i);
 
-    const reviewButton = screen.getByRole('menuitem', { name: /review detection/i });
-    await fireEvent.click(reviewButton);
-
-    // The fix ensures query params don't break routing in App.svelte
-    expect(navigation.navigate).toHaveBeenCalledWith('/ui/detections/999?tab=review');
+    expect(onToggleLock).toHaveBeenCalledTimes(1);
   });
 
-  it('uses correct detection ID in review navigation', async () => {
-    const detection = createMockDetection({ id: 257651 });
-
+  it('invokes onToggleSpecies when the ignore-species menu item is clicked', async () => {
+    const onToggleSpecies = vi.fn();
     render(DetectionRow, {
-      props: {
-        detection,
-      },
+      props: { detection: createMockDetection({ id: 300 }), onToggleSpecies },
     });
 
-    const menuButton = screen.getByRole('button', { name: /actions menu/i });
-    await fireEvent.click(menuButton);
+    await openMenuAndClick(/ignore species/i);
 
-    const reviewButton = screen.getByRole('menuitem', { name: /review detection/i });
-    await fireEvent.click(reviewButton);
+    expect(onToggleSpecies).toHaveBeenCalledTimes(1);
+  });
 
-    // Verify the exact URL format matches what App.svelte handleRouting expects
-    expect(navigation.navigate).toHaveBeenCalledWith('/ui/detections/257651?tab=review');
+  it('invokes onMarkCorrect when the mark-correct menu item is clicked', async () => {
+    const onMarkCorrect = vi.fn();
+    render(DetectionRow, {
+      props: { detection: createMockDetection({ id: 400 }), onMarkCorrect },
+    });
+
+    // Anchored so "Correct" does not also match "Incorrect".
+    await openMenuAndClick(/^Correct$/);
+
+    expect(onMarkCorrect).toHaveBeenCalledTimes(1);
+  });
+
+  it('invokes onMarkFalsePositive when the mark-false-positive menu item is clicked', async () => {
+    const onMarkFalsePositive = vi.fn();
+    render(DetectionRow, {
+      props: { detection: createMockDetection({ id: 500 }), onMarkFalsePositive },
+    });
+
+    await openMenuAndClick(/^Incorrect$/);
+
+    expect(onMarkFalsePositive).toHaveBeenCalledTimes(1);
+  });
+
+  it('downloads available audio from the action menu', async () => {
+    const detection = createMockDetection({ id: 700, clipName: 'clip_700.wav' });
+    render(DetectionRow, { props: { detection } });
+
+    await openMenuAndClick(/download/i);
+
+    expect(downloadDetectionAudio).toHaveBeenCalledExactlyOnceWith(detection);
+  });
+
+  it('omits the download action when the detection has no audio clip', async () => {
+    render(DetectionRow, {
+      props: { detection: createMockDetection({ id: 701, clipName: '' }) },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /actions menu/i }));
+
+    expect(screen.queryByRole('menuitem', { name: /download/i })).not.toBeInTheDocument();
   });
 });
 
-describe('DetectionRow error notification tests', () => {
+describe('DetectionRow recording cell gating', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  afterEach(() => {
-    vi.clearAllMocks();
+  it('renders the spectrogram player when the detection has a clip', () => {
+    const { container } = render(DetectionRow, {
+      props: { detection: createMockDetection({ id: 600, clipName: 'clip_600.wav' }) },
+    });
+
+    expect(container.querySelector('.spectrogram-player')).not.toBeNull();
   });
 
-  it('shows error toast when delete action fails', async () => {
-    vi.mocked(fetchWithCSRF).mockRejectedValueOnce(new Error('Network error'));
-    const detection = createMockDetection({ id: 100 });
-
-    render(DetectionRow, { props: { detection } });
-
-    // Open action menu and click delete
-    const menuButton = screen.getByRole('button', { name: /actions menu/i });
-    await fireEvent.click(menuButton);
-    const deleteButton = screen.getByRole('menuitem', { name: /delete detection/i });
-    await fireEvent.click(deleteButton);
-
-    // Confirm the modal
-    const confirmButton = await screen.findByRole('button', { name: /delete/i });
-    await fireEvent.click(confirmButton);
-
-    await waitFor(() => {
-      expect(toastActions.error).toHaveBeenCalledTimes(1);
+  // Per-detection gating: the widget must depend on the real clipName signal, not a
+  // global flag. An empty clipName means no clip exists, so no player must render
+  // even though the Recording column itself is shown.
+  it('omits the spectrogram player when the detection has no clip', () => {
+    const { container } = render(DetectionRow, {
+      props: {
+        detection: createMockDetection({ id: 601, clipName: '' }),
+        showRecordingColumn: true,
+      },
     });
+
+    expect(container.querySelector('.spectrogram-player')).toBeNull();
   });
 
-  it('shows error toast when toggle lock fails', async () => {
-    vi.mocked(fetchWithCSRF).mockRejectedValueOnce(new Error('Server error'));
-    const detection = createMockDetection({ id: 200, locked: false });
-
-    render(DetectionRow, { props: { detection } });
-
-    // Open action menu and click lock
-    const menuButton = screen.getByRole('button', { name: /actions menu/i });
-    await fireEvent.click(menuButton);
-    const lockButton = screen.getByRole('menuitem', { name: /lock detection/i });
-    await fireEvent.click(lockButton);
-
-    // Confirm the modal
-    const confirmButton = await screen.findByRole('button', { name: /confirm/i });
-    await fireEvent.click(confirmButton);
-
-    await waitFor(() => {
-      expect(toastActions.error).toHaveBeenCalledTimes(1);
+  it('omits the entire recording cell when the column is hidden', () => {
+    const { container } = render(DetectionRow, {
+      props: {
+        detection: createMockDetection({ id: 602, clipName: 'clip_602.wav' }),
+        showRecordingColumn: false,
+      },
     });
+
+    expect(container.querySelector('.spectrogram-player')).toBeNull();
   });
 
-  it('shows error toast when toggle species exclusion fails', async () => {
-    vi.mocked(fetchWithCSRF).mockRejectedValueOnce(new Error('Server error'));
-    const detection = createMockDetection({ id: 300 });
-
-    render(DetectionRow, { props: { detection } });
-
-    // Open action menu and click ignore species
-    const menuButton = screen.getByRole('button', { name: /actions menu/i });
-    await fireEvent.click(menuButton);
-    const ignoreButton = screen.getByRole('menuitem', { name: /ignore species/i });
-    await fireEvent.click(ignoreButton);
-
-    // Confirm the modal
-    const confirmButton = await screen.findByRole('button', { name: /confirm/i });
-    await fireEvent.click(confirmButton);
-
-    await waitFor(() => {
-      expect(toastActions.error).toHaveBeenCalledTimes(1);
+  // Retention removed the audio but kept the image: show the image only.
+  it('renders a plain spectrogram image, without a player, for a spectrogram-only detection', () => {
+    const { container } = render(DetectionRow, {
+      props: {
+        detection: createMockDetection({ id: 603, clipName: '', spectrogramOnly: true }),
+        showRecordingColumn: true,
+      },
     });
+
+    expect(container.querySelector('.spectrogram-player')).toBeNull();
+    const img = container.querySelector('img.spectrogram-img');
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute('src')).toContain('/api/v2/spectrogram/603?size=md&raw=true');
+  });
+
+  it('caps the spectrogram-only image at the width of the player it replaces', () => {
+    const { container } = render(DetectionRow, {
+      props: {
+        detection: createMockDetection({ id: 606, clipName: '', spectrogramOnly: true }),
+        showRecordingColumn: true,
+      },
+    });
+
+    const imageContainer = container.querySelector('.spectrogram-image-container');
+    expect(imageContainer).not.toBeNull();
+    expect(imageContainer?.classList.contains('max-w-[200px]')).toBe(true);
+  });
+
+  it('omits the download action for a spectrogram-only detection', async () => {
+    render(DetectionRow, {
+      props: {
+        detection: createMockDetection({ id: 604, clipName: '', spectrogramOnly: true }),
+        showRecordingColumn: true,
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /actions menu/i }));
+
+    expect(screen.queryByRole('menuitem', { name: /download/i })).not.toBeInTheDocument();
+  });
+
+  it('keeps the player for a detection that still has audio even if flagged spectrogram-only', () => {
+    const { container } = render(DetectionRow, {
+      props: {
+        detection: createMockDetection({
+          id: 605,
+          clipName: 'clip_605.wav',
+          spectrogramOnly: true,
+        }),
+      },
+    });
+
+    expect(container.querySelector('.spectrogram-player')).not.toBeNull();
   });
 });

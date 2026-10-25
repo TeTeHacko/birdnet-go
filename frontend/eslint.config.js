@@ -22,6 +22,7 @@ const browserGlobals = {
   FormData: 'readonly',
   navigator: 'readonly',
   Event: 'readonly',
+  MessageEvent: 'readonly',
   KeyboardEvent: 'readonly',
   MouseEvent: 'readonly',
   DragEvent: 'readonly',
@@ -74,6 +75,18 @@ const svelteRuneGlobals = {
   $host: 'readonly',
 };
 
+// Type assertion rules that need no type information, so .svelte files get
+// them too. An object literal asserted to a type skips the excess and missing
+// property checks; build the value with `satisfies` instead. `as unknown as T`
+// stays available for deliberately partial or malformed test fixtures.
+const typeAssertionRules = {
+  '@typescript-eslint/consistent-type-assertions': [
+    'error',
+    { assertionStyle: 'as', objectLiteralTypeAssertions: 'never' },
+  ],
+  '@typescript-eslint/no-non-null-assertion': 'error',
+};
+
 // Shared TypeScript rules used by .svelte.ts, .ts, and Playwright configs
 const sharedTypeScriptRules = {
   '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
@@ -88,6 +101,8 @@ const sharedTypeScriptRules = {
   '@typescript-eslint/no-unnecessary-condition': 'error',
   '@typescript-eslint/prefer-readonly': 'error',
   '@typescript-eslint/switch-exhaustiveness-check': 'error',
+  ...typeAssertionRules,
+  '@typescript-eslint/no-unnecessary-type-assertion': 'error',
 };
 
 export default [
@@ -110,9 +125,13 @@ export default [
     plugins: {
       svelte,
       security,
+      '@typescript-eslint': tsPlugin,
     },
     rules: {
       ...svelte.configs.recommended.rules,
+      // TypeScript rules that work without type information
+      '@typescript-eslint/no-explicit-any': 'error',
+      ...typeAssertionRules,
       // Svelte specific rules
       'svelte/no-unused-svelte-ignore': 'error',
       'svelte/no-dupe-else-if-blocks': 'error',
@@ -130,7 +149,7 @@ export default [
     },
   },
   
-  // Svelte module files (.svelte.ts) — need Svelte rune globals
+  // Svelte module files (.svelte.ts), need Svelte rune globals
   {
     files: ['**/*.svelte.ts'],
     languageOptions: {

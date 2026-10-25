@@ -110,6 +110,14 @@ func (m *MySQLManager) Initialize() error {
 	// fell back to legacy mode due to the PR #2165 table name mismatch.
 	m.cleanupLegacySchemaContamination()
 
+	// Re-key threshold tables on species_name if they still carry the legacy label_id
+	// column; AutoMigrate cannot drop it, so recreate them (#4195). Rows are discarded.
+	// The GORM migrator respects the v2_ NamingStrategy prefix when resolving table names.
+	if err := dropStaleThresholdTables(m.db, m.log); err != nil {
+		reportInitFailure("mysql", "dropStaleThresholdTables", err, m.config.Host, m.config.Database, m.config.Username)
+		return err
+	}
+
 	// Run GORM auto-migrations for all entities using the shared canonical list.
 	// Tables will be created with v2_ prefix due to NamingStrategy.
 	err := m.db.AutoMigrate(v2Entities()...)
@@ -125,6 +133,9 @@ func (m *MySQLManager) Initialize() error {
 	if err := m.validateV2SchemaIntegrity(); err != nil {
 		return fmt.Errorf("v2 schema integrity check failed: %w", err)
 	}
+
+	// The unique (detection_id, model_id) index serves the detection_id foreign key.
+	dropRedundantContributionIndex(m.db, m.log)
 
 	// Initialize migration state singleton using FirstOrCreate to handle race conditions
 	state := entities.MigrationState{ID: 1, State: entities.MigrationStatusIdle}
@@ -248,13 +259,16 @@ func (m *MySQLManager) Delete() error {
 		prefix + "detection_model_contributions",
 		prefix + "detection_predictions",
 		prefix + "detections",
+		// References audio_sources, so it goes first
+		prefix + "privacy_filter_hourlies",
 		prefix + "audio_sources",
 		// Alert tables (drop children first)
 		prefix + "alert_histories",
 		prefix + "alert_actions",
 		prefix + "alert_conditions",
 		prefix + "alert_rules",
-		// Auxiliary tables that reference labels (must drop before labels)
+		// Auxiliary tables dropped before labels. image_caches and notification_histories
+		// reference labels; threshold tables no longer do since #4195 but stay grouped here.
 		prefix + "image_caches",
 		prefix + "threshold_events",
 		prefix + "dynamic_thresholds",

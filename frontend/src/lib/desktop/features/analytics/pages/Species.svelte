@@ -7,6 +7,7 @@
   import { getStoredValue, setStoredValue } from '$lib/utils/storage';
   import { buildAppUrl } from '$lib/utils/urlHelpers';
   import { localizeSpeciesName } from '$lib/utils/speciesDisplay';
+  import { handleBirdImageError } from '$lib/desktop/components/ui/image-utils';
   import { onMount, onDestroy } from 'svelte';
   import SortableHeader from '$lib/desktop/components/ui/SortableHeader.svelte';
   import SpeciesFilterForm from '../components/forms/SpeciesFilterForm.svelte';
@@ -36,34 +37,6 @@
       | 'max_confidence_desc'
       | 'max_confidence_asc';
     searchTerm: string;
-    /**
-     * Selected source group display names. Empty array means "all sources".
-     * Display names are grouped on the picker so duplicate audio_sources rows
-     * collapse; we expand back to underlying audio_sources.id values when
-     * issuing API requests via the source_id query parameter.
-     */
-    sourceGroups: string[];
-  }
-
-  // Response shape for GET /api/v2/analytics/sources
-  interface AnalyticsSourceApiEntry {
-    id: number;
-    displayName: string;
-    sourceUri?: string;
-    sourceType?: string;
-    nodeName?: string;
-    detectionCount: number;
-  }
-
-  interface AnalyticsSourceListResponse {
-    sources: AnalyticsSourceApiEntry[];
-  }
-
-  // Aggregated form used by the SpeciesFilterForm picker — one entry per display_name.
-  interface AudioSourceOption {
-    displayName: string;
-    ids: number[];
-    count: number;
   }
 
   type SortOrder = SpeciesFilters['sortOrder'];
@@ -169,65 +142,8 @@
     endDate: '',
     sortOrder: restoredSortOrder,
     searchTerm: '',
-    sourceGroups: [],
   });
 
-  // Audio sources loaded once on mount; the picker hides itself when there are <2.
-  let audioSources = $state<AudioSourceOption[]>([]);
-
-  // Maximum source IDs accepted by the backend per request (see parseOptionalSourceIDs
-  // in internal/api/v2/utils.go). Clamp on the frontend too so we never send a request
-  // the backend will silently truncate.
-  const MAX_SOURCE_IDS_PER_REQUEST = 64;
-
-  // Resolve selected display names back to the comma-separated audio_sources.id list
-  // used by the `source_id` query parameter. Empty when "all sources" is selected.
-  // Dedupe and clamp to the backend limit before joining.
-  let selectedSourceIdsParam = $derived.by(() => {
-    if (filters.sourceGroups.length === 0 || audioSources.length === 0) return '';
-    const byName = new Map(audioSources.map(s => [s.displayName, s.ids] as const));
-    const ids = new Set<number>();
-    for (const name of filters.sourceGroups) {
-      const matched = byName.get(name);
-      if (matched) {
-        for (const id of matched) ids.add(id);
-      }
-    }
-    return Array.from(ids).slice(0, MAX_SOURCE_IDS_PER_REQUEST).join(',');
-  });
-
-  // Fetch the historical audio sources list and aggregate by display_name so the picker
-  // shows one entry even when multiple audio_sources rows share a name.
-  async function fetchAudioSources() {
-    try {
-      const resp = await fetch(buildAppUrl('/api/v2/analytics/sources'));
-      if (!resp.ok) {
-        logger.warn('Failed to load analytics sources', { status: resp.status });
-        return;
-      }
-      const data: AnalyticsSourceListResponse = await resp.json();
-      const raw = Array.isArray(data?.sources) ? data.sources : [];
-      const aggregated = new Map<string, AudioSourceOption>();
-      for (const entry of raw) {
-        const name = entry.displayName || t('analytics.filters.audioSourceUnknown');
-        const existing = aggregated.get(name);
-        if (existing) {
-          existing.ids.push(entry.id);
-          existing.count += entry.detectionCount ?? 0;
-        } else {
-          aggregated.set(name, {
-            displayName: name,
-            ids: [entry.id],
-            count: entry.detectionCount ?? 0,
-          });
-        }
-      }
-      audioSources = Array.from(aggregated.values()).sort((a, b) => b.count - a.count);
-    } catch (error) {
-      logger.error('Error fetching analytics audio sources:', error);
-      audioSources = [];
-    }
-  }
   // Tracks the sort order that is actually applied to the table. Only the
   // explicit commit points (header click in handleSort, Apply Filters/mount/reset
   // via fetchData) update it; the filteredSpecies $derived sorts from it. This
@@ -275,9 +191,6 @@
     filters.endDate = formatDateForInput(today);
     filters.startDate = formatDateForInput(lastMonth);
 
-    // Load picker data in parallel with the initial summary fetch.
-    void fetchAudioSources();
-
     // Fetch initial data
     fetchData();
   });
@@ -290,13 +203,14 @@
     return (value * 100).toFixed(1) + '%';
   }
 
-  // Increments on every fetchData so an in-flight thumbnail loop from a previous
-  // fetch can detect it has been superseded and stop mutating speciesData.
-  let thumbnailFetchSeq = 0;
+  // Guards fetchData against out-of-order responses: when filters change in quick
+  // succession, a slow earlier request must not overwrite the results (or clear the
+  // loading flag) of a newer one.
+  let fetchSeq = 0;
 
   async function fetchData() {
+    const currentSeq = ++fetchSeq;
     isLoading = true;
-    const fetchSeq = ++thumbnailFetchSeq;
     // Apply Filters (and mount/reset) commit the pending dropdown selection.
     appliedSortOrder = filters.sortOrder;
     setStoredValue<SortOrder>(SORT_STORAGE_KEY, filters.sortOrder);
@@ -346,9 +260,6 @@
       const params = new URLSearchParams();
       if (startDate) params.set('start_date', startDate);
       if (endDate) params.set('end_date', endDate);
-      if (selectedSourceIdsParam) {
-        params.set('source_id', selectedSourceIdsParam);
-      }
 
       // Fetch species summary data
       const response = await fetch(
@@ -360,6 +271,8 @@
       }
 
       const rawSpecies: SpeciesData[] = await response.json();
+      // A newer fetchData superseded this request; drop its now-stale response.
+      if (currentSeq !== fetchSeq) return;
       // Backend returns relative URLs (e.g. /api/v2/media/image/...). Run them
       // through buildAppUrl so they include the configured base path (e.g.
       // /birdnet, HA Ingress token) before they end up in <img src=...>.
@@ -368,14 +281,14 @@
           ? { ...species, thumbnail_url: buildAppUrl(species.thumbnail_url) }
           : species
       );
-
-      // Load thumbnails asynchronously after main data is displayed
-      loadThumbnailsAsync(fetchSeq);
     } catch (error) {
+      // Ignore a stale request's failure so it cannot blank out fresher results.
+      if (currentSeq !== fetchSeq) return;
       logger.error('Error fetching species data:', error);
       speciesData = [];
     } finally {
-      isLoading = false;
+      // Only the latest request owns the loading flag.
+      if (currentSeq === fetchSeq) isLoading = false;
     }
   }
 
@@ -503,7 +416,6 @@
     filters.sortOrder = DEFAULT_SORT_ORDER;
     // fetchData() below commits and persists the reset sort order (single commit point).
     filters.searchTerm = '';
-    filters.sourceGroups = [];
 
     const today = new Date();
     const lastMonth = new Date();
@@ -513,67 +425,6 @@
     filters.startDate = formatDateForInput(lastMonth);
 
     fetchData();
-  }
-
-  async function loadThumbnailsAsync(fetchSeq: number) {
-    // Skip if we don't have species data
-    if (!speciesData || speciesData.length === 0) {
-      return;
-    }
-
-    // Get scientific names that need thumbnails
-    const scientificNames = speciesData
-      .filter(species => !species.thumbnail_url)
-      .map(species => species.scientific_name);
-
-    if (scientificNames.length === 0) {
-      return;
-    }
-
-    try {
-      // Fetch thumbnails in batches to avoid overwhelming the server
-      const batchSize = 20;
-      for (let i = 0; i < scientificNames.length; i += batchSize) {
-        // A newer fetchData superseded this run; stop fetching and mutating stale state.
-        if (fetchSeq !== thumbnailFetchSeq) return;
-        const batch = scientificNames.slice(i, i + batchSize);
-
-        // Create query parameters for this batch
-        const params = new URLSearchParams();
-        batch.forEach(name => params.append('species', name));
-
-        // Fetch thumbnails for this batch
-        const response = await fetch(
-          buildAppUrl(`/api/v2/analytics/species/thumbnails?${params.toString()}`)
-        );
-        if (response.ok) {
-          const thumbnails = await response.json();
-          // Re-check after the await: a newer fetch may have replaced speciesData
-          // while this batch was in flight, so don't apply stale thumbnails to it.
-          if (fetchSeq !== thumbnailFetchSeq) return;
-
-          // Update species data with fetched thumbnails. Backend URLs are
-          // relative; buildAppUrl prepends the configured base path so the
-          // image request resolves correctly behind a reverse proxy.
-          speciesData = speciesData.map(species => {
-            const url = thumbnails[species.scientific_name];
-            if (url) {
-              return { ...species, thumbnail_url: buildAppUrl(url) };
-            }
-            return species;
-          });
-          // filteredSpecies is $derived; reassigning speciesData re-renders it.
-        }
-
-        // Small delay between batches
-        if (i + batchSize < scientificNames.length) {
-          await new Promise(resolve => setTimeout(resolve, 100));
-        }
-      }
-    } catch (error) {
-      logger.error('Error loading thumbnails:', error);
-      // Continue without thumbnails - don't break the UI
-    }
   }
 
   function exportData() {
@@ -699,7 +550,6 @@
   <!-- Filter Controls -->
   <SpeciesFilterForm
     bind:filters
-    {audioSources}
     {isLoading}
     filteredCount={getFilteredCount()}
     onSubmit={fetchData}
@@ -810,21 +660,13 @@
                   <td>
                     <div class="flex items-center gap-3">
                       <div class="avatar">
-                        <div
-                          class="mask mask-squircle w-12 h-12"
-                          class:bg-[var(--color-base-300)]={!species.thumbnail_url}
-                        >
+                        <div class="mask mask-squircle w-12 h-12 bg-[var(--color-base-300)]">
                           {#if species.thumbnail_url}
                             <img
                               src={species.thumbnail_url}
                               alt={displayName}
-                              onerror={e => {
-                                const img = e.target as HTMLImageElement;
-                                if (img) {
-                                  img.style.display = 'none';
-                                  img.parentElement?.classList.add('bg-[var(--color-base-300)]');
-                                }
-                              }}
+                              class="h-full w-full object-cover"
+                              onerror={handleBirdImageError}
                             />
                           {/if}
                         </div>

@@ -1,0 +1,1055 @@
+// species_test.go: tests for species-related functions and endpoints in the
+// api/v2 species domain package.
+
+package species
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/labstack/echo/v4"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/tphakala/birdnet-go/internal/api/v2/apicore"
+	"github.com/tphakala/birdnet-go/internal/api/v2/apitest"
+	"github.com/tphakala/birdnet-go/internal/api/v2/dto"
+	"github.com/tphakala/birdnet-go/internal/classifier"
+	"github.com/tphakala/birdnet-go/internal/conf"
+	"github.com/tphakala/birdnet-go/internal/speciesindex"
+)
+
+// Species fixtures for the name-resolution and rarity tests. testAliasName and
+// testCanonName are a real legacy/current synonym pair from the vendored OpenFauna
+// alias map, so these tests exercise the actual alias data rather than a stub.
+const (
+	testSciName     = "Turdus migratorius"
+	testCommonName  = "American Robin"
+	testAliasName   = "Streptopelia senegalensis"
+	testCanonName   = "Spilopelia senegalensis"
+	testCanonCommon = "Laughing Dove"
+)
+
+// Two species BirdNET v2.4 ships separately while the OpenFauna alias map maps the
+// second onto the first. Any match keyed only on the canonical name merges them.
+const (
+	collidingSciA    = "Dicrurus adsimilis"
+	collidingCommonA = "Fork-tailed Drongo"
+	collidingSciB    = "Dicrurus divaricatus"
+	collidingCommonB = "Glossy-backed Drongo"
+)
+
+// newSpeciesHandler builds a minimal species Handler with valid default settings
+// for validation tests. The injected facade dependencies (speciesSnapshot,
+// serveImageProxy) are left nil because the validation paths exercised here never
+// reach them.
+func newSpeciesHandler() *Handler {
+	h := &Handler{Core: &apicore.Core{}}
+	h.Settings.Store(apitest.NewValidTestSettings())
+	return h
+}
+
+// testSnap builds a species-index snapshot from labels for the resolver tests. A
+// nil name resolver keeps the real openfauna canonical memo maps, so alias and
+// colliding-species behaviour is exercised against the vendored dataset.
+func testSnap(labels []string) *speciesindex.Snapshot {
+	return speciesindex.Build(labels, nil, "")
+}
+
+// testComputeRarity calls computeRarity with an empty snapshot. The snapshot is a
+// canonical-key memo only: an empty one computes the same keys the request path
+// would find memoized, so the rarity logic is exercised identically without a built
+// label set.
+func testComputeRarity(rc *classifier.RarityContext, targetSci string) (float64, RarityStatus) {
+	return computeRarity(rc, speciesindex.Empty(), speciesindex.CanonicalKey(targetSci), targetSci)
+}
+
+// TestCalculateRarityStatus tests the calculateRarityStatus helper function.
+func TestCalculateRarityStatus(t *testing.T) {
+	t.Parallel()
+	t.Attr("component", "species")
+	t.Attr("type", "unit")
+	t.Attr("feature", "rarity-calculation")
+
+	tests := []struct {
+		name     string
+		score    float64
+		expected RarityStatus
+	}{
+		// Very common (score > 0.8)
+		{
+			name:     "Very common - score 0.95",
+			score:    0.95,
+			expected: RarityVeryCommon,
+		},
+		{
+			name:     "Very common - score 0.81",
+			score:    0.81,
+			expected: RarityVeryCommon,
+		},
+		{
+			name:     "Very common - boundary exactly 0.80001",
+			score:    0.80001,
+			expected: RarityVeryCommon,
+		},
+
+		// Common (0.5 < score <= 0.8)
+		{
+			name:     "Common - score 0.8 (boundary)",
+			score:    0.8, // Exactly at threshold
+			expected: RarityCommon,
+		},
+		{
+			name:     "Common - score 0.65",
+			score:    0.65,
+			expected: RarityCommon,
+		},
+		{
+			name:     "Common - score 0.51",
+			score:    0.51,
+			expected: RarityCommon,
+		},
+
+		// Uncommon (0.2 < score <= 0.5)
+		{
+			name:     "Uncommon - score 0.5 (boundary)",
+			score:    0.5,
+			expected: RarityUncommon,
+		},
+		{
+			name:     "Uncommon - score 0.35",
+			score:    0.35,
+			expected: RarityUncommon,
+		},
+		{
+			name:     "Uncommon - score 0.21",
+			score:    0.21,
+			expected: RarityUncommon,
+		},
+
+		// Rare (0.05 < score <= 0.2)
+		{
+			name:     "Rare - score 0.2 (boundary)",
+			score:    0.2,
+			expected: RarityRare,
+		},
+		{
+			name:     "Rare - score 0.1",
+			score:    0.1,
+			expected: RarityRare,
+		},
+		{
+			name:     "Rare - score 0.051",
+			score:    0.051,
+			expected: RarityRare,
+		},
+
+		// Very rare (score <= 0.05)
+		{
+			name:     "Very rare - score 0.05 (boundary)",
+			score:    0.05,
+			expected: RarityVeryRare,
+		},
+		{
+			name:     "Very rare - score 0.01",
+			score:    0.01,
+			expected: RarityVeryRare,
+		},
+		{
+			name:     "Very rare - score 0",
+			score:    0.0,
+			expected: RarityVeryRare,
+		},
+
+		// Edge cases
+		{
+			name:     "Score exactly 1.0",
+			score:    1.0,
+			expected: RarityVeryCommon,
+		},
+		{
+			name:     "Negative score",
+			score:    -0.1,
+			expected: RarityVeryRare,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := calculateRarityStatus(tt.score)
+			assert.Equal(t, tt.expected, result, "Score %.4f should map to %s", tt.score, tt.expected)
+		})
+	}
+}
+
+func TestFindNativeSpeciesScore(t *testing.T) {
+	t.Parallel()
+
+	scores := []classifier.SpeciesScore{
+		{Label: "Amazona viridigenalis_Red-crowned Parrot", Score: 1, IsSyntheticOverride: true},
+		{Label: "Amazona viridigenalis_Red-crowned Amazon", Score: 0.95},
+	}
+
+	keyOf := speciesindex.CanonicalKey
+	score, found := findNativeSpeciesScore("amazona VIRIDIGENALIS", speciesindex.CanonicalKey("amazona VIRIDIGENALIS"), scores, keyOf)
+	require.True(t, found)
+	assert.InDelta(t, 0.95, score, 1e-9)
+
+	_, found = findNativeSpeciesScore("Amazona viridigenalis", speciesindex.CanonicalKey("Amazona viridigenalis"), scores[:1], keyOf)
+	assert.False(t, found, "synthetic override scores must not drive rarity")
+}
+
+// TestSpeciesAPIValidation tests validation for all species endpoints in a single table-driven test.
+func TestSpeciesAPIValidation(t *testing.T) {
+	t.Parallel()
+	t.Attr("component", "species")
+	t.Attr("type", "unit")
+	t.Attr("feature", "api-validation")
+
+	tests := []struct {
+		name           string
+		url            string
+		paramNames     []string
+		paramValues    []string
+		handler        func(*Handler) func(echo.Context) error
+		expectedStatus int
+		expectedBody   string
+	}{
+		// Missing parameter tests
+		{"GetSpeciesInfo missing param", "/api/v2/species", nil, nil,
+			func(c *Handler) func(echo.Context) error { return c.GetSpeciesInfo },
+			http.StatusBadRequest, "Missing required parameter"},
+		{"GetSpeciesTaxonomy missing param", "/api/v2/species/taxonomy", nil, nil,
+			func(c *Handler) func(echo.Context) error { return c.GetSpeciesTaxonomy },
+			http.StatusBadRequest, "Missing required parameter"},
+		{"GetSpeciesThumbnail missing code", "/api/v2/species//thumbnail", []string{"code"}, []string{""},
+			func(c *Handler) func(echo.Context) error { return c.GetSpeciesThumbnail },
+			http.StatusBadRequest, "Missing species code"},
+
+		// Invalid format tests - GetSpeciesInfo
+		{"GetSpeciesInfo too short", "/api/v2/species?scientific_name=Ab", nil, nil,
+			func(c *Handler) func(echo.Context) error { return c.GetSpeciesInfo },
+			http.StatusBadRequest, "Invalid scientific name format"},
+		{"GetSpeciesInfo no space", "/api/v2/species?scientific_name=Turdusmigratorius", nil, nil,
+			func(c *Handler) func(echo.Context) error { return c.GetSpeciesInfo },
+			http.StatusBadRequest, "Invalid scientific name format"},
+		{"GetSpeciesInfo single word", "/api/v2/species?scientific_name=Turdus", nil, nil,
+			func(c *Handler) func(echo.Context) error { return c.GetSpeciesInfo },
+			http.StatusBadRequest, "Invalid scientific name format"},
+
+		// Invalid format tests - GetSpeciesTaxonomy
+		{"GetSpeciesTaxonomy too short", "/api/v2/species/taxonomy?scientific_name=Ab", nil, nil,
+			func(c *Handler) func(echo.Context) error { return c.GetSpeciesTaxonomy },
+			http.StatusBadRequest, "Invalid scientific name format"},
+		{"GetSpeciesTaxonomy no space", "/api/v2/species/taxonomy?scientific_name=Turdusmigratorius", nil, nil,
+			func(c *Handler) func(echo.Context) error { return c.GetSpeciesTaxonomy },
+			http.StatusBadRequest, "Invalid scientific name format"},
+		{"GetSpeciesTaxonomy single word", "/api/v2/species/taxonomy?scientific_name=Turdus", nil, nil,
+			func(c *Handler) func(echo.Context) error { return c.GetSpeciesTaxonomy },
+			http.StatusBadRequest, "Invalid scientific name format"},
+
+		// Error handling - nil processor
+		{"GetSpeciesThumbnail nil processor", "/api/v2/species/amro/thumbnail", []string{"code"}, []string{"amro"},
+			func(c *Handler) func(echo.Context) error { return c.GetSpeciesThumbnail },
+			http.StatusServiceUnavailable, "BirdNET service unavailable"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := echo.New()
+			req := httptest.NewRequest(http.MethodGet, tt.url, http.NoBody)
+			rec := httptest.NewRecorder()
+			ctx := e.NewContext(req, rec)
+
+			if tt.paramNames != nil {
+				ctx.SetParamNames(tt.paramNames...)
+				ctx.SetParamValues(tt.paramValues...)
+			}
+
+			c := newSpeciesHandler()
+			err := tt.handler(c)(ctx)
+
+			require.NoError(t, err, tt.name)
+			assert.Equal(t, tt.expectedStatus, rec.Code, tt.name)
+			assert.Contains(t, rec.Body.String(), tt.expectedBody, tt.name)
+		})
+	}
+}
+
+// TestSpeciesRarityInfoJSONSerialization tests that SpeciesRarityInfo serializes correctly.
+func TestSpeciesRarityInfoJSONSerialization(t *testing.T) {
+	t.Parallel()
+	t.Attr("component", "species")
+	t.Attr("type", "unit")
+	t.Attr("feature", "json-serialization")
+
+	info := SpeciesRarityInfo{
+		Status:           RarityRare,
+		Score:            0.08,
+		LocationBased:    true,
+		Latitude:         new(60.1699),
+		Longitude:        new(24.9384),
+		Date:             "2024-06-15",
+		ThresholdApplied: 0.05,
+	}
+
+	data, err := json.Marshal(info)
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(data, &parsed))
+
+	assert.Equal(t, "rare", parsed["status"])
+	assert.InDelta(t, 0.08, parsed["score"].(float64), 0.001)
+	assert.Equal(t, true, parsed["location_based"])
+	assert.InDelta(t, 60.1699, parsed["latitude"].(float64), 0.001)
+	assert.InDelta(t, 24.9384, parsed["longitude"].(float64), 0.001)
+	assert.Equal(t, "2024-06-15", parsed["date"])
+	assert.InDelta(t, 0.05, parsed["threshold_applied"].(float64), 0.001)
+}
+
+// TestSpeciesRarityInfoZeroCoordinatesSerialized guards the fix for a station configured
+// at exactly 0.0 latitude or longitude (equator / prime meridian). With the old
+// float64+omitempty tag these keys were dropped at 0.0, and the frontend crashed calling
+// toFixed on the missing field. As *float64 they must be present and equal to 0.
+func TestSpeciesRarityInfoZeroCoordinatesSerialized(t *testing.T) {
+	t.Parallel()
+	t.Attr("component", "species")
+	t.Attr("type", "unit")
+	t.Attr("feature", "json-serialization")
+
+	info := SpeciesRarityInfo{
+		Status:        RarityRare,
+		Score:         0.08,
+		LocationBased: true,
+		Latitude:      new(0.0),
+		Longitude:     new(0.0),
+		Date:          "2024-06-15",
+	}
+
+	data, err := json.Marshal(info)
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(data, &parsed))
+
+	// The keys must be present (not omitted) even though the value is exactly 0.
+	require.Contains(t, parsed, "latitude")
+	require.Contains(t, parsed, "longitude")
+	assert.InDelta(t, 0.0, parsed["latitude"].(float64), 0.0001)
+	assert.InDelta(t, 0.0, parsed["longitude"].(float64), 0.0001)
+}
+
+// TestSpeciesRarityInfoOmitsUnsetCoordinates verifies that when no location is configured
+// (nil coordinate pointers) the keys are omitted entirely, keeping the honest "no location"
+// semantics rather than emitting a misleading 0,0 (Null Island).
+func TestSpeciesRarityInfoOmitsUnsetCoordinates(t *testing.T) {
+	t.Parallel()
+	t.Attr("component", "species")
+	t.Attr("type", "unit")
+	t.Attr("feature", "json-serialization")
+
+	info := SpeciesRarityInfo{
+		Status:        RarityUnknown,
+		Score:         0,
+		LocationBased: false,
+		Date:          "2024-06-15",
+	}
+
+	data, err := json.Marshal(info)
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(data, &parsed))
+
+	assert.NotContains(t, parsed, "latitude")
+	assert.NotContains(t, parsed, "longitude")
+}
+
+// TestTaxonomyHierarchyJSONSerialization tests that TaxonomyHierarchy serializes correctly.
+func TestTaxonomyHierarchyJSONSerialization(t *testing.T) {
+	t.Parallel()
+	t.Attr("component", "species")
+	t.Attr("type", "unit")
+	t.Attr("feature", "json-serialization")
+
+	hierarchy := TaxonomyHierarchy{
+		Kingdom:       "Animalia",
+		Phylum:        "Chordata",
+		Class:         "Aves",
+		Order:         "Passeriformes",
+		Family:        "Turdidae",
+		FamilyCommon:  "Thrushes and Allies",
+		Genus:         "Turdus",
+		Species:       "Turdus migratorius",
+		SpeciesCommon: "American Robin",
+	}
+
+	data, err := json.Marshal(hierarchy)
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(data, &parsed))
+
+	assert.Equal(t, "Animalia", parsed["kingdom"])
+	assert.Equal(t, "Chordata", parsed["phylum"])
+	assert.Equal(t, "Aves", parsed["class"])
+	assert.Equal(t, "Passeriformes", parsed["order"])
+	assert.Equal(t, "Turdidae", parsed["family"])
+	assert.Equal(t, "Thrushes and Allies", parsed["family_common"])
+	assert.Equal(t, "Turdus", parsed["genus"])
+	assert.Equal(t, "Turdus migratorius", parsed["species"])
+	assert.Equal(t, "American Robin", parsed["species_common"])
+}
+
+// TestSubspeciesInfoJSONSerialization tests that SubspeciesInfo serializes correctly.
+func TestSubspeciesInfoJSONSerialization(t *testing.T) {
+	t.Parallel()
+	t.Attr("component", "species")
+	t.Attr("type", "unit")
+	t.Attr("feature", "json-serialization")
+
+	subspecies := SubspeciesInfo{
+		ScientificName: "Turdus migratorius migratorius",
+		CommonName:     "Eastern American Robin",
+		Region:         "Eastern North America",
+	}
+
+	data, err := json.Marshal(subspecies)
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(data, &parsed))
+
+	assert.Equal(t, "Turdus migratorius migratorius", parsed["scientific_name"])
+	assert.Equal(t, "Eastern American Robin", parsed["common_name"])
+	assert.Equal(t, "Eastern North America", parsed["region"])
+}
+
+// TestTaxonomyInfoJSONSerialization tests that TaxonomyInfo serializes correctly.
+func TestTaxonomyInfoJSONSerialization(t *testing.T) {
+	t.Parallel()
+	t.Attr("component", "species")
+	t.Attr("type", "unit")
+	t.Attr("feature", "json-serialization")
+
+	info := TaxonomyInfo{
+		ScientificName: "Turdus migratorius",
+		SpeciesCode:    "amero",
+		Taxonomy: TaxonomyHierarchy{
+			Kingdom: "Animalia",
+			Phylum:  "Chordata",
+			Class:   "Aves",
+			Order:   "Passeriformes",
+			Family:  "Turdidae",
+			Genus:   "Turdus",
+			Species: "Turdus migratorius",
+		},
+		Subspecies: []SubspeciesInfo{
+			{ScientificName: "Turdus migratorius migratorius", CommonName: "Eastern Robin"},
+		},
+		Metadata: map[string]any{
+			"source": "local",
+		},
+	}
+
+	data, err := json.Marshal(info)
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(data, &parsed))
+
+	assert.Equal(t, "Turdus migratorius", parsed["scientific_name"])
+	assert.Equal(t, "amero", parsed["species_code"])
+	assert.NotNil(t, parsed["taxonomy"])
+	assert.NotNil(t, parsed["subspecies"])
+	assert.NotNil(t, parsed["metadata"])
+
+	// Verify subspecies array
+	subspecies, ok := parsed["subspecies"].([]any)
+	require.True(t, ok)
+	assert.Len(t, subspecies, 1)
+}
+
+// TestGetAllSpecies_LocalizedSecondaryModel verifies that GetAllSpecies serves
+// secondary-model species (a scientific-only bat label) with their localized
+// common name, sourced from the injected scientific-to-common name map rather
+// than the raw primary BirdNET.Labels.
+//
+// In production the name map is seeded by control_monitor (UpdateCommonNameMap
+// with the orchestrator's AllLabels union, localized through the batch resolver);
+// that construction lives in the facade's name-map plumbing, not the species
+// domain. Here the already-localized map is injected directly so the test
+// isolates the species handler's own behavior: building the list from the cached
+// map, carrying the localized common name, and sorting by scientific name.
+func TestGetAllSpecies_LocalizedSecondaryModel(t *testing.T) {
+	t.Parallel()
+	t.Attr("component", "species")
+	t.Attr("feature", "localized-name-resolution")
+
+	e := echo.New()
+	handler := &Handler{
+		Core: &apicore.Core{Echo: e, Group: e.Group("/api/v2")},
+		speciesSnapshot: func() *speciesindex.Snapshot {
+			return &speciesindex.Snapshot{SciToCommon: map[string]string{
+				"Barbastella barbastellus": "mopsilepakko", // localized bat name (secondary model)
+				"Parus major":              "Great Tit",
+			}}
+		},
+	}
+	handler.Settings.Store(&conf.Settings{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v2/species/all", http.NoBody)
+	rec := httptest.NewRecorder()
+	ctx := e.NewContext(req, rec)
+
+	require.NoError(t, handler.GetAllSpecies(ctx))
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response AllSpeciesResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+
+	byScientific := make(map[string]dto.RangeFilterSpecies, len(response.Species))
+	for _, s := range response.Species {
+		byScientific[s.ScientificName] = s
+	}
+
+	bat, ok := byScientific["Barbastella barbastellus"]
+	require.True(t, ok, "secondary-model bat species must be present in /species/all")
+	assert.Equal(t, "mopsilepakko", bat.CommonName, "bat must carry its localized common name")
+
+	tit, ok := byScientific["Parus major"]
+	require.True(t, ok, "primary species must still be present")
+	assert.Equal(t, "Great Tit", tit.CommonName)
+
+	// Response must be deterministically sorted by scientific name.
+	require.Len(t, response.Species, 2)
+	assert.Equal(t, "Barbastella barbastellus", response.Species[0].ScientificName, "response must be sorted by scientific name")
+	assert.Equal(t, "Parus major", response.Species[1].ScientificName)
+
+	assert.Equal(t, len(response.Species), response.Count)
+}
+
+// TestGetAllSpecies tests the GetAllSpecies endpoint returns all BirdNET labels
+// via the fallback path (empty cached name map; labels read from settings).
+func TestGetAllSpecies(t *testing.T) {
+	t.Parallel()
+	t.Attr("component", "species")
+	t.Attr("type", "unit")
+	t.Attr("feature", "all-species-list")
+
+	tests := []struct {
+		name           string
+		labels         []string
+		expectedCount  int
+		expectedStatus int
+	}{
+		{
+			name:           "returns all labels",
+			labels:         []string{"Turdus migratorius_American Robin", "Cyanocitta cristata_Blue Jay", "Corvus brachyrhynchos_American Crow"},
+			expectedCount:  3,
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "empty labels",
+			labels:         []string{},
+			expectedCount:  0,
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "nil labels",
+			labels:         nil,
+			expectedCount:  0,
+			expectedStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			e := echo.New()
+			settings := &conf.Settings{}
+			settings.BirdNET.Labels = tt.labels
+
+			// Empty injected name map forces the fallback path that parses
+			// allModelLabels() (which reads settings.BirdNET.Labels here, since
+			// Processor is nil).
+			handler := &Handler{
+				Core:            &apicore.Core{Echo: e, Group: e.Group("/api/v2")},
+				speciesSnapshot: speciesindex.Empty,
+			}
+			handler.Settings.Store(settings)
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v2/species/all", http.NoBody)
+			rec := httptest.NewRecorder()
+			ctx := e.NewContext(req, rec)
+
+			err := handler.GetAllSpecies(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedStatus, rec.Code)
+
+			var response AllSpeciesResponse
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+			assert.Equal(t, tt.expectedCount, response.Count)
+			// A JSON null decodes to a nil slice and an empty array to a non-nil one, so this
+			// catches an empty list serialized as null.
+			require.NotNil(t, response.Species, "species must be a JSON array, not null")
+			require.Len(t, response.Species, tt.expectedCount)
+
+			if tt.expectedCount > 0 {
+				// Verify first species is parsed correctly
+				assert.Equal(t, "Turdus migratorius_American Robin", response.Species[0].Label)
+				assert.Equal(t, "Turdus migratorius", response.Species[0].ScientificName)
+				assert.Equal(t, "American Robin", response.Species[0].CommonName)
+
+				// Verify order is preserved
+				assert.Equal(t, "Cyanocitta cristata_Blue Jay", response.Species[1].Label)
+				assert.Equal(t, "Cyanocitta cristata", response.Species[1].ScientificName)
+				assert.Equal(t, "Blue Jay", response.Species[1].CommonName)
+			}
+		})
+	}
+}
+
+func TestResolveSpeciesLabel(t *testing.T) {
+	t.Parallel()
+
+	allLabels := []string{
+		testCanonName + "_" + testCanonCommon,
+		testSciName + "_" + testCommonName,
+	}
+
+	tests := []struct {
+		name       string
+		targetSci  string
+		wantLabel  string
+		wantCommon string
+	}{
+		{
+			name:       "exact match",
+			targetSci:  testSciName,
+			wantLabel:  testSciName + "_" + testCommonName,
+			wantCommon: testCommonName,
+		},
+		{
+			name:       "taxonomic alias",
+			targetSci:  testAliasName,
+			wantLabel:  testCanonName + "_" + testCanonCommon,
+			wantCommon: testCanonCommon,
+		},
+		{
+			name:       "case mismatch match",
+			targetSci:  " tURdus MIgratoRIUS ",
+			wantLabel:  testSciName + "_" + testCommonName,
+			wantCommon: testCommonName,
+		},
+		{
+			name:       "not found",
+			targetSci:  "Unknown species",
+			wantLabel:  "",
+			wantCommon: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotLabel, gotCommon := resolveSpeciesLabel(testSnap(allLabels), tt.targetSci)
+			assert.Equal(t, tt.wantLabel, gotLabel)
+			assert.Equal(t, tt.wantCommon, gotCommon)
+		})
+	}
+}
+
+func TestResolveSpeciesLabel_Empty(t *testing.T) {
+	t.Parallel()
+	gotLabel, gotCommon := resolveSpeciesLabel(speciesindex.Empty(), "Turdus migratorius")
+	assert.Empty(t, gotLabel)
+	assert.Empty(t, gotCommon)
+}
+
+// TestGetSpeciesInfo_ResolvesSnapshotUnionSpecies pins the deliberate additive
+// widening in this change: getSpeciesInfo resolves against the orchestrator
+// snapshot (a superset of the loaded-model labels that also carries the
+// range-filter inclusion list), not bn.AllLabels() alone. A species present in the
+// snapshot but not a loaded-model label (a stand-in for a range-filter-included
+// species) must resolve with 200, matching what /species/all already lists, rather
+// than 404. The golden corpus tests cannot see this because they build the snapshot
+// directly, so this pins the widening at the request path explicitly.
+func TestGetSpeciesInfo_ResolvesSnapshotUnionSpecies(t *testing.T) {
+	t.Parallel()
+
+	const inclusionSci = "Zzz Inclusiononly"
+	snap := speciesindex.Build([]string{inclusionSci + "_Included Species"}, nil, "en")
+	h := &Handler{
+		Core:                   &apicore.Core{},
+		speciesSnapshot:        func() *speciesindex.Snapshot { return snap },
+		speciesBackendOverride: &goldenBackend{rc: classifier.RarityContext{FilterActive: false, Settings: goldenSettings()}},
+	}
+	h.Settings.Store(goldenSettings())
+
+	info, err := h.getSpeciesInfo(t.Context(), inclusionSci)
+	require.NoError(t, err, "a species in the snapshot union must resolve, not 404")
+	require.NotNil(t, info)
+	assert.Equal(t, inclusionSci, info.ScientificName)
+	assert.Equal(t, "Included Species", info.CommonName)
+}
+
+func TestComputeRarity(t *testing.T) {
+	t.Parallel()
+
+	geomodelLabels := []string{
+		testCanonName + "_" + testCanonCommon,
+		testSciName + "_" + testCommonName,
+		"Universal GeomodelOnly_Species",
+	}
+	classifierLabels := []string{
+		testCanonName + "_" + testCanonCommon,
+		testSciName + "_" + testCommonName,
+	}
+
+	scores := []classifier.SpeciesScore{
+		{Label: testSciName + "_" + testCommonName, Score: 0.9},
+		{Label: testCanonName + "_" + testCanonCommon, Score: 0.1},
+	}
+
+	tests := []struct {
+		name       string
+		targetSci  string
+		wantScore  float64
+		wantStatus RarityStatus
+	}{
+		{
+			name:       "found in scores (very common)",
+			targetSci:  testSciName,
+			wantScore:  0.9,
+			wantStatus: RarityVeryCommon,
+		},
+		{
+			name:       "found in scores via alias",
+			targetSci:  testAliasName,
+			wantScore:  0.1,
+			wantStatus: RarityRare,
+		},
+		{
+			name:       "case mismatch in alias",
+			targetSci:  " STreptoPeliA SenEgaLenSiS ",
+			wantScore:  0.1,
+			wantStatus: RarityRare,
+		},
+		{
+			name:       "universal geomodel only (very rare)",
+			targetSci:  "Universal GeomodelOnly",
+			wantScore:  0.0,
+			wantStatus: RarityVeryRare,
+		},
+		{
+			name:       "unknown species (no coverage)",
+			targetSci:  "Completely Unknown",
+			wantScore:  0.0,
+			wantStatus: RarityUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotScore, gotStatus := testComputeRarity(&classifier.RarityContext{
+				FilterActive:     true,
+				Scores:           scores,
+				Geomodel:         classifier.NewLabelVocabulary(geomodelLabels),
+				ClassifierLabels: classifierLabels,
+			}, tt.targetSci)
+			assert.InDelta(t, tt.wantScore, gotScore, 0.001)
+			assert.Equal(t, tt.wantStatus, gotStatus)
+		})
+	}
+}
+
+func TestComputeRarity_Empty(t *testing.T) {
+	t.Parallel()
+	gotScore, gotStatus := testComputeRarity(&classifier.RarityContext{FilterActive: true}, "Turdus migratorius")
+	assert.InDelta(t, 0.0, gotScore, 0.001)
+	assert.Equal(t, RarityUnknown, gotStatus)
+}
+
+// TestComputeRarity_InactiveFilterReportsUnknown pins #3935: when the range filter
+// is not active, GetRarityContext yields synthetic zero scores for every label, so a
+// covered species would otherwise be misreported as "very rare" at 0%. With the
+// filter inactive the occurrence probability is unknown regardless of coverage or
+// any score present in the list.
+func TestComputeRarity_InactiveFilterReportsUnknown(t *testing.T) {
+	t.Parallel()
+
+	labels := []string{testSciName + "_" + testCommonName}
+	// The species is present in both the geomodel vocabulary and the score list, so
+	// with an active filter this would resolve to a real rarity. An inactive filter
+	// means the 0.0 score is synthetic and must report unknown, not very rare.
+	scores := []classifier.SpeciesScore{{Label: testSciName + "_" + testCommonName, Score: 0.0}}
+
+	score, status := testComputeRarity(&classifier.RarityContext{
+		FilterActive:     false,
+		Scores:           scores,
+		Geomodel:         classifier.NewLabelVocabulary(labels),
+		ClassifierLabels: labels,
+	}, testSciName)
+	assert.InDelta(t, 0.0, score, 0.001)
+	assert.Equal(t, RarityUnknown, status, "an inactive range filter yields unknown rarity, not very rare (#3935)")
+}
+
+// TestComputeRarity_GeomodelLabelsTakePrecedence pins the reported bug. Coverage is
+// decided by the geomodel's vocabulary, so a species the classifier can name but the
+// geomodel cannot score has no occurrence probability and must report unknown rather
+// than a misleading "very rare".
+func TestComputeRarity_GeomodelLabelsTakePrecedence(t *testing.T) {
+	t.Parallel()
+
+	geomodelLabels := []string{testCanonName + "_" + testCanonCommon}
+	classifierLabels := []string{
+		testCanonName + "_" + testCanonCommon,
+		testSciName + "_" + testCommonName,
+	}
+
+	_, status := testComputeRarity(&classifier.RarityContext{
+		FilterActive:     true,
+		Geomodel:         classifier.NewLabelVocabulary(geomodelLabels),
+		ClassifierLabels: classifierLabels,
+	}, testSciName)
+	assert.Equal(t, RarityUnknown, status,
+		"classifier-only species has no geomodel occurrence probability")
+
+	_, status = testComputeRarity(&classifier.RarityContext{
+		FilterActive:     true,
+		Geomodel:         classifier.NewLabelVocabulary(geomodelLabels),
+		ClassifierLabels: classifierLabels,
+	}, testCanonName)
+	assert.Equal(t, RarityVeryRare, status,
+		"geomodel-covered species below threshold is very rare")
+}
+
+// TestComputeRarity_NoGeomodelLabels covers the range-filter backends whose vocabulary
+// is the classifier's own label set: the TFLite meta model, the plain ONNX range
+// filter, and an unconfigured location. GetRarityContext reports no geomodel vocabulary
+// for those, so coverage must fall back to the classifier labels instead of reporting
+// every species as unknown.
+func TestComputeRarity_NoGeomodelLabels(t *testing.T) {
+	t.Parallel()
+
+	classifierLabels := []string{
+		testCanonName + "_" + testCanonCommon,
+		testSciName + "_" + testCommonName,
+	}
+
+	tests := []struct {
+		name       string
+		targetSci  string
+		wantStatus RarityStatus
+	}{
+		{
+			name:       "classifier species below threshold is very rare",
+			targetSci:  testSciName,
+			wantStatus: RarityVeryRare,
+		},
+		{
+			name:       "legacy synonym of a classifier species is still covered",
+			targetSci:  testAliasName,
+			wantStatus: RarityVeryRare,
+		},
+		{
+			name:       "species outside the classifier has no coverage",
+			targetSci:  "Myotis brandtii",
+			wantStatus: RarityUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotScore, gotStatus := testComputeRarity(&classifier.RarityContext{
+				FilterActive:     true,
+				ClassifierLabels: classifierLabels,
+			}, tt.targetSci)
+			assert.InDelta(t, 0.0, gotScore, 0.001)
+			assert.Equal(t, tt.wantStatus, gotStatus)
+		})
+	}
+}
+
+// TestSpeciesHasGeomodelCoverage_UnknownWhenFilterInactive pins the predicate's own
+// honesty independent of its caller: coverage is a property of an ACTIVE range filter,
+// so an inactive filter (nil geomodel, synthetic zeros) must report not-covered rather
+// than falling through to the classifier-label scan and granting nominal coverage to
+// every classifier species. computeRarity already short-circuits on !FilterActive, so
+// this guards the helper for any future caller.
+func TestSpeciesHasGeomodelCoverage_UnknownWhenFilterInactive(t *testing.T) {
+	t.Parallel()
+
+	snap := speciesindex.Empty()
+	label := testSciName + "_" + testCommonName
+	key := snap.CanonicalKey(label)
+
+	inactive := &classifier.RarityContext{
+		FilterActive:     false,
+		Geomodel:         nil,
+		ClassifierLabels: []string{label},
+	}
+	assert.False(t, speciesHasGeomodelCoverage(key, inactive, snap),
+		"an inactive range filter has no coverage, even for a classifier label")
+
+	// The active legacy (MData) path has no geomodel vocabulary, so its own classifier
+	// labels ARE the coverage set; the fallback must survive when the filter is active.
+	legacyActive := &classifier.RarityContext{
+		FilterActive:     true,
+		Geomodel:         nil,
+		ClassifierLabels: []string{label},
+	}
+	assert.True(t, speciesHasGeomodelCoverage(key, legacyActive, snap),
+		"an active legacy filter covers its own classifier labels")
+}
+
+// TestResolveSpeciesLabel_CollidingSpecies guards a defect an earlier revision shipped:
+// matching on the canonical name alone answered a request for one of these two species
+// with the other's label and common name, because the alias map merges them while
+// BirdNET v2.4 ships both.
+func TestResolveSpeciesLabel_CollidingSpecies(t *testing.T) {
+	t.Parallel()
+
+	allLabels := []string{
+		collidingSciA + "_" + collidingCommonA,
+		collidingSciB + "_" + collidingCommonB,
+	}
+
+	gotLabel, gotCommon := resolveSpeciesLabel(testSnap(allLabels), collidingSciB)
+	assert.Equal(t, collidingSciB+"_"+collidingCommonB, gotLabel,
+		"an exact scientific-name match must win over the alias collapse")
+	assert.Equal(t, collidingCommonB, gotCommon)
+
+	gotLabel, gotCommon = resolveSpeciesLabel(testSnap(allLabels), collidingSciA)
+	assert.Equal(t, collidingSciA+"_"+collidingCommonA, gotLabel)
+	assert.Equal(t, collidingCommonA, gotCommon)
+}
+
+// TestResolveSpeciesLabel_LegacyLabelCanonicalTarget covers the production-relevant
+// direction the other alias cases miss: the LABEL carries the legacy synonym (as BirdNET
+// v2.4's own labels do) while the request uses the current name.
+func TestResolveSpeciesLabel_LegacyLabelCanonicalTarget(t *testing.T) {
+	t.Parallel()
+
+	allLabels := []string{testAliasName + "_" + testCanonCommon}
+
+	gotLabel, gotCommon := resolveSpeciesLabel(testSnap(allLabels), testCanonName)
+	assert.Equal(t, testAliasName+"_"+testCanonCommon, gotLabel,
+		"canonicalization must apply to the label side, not only the request side")
+	assert.Equal(t, testCanonCommon, gotCommon)
+}
+
+// TestComputeRarity_CollidingSpecies is the rarity-side counterpart to
+// TestResolveSpeciesLabel_CollidingSpecies: each species must report its own score.
+func TestComputeRarity_CollidingSpecies(t *testing.T) {
+	t.Parallel()
+
+	labels := []string{
+		collidingSciA + "_" + collidingCommonA,
+		collidingSciB + "_" + collidingCommonB,
+	}
+	// Descending by score, as the probable-species list arrives.
+	scores := []classifier.SpeciesScore{
+		{Label: collidingSciA + "_" + collidingCommonA, Score: 0.9},
+		{Label: collidingSciB + "_" + collidingCommonB, Score: 0.1},
+	}
+
+	gotScore, gotStatus := testComputeRarity(&classifier.RarityContext{
+		FilterActive:     true,
+		Scores:           scores,
+		Geomodel:         classifier.NewLabelVocabulary(labels),
+		ClassifierLabels: labels,
+	}, collidingSciB)
+	assert.InDelta(t, 0.1, gotScore, 0.001, "the merged species must keep its own score")
+	assert.Equal(t, RarityRare, gotStatus)
+
+	gotScore, gotStatus = testComputeRarity(&classifier.RarityContext{
+		FilterActive:     true,
+		Scores:           scores,
+		Geomodel:         classifier.NewLabelVocabulary(labels),
+		ClassifierLabels: labels,
+	}, collidingSciA)
+	assert.InDelta(t, 0.9, gotScore, 0.001)
+	assert.Equal(t, RarityVeryCommon, gotStatus)
+}
+
+// TestComputeRarity_SyntheticScoresReportUnknown pins that a score injected for a species
+// OUTSIDE the coverage vocabulary is not read as a rarity, whatever its value.
+// PassUnmappedSpecies injects unmapped species at 0.0, which is the case this fully
+// covers: previously they read as very_rare, so the badge depended on an unrelated
+// toggle.
+//
+// This test exercises the coverage guard for rows outside both vocabularies.
+// TestFindNativeSpeciesScore separately verifies that tagged include-override rows
+// inside the coverage vocabulary are ignored in favor of native probabilities.
+func TestComputeRarity_SyntheticScoresReportUnknown(t *testing.T) {
+	t.Parallel()
+
+	const unmappedSci = "Myotis brandtii"
+	geomodelLabels := []string{testCanonName + "_" + testCanonCommon}
+	// A species present in neither vocabulary, standing in for one the range filter
+	// cannot rank. classifierLabels is the primary model's own set in production.
+	classifierLabels := []string{testSciName + "_" + testCommonName}
+
+	tests := []struct {
+		name  string
+		score float64
+		why   string
+	}{
+		{name: "unmapped species injected at 0.0", score: 0.0, why: "must not read as very_rare"},
+		{name: "uncovered override injected at 1.0", score: 1.0, why: "must not read as very_common"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			scores := []classifier.SpeciesScore{{Label: unmappedSci + "_Brandt's Bat", Score: tt.score}}
+			gotScore, gotStatus := testComputeRarity(&classifier.RarityContext{
+				FilterActive:     true,
+				Scores:           scores,
+				Geomodel:         classifier.NewLabelVocabulary(geomodelLabels),
+				ClassifierLabels: classifierLabels,
+			}, unmappedSci)
+			assert.Equal(t, RarityUnknown, gotStatus, tt.why)
+			assert.InDelta(t, 0.0, gotScore, 0.001)
+		})
+	}
+}
+
+// TestSpeciesInfoJSONOmitsUnsetBlocks pins the omitzero half of the wire contract. The
+// populated direction is covered by TestGetSpeciesInfo_Golden; without this,
+// reverting omitzero to omitempty would go unnoticed and start emitting zero-valued
+// "rarity" and "taxonomy" objects on every response where the lookup was skipped,
+// breaking clients that gate on the key's presence.
+func TestSpeciesInfoJSONOmitsUnsetBlocks(t *testing.T) {
+	t.Parallel()
+
+	data, err := json.Marshal(SpeciesInfo{ScientificName: testSciName, CommonName: testCommonName})
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(data, &parsed))
+	assert.NotContains(t, parsed, "rarity", "an unset rarity block must be omitted, not emitted as zeros")
+	assert.NotContains(t, parsed, "taxonomy", "an unset taxonomy block must be omitted, not emitted as zeros")
+	assert.Contains(t, parsed, "scientific_name")
+}
+
+// TestTaxonomyInfoJSONOmitsUnsetHierarchy is the TaxonomyInfo counterpart.
+func TestTaxonomyInfoJSONOmitsUnsetHierarchy(t *testing.T) {
+	t.Parallel()
+
+	data, err := json.Marshal(TaxonomyInfo{ScientificName: testSciName})
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(data, &parsed))
+	assert.NotContains(t, parsed, "taxonomy", "an unset hierarchy must be omitted, not emitted as zeros")
+}

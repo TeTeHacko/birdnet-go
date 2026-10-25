@@ -39,9 +39,10 @@
     speciesSettings,
     realtimeSettings,
     speciesTrackingSettings,
+    SettingsChangedElsewhereError,
   } from '$lib/stores/settings';
   import { hasSettingsChanged } from '$lib/utils/settingsChanges';
-  import type { SpeciesConfig, SpeciesSettings } from '$lib/stores/settings';
+  import type { SpeciesSettings } from '$lib/stores/settings';
   import SettingsSection from '$lib/desktop/features/settings/components/SettingsSection.svelte';
   import SettingsTabs from '$lib/desktop/features/settings/components/SettingsTabs.svelte';
   import type { TabDefinition } from '$lib/desktop/features/settings/components/SettingsTabs.svelte';
@@ -55,7 +56,14 @@
   import { loggers } from '$lib/utils/logger';
   import { safeGet } from '$lib/utils/security';
   import { api } from '$lib/utils/api';
+  import { buildAppUrl } from '$lib/utils/urlHelpers';
+  import { SETTINGS_ROUTES } from '$lib/utils/settingsRoutes';
+  import { handleAppLinkClick } from '$lib/stores/navigation.svelte';
   import { getLocalDateString } from '$lib/utils/date';
+  import {
+    compareActiveSpeciesForExport,
+    resolveActiveSpeciesScores,
+  } from '$lib/utils/speciesScores';
   import {
     buildSpeciesNameMaps,
     isSpeciesInList,
@@ -142,6 +150,10 @@
       windowDays: 7,
       seasons: SEASON_DEFAULTS,
     },
+    infrequentTracking: {
+      enabled: false,
+      absenceDays: 14,
+    },
   } as const;
 
   // ============================================================================
@@ -160,11 +172,11 @@
 
   // PERFORMANCE OPTIMIZATION: Reactive settings with proper defaults
   let settings = $derived(
-    (() => {
-      const base = $speciesSettings ?? {
-        include: [] as string[],
-        exclude: [] as string[],
-        config: {} as Record<string, SpeciesConfig>,
+    ((): SpeciesSettings => {
+      const base: SpeciesSettings = $speciesSettings ?? {
+        include: [],
+        exclude: [],
+        config: {},
       };
 
       // Ensure config is always a valid object to prevent Object.keys() errors
@@ -172,7 +184,7 @@
         include: base.include ?? [],
         exclude: base.exclude ?? [],
         config: isPlainObject(base.config) ? base.config : {},
-      } as SpeciesSettings;
+      };
     })()
   );
 
@@ -197,6 +209,8 @@
     commonName: string;
     scientificName: string;
     score: number;
+    exportScore: number;
+    exportOrder: number;
     isManuallyIncluded: boolean;
     hasCustomConfig: boolean;
   }
@@ -446,6 +460,10 @@
         windowDays?: number;
         seasons?: Record<string, { startMonth: number; startDay: number }>;
       };
+      infrequentTracking: {
+        enabled?: boolean;
+        absenceDays?: number;
+      };
     }>
   ) {
     settingsActions.updateSection('realtime', {
@@ -500,6 +518,18 @@
                 SEASON_DEFAULTS,
             }
           : (trackingSettings?.seasonalTracking ?? { ...TRACKING_DEFAULTS.seasonalTracking }),
+        infrequentTracking: updates.infrequentTracking
+          ? {
+              enabled:
+                updates.infrequentTracking.enabled ??
+                trackingSettings?.infrequentTracking?.enabled ??
+                TRACKING_DEFAULTS.infrequentTracking.enabled,
+              absenceDays:
+                updates.infrequentTracking.absenceDays ??
+                trackingSettings?.infrequentTracking?.absenceDays ??
+                TRACKING_DEFAULTS.infrequentTracking.absenceDays,
+            }
+          : (trackingSettings?.infrequentTracking ?? { ...TRACKING_DEFAULTS.infrequentTracking }),
       },
     });
   }
@@ -660,6 +690,9 @@
           scientificName: string;
           commonName: string;
           score: number;
+          rangeScore?: number;
+          isManuallyIncluded?: boolean;
+          hasCustomConfig?: boolean;
         }>;
         count: number;
         threshold: number;
@@ -693,19 +726,32 @@
       const includeSet = new Set((currentInclude ?? []).map(s => normalizeForLookup(s)));
       const configKeys = new Set(Object.keys(currentConfig ?? {}).map(s => normalizeForLookup(s)));
 
+      // Newer backends carry override provenance after resolving aliases against
+      // the actual model labels. Fall back to literal matching for compatibility
+      // with older API responses that do not include the flag.
+      const isManuallyIncluded = (species: (typeof response.species)[number]): boolean =>
+        species.isManuallyIncluded ??
+        isInNameSet(includeSet, species.commonName, species.scientificName);
+      const hasCustomConfig = (species: (typeof response.species)[number]): boolean =>
+        species.hasCustomConfig ??
+        isInNameSet(configKeys, species.commonName, species.scientificName);
+
       // Filter species that pass the threshold OR are manually included
       // Go serializes a nil slice as JSON null, so guard before iterating.
       const mappedSpecies: ActiveSpecies[] = (response.species ?? [])
-        .filter(
-          s => s.score >= threshold || isInNameSet(includeSet, s.commonName, s.scientificName)
-        )
-        .map(s => ({
-          commonName: s.commonName,
-          scientificName: s.scientificName,
-          score: s.score,
-          isManuallyIncluded: isInNameSet(includeSet, s.commonName, s.scientificName),
-          hasCustomConfig: isInNameSet(configKeys, s.commonName, s.scientificName),
-        }));
+        .filter(s => s.score >= threshold || isManuallyIncluded(s))
+        .map((s, exportOrder) => {
+          const scores = resolveActiveSpeciesScores(s.score, s.rangeScore);
+          return {
+            commonName: s.commonName,
+            scientificName: s.scientificName,
+            score: scores.displayScore,
+            exportScore: scores.exportScore,
+            exportOrder,
+            isManuallyIncluded: isManuallyIncluded(s),
+            hasCustomConfig: hasCustomConfig(s),
+          };
+        });
 
       // Sort by score descending
       mappedSpecies.sort((a, b) => b.score - a.score);
@@ -896,13 +942,15 @@
     if (!activeSpeciesState.data?.species.length) return;
 
     const headers = ['Common Name', 'Scientific Name', 'Score', 'Included', 'Configured'];
-    const rows = activeSpeciesState.data.species.map(s => [
-      escapeCsvField(s.commonName),
-      escapeCsvField(s.scientificName),
-      escapeCsvField(s.score.toFixed(4)),
-      escapeCsvField(s.isManuallyIncluded ? 'Yes' : 'No'),
-      escapeCsvField(s.hasCustomConfig ? 'Yes' : 'No'),
-    ]);
+    const rows = [...activeSpeciesState.data.species]
+      .sort(compareActiveSpeciesForExport)
+      .map(s => [
+        escapeCsvField(s.commonName),
+        escapeCsvField(s.scientificName),
+        escapeCsvField(s.exportScore.toFixed(4)),
+        escapeCsvField(s.isManuallyIncluded ? 'Yes' : 'No'),
+        escapeCsvField(s.hasCustomConfig ? 'Yes' : 'No'),
+      ]);
 
     const csvContent = [headers.map(escapeCsvField).join(','), ...rows.map(r => r.join(','))].join(
       '\n'
@@ -1170,8 +1218,17 @@
       );
       closeEditor();
     } catch (error) {
-      logger.error('Failed to save species configuration:', error);
-      toastActions.error(t('settings.species.saveError', { species }));
+      // The store already showed the error to the user, so no second toast here. A
+      // changed-elsewhere conflict is an expected flow (the user was asked to review and
+      // save again), not a fault.
+      if (error instanceof SettingsChangedElsewhereError) {
+        logger.warn(
+          'Settings changed elsewhere during species configuration save; the user was asked to review them',
+          error
+        );
+      } else {
+        logger.error('Failed to save species configuration:', error);
+      }
     }
   }
 
@@ -1409,7 +1466,8 @@
                   'Set your location in Main Settings to see species available in your area. The range filter uses your location to determine which species are likely to be found nearby.'}
               </p>
               <a
-                href="/ui/settings/main"
+                href={buildAppUrl(SETTINGS_ROUTES.mainLocation)}
+                onclick={handleAppLinkClick}
                 class="inline-flex items-center justify-center h-8 px-3 text-sm font-medium rounded-lg bg-[var(--color-warning)] text-[var(--color-warning-content)] hover:bg-[var(--color-warning-hover)] transition-colors mt-3"
               >
                 {t('settings.species.activeSpecies.locationNotConfigured.action') ||
@@ -1786,6 +1844,7 @@
                   </span>
                 </label>
                 <SelectDropdown
+                  id="yearly-reset-month"
                   value={String(
                     trackingSettings?.yearlyTracking?.resetMonth ??
                       TRACKING_DEFAULTS.yearlyTracking.resetMonth
@@ -1938,11 +1997,16 @@
                     <div class="grid grid-cols-2 gap-3 items-end">
                       <div>
                         <label class="flex items-center py-2" for={`${season}-start-month`}>
+                          <!-- The card heading names the season on screen; the name carries it too -->
+                          <span class="sr-only">
+                            {t(`settings.species.tracking.seasonal.seasons.${season}`)}
+                          </span>
                           <span class="text-sm font-medium">
                             {t('settings.species.tracking.seasonal.seasons.startMonth')}
                           </span>
                         </label>
                         <SelectDropdown
+                          id={`${season}-start-month`}
                           value={String(currentSeasonData?.startMonth ?? seasonDefaults.startMonth)}
                           options={monthOptions}
                           disabled={store.isLoading || store.isSaving}
@@ -1980,6 +2044,61 @@
               <SettingsNote>
                 {t('settings.species.tracking.seasonal.seasons.hemisphereNote')}
               </SettingsNote>
+            </div>
+          {/if}
+        </div>
+      </SettingsSection>
+
+      <!-- Infrequent Tracking Settings -->
+      <SettingsSection
+        title={t('settings.species.tracking.infrequent.title')}
+        description={t('settings.species.tracking.infrequent.description')}
+        defaultOpen={false}
+      >
+        <div class="space-y-4">
+          <!-- Enable Infrequent Tracking -->
+          <Checkbox
+            checked={trackingSettings?.infrequentTracking?.enabled ?? false}
+            label={t('settings.species.tracking.infrequent.enabled.label')}
+            helpText={t('settings.species.tracking.infrequent.enabled.helpText')}
+            disabled={store.isLoading || store.isSaving}
+            onchange={value => updateTrackingSettings({ infrequentTracking: { enabled: value } })}
+          />
+
+          {#if trackingSettings?.infrequentTracking?.enabled}
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <!-- Absence Days -->
+              <div>
+                <label class="flex items-center py-2" for="infrequent-absence-days">
+                  <span class="text-sm font-medium">
+                    {t('settings.species.tracking.infrequent.absenceDays.label')}
+                  </span>
+                </label>
+                <div class="flex">
+                  <input
+                    id="infrequent-absence-days"
+                    type="number"
+                    min={TRACKING_LIMITS.days.min}
+                    max={TRACKING_LIMITS.days.max}
+                    value={trackingSettings?.infrequentTracking?.absenceDays ??
+                      TRACKING_DEFAULTS.infrequentTracking.absenceDays}
+                    onchange={createNumberInputHandler(
+                      TRACKING_LIMITS.days,
+                      TRACKING_DEFAULTS.infrequentTracking.absenceDays,
+                      v => updateTrackingSettings({ infrequentTracking: { absenceDays: v } })
+                    )}
+                    class="flex-1 h-9 px-3 text-sm rounded-l-lg border border-r-0 border-[var(--border-100)] bg-[var(--surface-100)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={store.isLoading || store.isSaving}
+                  />
+                  <span
+                    class="inline-flex items-center justify-center h-9 px-3 text-sm font-medium rounded-r-lg border border-[var(--border-100)] bg-[var(--surface-200)] text-muted"
+                    >{t('settings.species.tracking.units.days')}</span
+                  >
+                </div>
+                <p class="text-xs text-muted mt-1">
+                  {t('settings.species.tracking.infrequent.absenceDays.helpText')}
+                </p>
+              </div>
             </div>
           {/if}
         </div>

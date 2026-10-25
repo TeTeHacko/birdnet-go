@@ -23,7 +23,7 @@ const (
 	MsgIntegrationFailedTitle   = "notifications.content.integration.failedTitle"
 	MsgIntegrationFailedMessage = "notifications.content.integration.failedMessage"
 
-	// Error notifications (title keys only — messages are raw error strings)
+	// Error notifications (title keys only; messages are raw error strings)
 	MsgErrorCriticalSystem = "notifications.content.error.criticalSystem"
 	MsgErrorApplication    = "notifications.content.error.application"
 	MsgErrorImageProvider  = "notifications.content.error.imageProvider"
@@ -35,13 +35,14 @@ const (
 	MsgSettingsUpdatingIntervals              = "notifications.content.settings.updatingIntervals"
 	MsgSettingsReconfiguringMqtt              = "notifications.content.settings.reconfiguringMqtt"
 	MsgSettingsReconfiguringBirdweather       = "notifications.content.settings.reconfiguringBirdweather"
+	MsgSettingsReconfiguringEbird             = "notifications.content.settings.reconfiguringEbird"
 	MsgSettingsReconfiguringStreams           = "notifications.content.settings.reconfiguringStreams"
 	MsgSettingsReconfiguringTelemetry         = "notifications.content.settings.reconfiguringTelemetry"
 	MsgSettingsReconfiguringSpeciesTracking   = "notifications.content.settings.reconfiguringSpeciesTracking"
 	MsgSettingsReconfiguringPushNotifications = "notifications.content.settings.reconfiguringPushNotifications"
-	MsgSettingsRecalculatingThresholds        = "notifications.content.settings.recalculatingThresholds"
 	MsgSettingsReconfiguringDynamicThresholds = "notifications.content.settings.reconfiguringDynamicThresholds"
 	MsgSettingsWebserverRestart               = "notifications.content.settings.webserverRestartRequired"
+	MsgSettingsOauthRestart                   = "notifications.content.settings.oauthRestartRequired"
 	MsgSettingsDatabaseRestart                = "notifications.content.settings.databaseRestartRequired"
 	MsgSettingsLoggingRestart                 = "notifications.content.settings.loggingRestartRequired"
 
@@ -52,6 +53,7 @@ const (
 	MsgSettingsExtendedCaptureRestart    = "notifications.content.settings.extendedCaptureRestartRequired"
 	MsgSettingsEqualizerFailed           = "notifications.content.settings.equalizerUpdateFailed"
 	MsgSettingsEqualizerUpdated          = "notifications.content.settings.equalizerUpdated"
+	MsgSettingsEqualizerFiltersSkipped   = "notifications.content.settings.equalizerFiltersSkipped"
 
 	// Database migration notifications
 	MsgMigrationStartedTitle     = "notifications.content.migration.startedTitle"
@@ -65,13 +67,23 @@ const (
 	MsgMigrationErrorTitle       = "notifications.content.migration.errorTitle"
 	MsgMigrationErrorMessage     = "notifications.content.migration.errorMessage"
 
+	// Legacy database schema notices
+	MsgMigrationLegacyNotStartedTitle        = "notifications.content.migration.legacyNotStartedTitle"
+	MsgMigrationLegacyNotStartedMessage      = "notifications.content.migration.legacyNotStartedMessage"
+	MsgMigrationLegacyInProgressTitle        = "notifications.content.migration.legacyInProgressTitle"
+	MsgMigrationLegacyInProgressMessage      = "notifications.content.migration.legacyInProgressMessage"
+	MsgMigrationLegacyNeedsAttentionTitle    = "notifications.content.migration.legacyNeedsAttentionTitle"
+	MsgMigrationLegacyNeedsAttentionMessage  = "notifications.content.migration.legacyNeedsAttentionMessage"
+	MsgMigrationLegacyRestartRequiredTitle   = "notifications.content.migration.legacyRestartRequiredTitle"
+	MsgMigrationLegacyRestartRequiredMessage = "notifications.content.migration.legacyRestartRequiredMessage"
+
 	// Legacy database cleanup notifications
 	MsgCleanupCompleteTitle   = "notifications.content.cleanup.completeTitle"
 	MsgCleanupCompleteMessage = "notifications.content.cleanup.completeMessage"
 	MsgCleanupFailedTitle     = "notifications.content.cleanup.failedTitle"
 	MsgCleanupFailedMessage   = "notifications.content.cleanup.failedMessage"
 
-	// API error response keys — used in ErrorResponse.ErrorKey for frontend translation.
+	// API error response keys: used in ErrorResponse.ErrorKey for frontend translation.
 	// Namespace: errors.<handler>.<errorType>
 
 	// Auth errors
@@ -94,6 +106,10 @@ const (
 	MsgErrAlertDuplicateName     = "errors.alert.duplicateName"
 	MsgErrAlertInvalidJSON       = "errors.alert.invalidJSON"
 	MsgErrAlertInvalidEscalation = "errors.alert.invalidEscalation"
+	MsgErrAlertEngineUnavailable = "errors.alert.engineUnavailable"
+
+	// Insights errors
+	MsgErrInsightsV2Required = "errors.insights.v2Required"
 
 	// Detection errors
 	MsgErrDetectionInvalidDate = "errors.detection.invalidDate"
@@ -141,6 +157,7 @@ const (
 	MsgErrIntegBWClientFailed    = "errors.integration.birdweatherClientFailed"
 	MsgErrIntegNoWeatherProvider = "errors.integration.noWeatherProvider"
 	MsgErrIntegOWKeyRequired     = "errors.integration.openWeatherKeyRequired"
+	MsgErrIntegPWKeyRequired     = "errors.integration.pirateWeatherKeyRequired"
 	MsgErrIntegProcessorUnavail  = "errors.integration.processorUnavailable"
 	MsgErrIntegDiscoveryFailed   = "errors.integration.discoveryFailed"
 
@@ -150,6 +167,7 @@ const (
 	MsgErrNotifNotFound           = "errors.notification.notFound"
 	MsgErrNotifHostRequired       = "errors.notification.hostRequired"
 	MsgErrNotifInvalidHost        = "errors.notification.invalidHost"
+	MsgErrNotifInvalidBody        = "errors.notification.invalidBody"
 	MsgErrNotifRateLimit          = "errors.notification.rateLimit"
 
 	// Debug errors
@@ -169,4 +187,81 @@ const (
 	// ONNX Runtime availability notifications
 	MsgORTUnavailableTitle   = "notifications.content.ort.unavailableTitle"
 	MsgORTUnavailableMessage = "notifications.content.ort.unavailableMessage"
+
+	// Model region staleness notifications (coordinate change makes an installed
+	// regional model variant stale; recommend-only, never auto-switches a model)
+	MsgModelRegionStaleTitle         = "notifications.content.region.staleTitle"
+	MsgModelRegionStaleMessage       = "notifications.content.region.staleMessage"
+	MsgModelRegionStaleGlobalMessage = "notifications.content.region.staleGlobalMessage"
+
+	// Model path reconciliation notifications (a configured model file path
+	// pointed at a file that no longer exists and was repaired to the installed
+	// gallery model)
+	MsgModelPathReconciledTitle   = "notifications.content.modelPath.reconciledTitle"
+	MsgModelPathReconciledMessage = "notifications.content.modelPath.reconciledMessage"
+
+	// Model path substitution notifications (a configured model file path pointed
+	// at a file that no longer exists; the installed gallery model was used at
+	// runtime instead, but the configuration was deliberately left unchanged
+	// because the path is user-owned)
+	MsgModelPathSubstitutedTitle   = "notifications.content.modelPath.substitutedTitle"
+	MsgModelPathSubstitutedMessage = "notifications.content.modelPath.substitutedMessage"
+
+	// Model path unreadable notifications (a configured model file could not be
+	// read for a reason OTHER than absence: a permissions change, an I/O error, a
+	// half-initialised mount). The installed gallery model is used at runtime, and
+	// the configuration is never rewritten, because a transient failure must not be
+	// made permanent. Worded separately from the substituted pair above: telling a
+	// user their file "was not found" when it is present but unreadable sends them
+	// looking in the wrong place.
+	MsgModelPathUnreadableTitle   = "notifications.content.modelPath.unreadableTitle"
+	MsgModelPathUnreadableMessage = "notifications.content.modelPath.unreadableMessage"
+
+	// Model path built-in fallback notification (a configured model file is
+	// confirmed absent AND no installed model exists to replace it, so the built-in
+	// model is used instead). Shares MsgModelPathSubstitutedTitle, since the title
+	// ("was not found") is accurate for this case too; only the body differs,
+	// because there is no installed model path to name.
+	MsgModelPathBuiltinMessage = "notifications.content.modelPath.builtinMessage"
+
+	// Model registration notifications (a model assigned to an audio source is
+	// not receiving audio, so it produces no detections)
+	MsgModelNotRegisteredTitle   = "notifications.content.modelPath.notRegisteredTitle"
+	MsgModelNotRegisteredMessage = "notifications.content.modelPath.notRegisteredMessage"
+
+	// Acoustic-model notifications (no acoustic model is loaded, so audio is captured
+	// but not analyzed; N = 0 in the model de-privilege epic, Phase 4). The two states
+	// carry different remedies: none_installed points at the gallery to install a model,
+	// load_failed points at the inference page because a model is installed but failed
+	// to load (missing ONNX Runtime, a corrupt or incompatible file).
+	MsgAcousticModelsNoneTitle         = "notifications.content.acousticModels.noneTitle"
+	MsgAcousticModelsNoneMessage       = "notifications.content.acousticModels.noneMessage"
+	MsgAcousticModelsLoadFailedTitle   = "notifications.content.acousticModels.loadFailedTitle"
+	MsgAcousticModelsLoadFailedMessage = "notifications.content.acousticModels.loadFailedMessage"
+
+	// Model optimize notifications (an installed model has a better build for this
+	// host in the model gallery; recommend-only, never swaps a model by itself)
+	MsgModelOptimizeTitle   = "notifications.content.modelOptimize.title"
+	MsgModelOptimizeMessage = "notifications.content.modelOptimize.message"
+
+	// Inference failure notice: a loaded model failed its last analyses in a row.
+	MsgInferenceFailingTitle            = "notifications.content.inferenceFailing.title"
+	MsgInferenceFailingMessage          = "notifications.content.inferenceFailing.message"
+	MsgInferenceFailingNonFiniteMessage = "notifications.content.inferenceFailing.nonFiniteMessage"
+
+	// Analysis cadence notices: the first cadence plan of the process limits the
+	// analysis overlap to what the hardware sustains (capped), or even zero overlap
+	// exceeds it (overloaded).
+	MsgCadenceCappedTitle       = "notifications.content.analysis.cadenceCappedTitle"
+	MsgCadenceCappedMessage     = "notifications.content.analysis.cadenceCappedMessage"
+	MsgCadenceOverloadedTitle   = "notifications.content.analysis.cadenceOverloadedTitle"
+	MsgCadenceOverloadedMessage = "notifications.content.analysis.cadenceOverloadedMessage"
+
+	// Storage notices: key paths sit on a container's own layer or a memory
+	// filesystem (lost when the container is recreated), or in an anonymous volume
+	// (data that can seem lost after a fresh container start).
+	MsgStorageNotPersistentTitle     = "notifications.content.storage.notPersistentTitle"
+	MsgStorageNotPersistentMessage   = "notifications.content.storage.notPersistentMessage"
+	MsgStorageAnonymousVolumeTitle   = "notifications.content.storage.anonymousVolumeTitle"
+	MsgStorageAnonymousVolumeMessage = "notifications.content.storage.anonymousVolumeMessage"
 )

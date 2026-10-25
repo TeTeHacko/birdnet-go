@@ -62,11 +62,14 @@ func (c *ModelsLoadedCheck) RunMulti(_ context.Context) []health.Result {
 
 	models := c.getModels()
 	if len(models) == 0 {
+		// N = 0 (no acoustic model) is a valid runtime state (model de-privilege epic,
+		// Phase 4). The acoustic_models check owns the aggregate no-model verdict, so
+		// this per-model check stands down to Skipped: one cause yields one alarm.
 		return []health.Result{{
 			Name:       c.Name(),
 			Category:   c.Category(),
-			Status:     health.StatusCritical,
-			Message:    "No analysis models loaded",
+			Status:     health.StatusSkipped,
+			Message:    "No acoustic models loaded (see acoustic_models)",
 			DurationMS: float64(time.Since(start).Microseconds()) / 1000,
 			Timestamp:  time.Now(),
 		}}
@@ -105,7 +108,7 @@ type ModelInferenceInfo struct {
 	ModelID   string
 	ModelName string
 	AvgMS     float64
-	P99MS     float64
+	P95MS     float64 // rolling-window p95 single-inference latency in ms
 	WindowMS  float64 // model-specific analysis window (BufferInterval in ms)
 }
 
@@ -178,19 +181,19 @@ func (c *PerModelInferenceLatencyCheck) RunMulti(_ context.Context) []health.Res
 			continue
 		}
 
-		ratio := s.P99MS / s.WindowMS
+		ratio := s.P95MS / s.WindowMS
 		status := health.StatusHealthy
-		msg := fmt.Sprintf("%s latency OK (p99=%.1fms, window=%.1fms)", s.ModelName, s.P99MS, s.WindowMS)
+		msg := fmt.Sprintf("%s latency OK (p95=%.1fms, window=%.1fms)", s.ModelName, s.P95MS, s.WindowMS)
 
 		switch {
 		case ratio >= latencyCriticalRatio:
 			status = health.StatusCritical
-			msg = fmt.Sprintf("%s p99 (%.1fms) exceeds %.0f%% of analysis window (%.1fms)",
-				s.ModelName, s.P99MS, latencyCriticalRatio*100, s.WindowMS)
+			msg = fmt.Sprintf("%s p95 latency (%.1fms) exceeds %.0f%% of analysis window (%.1fms)",
+				s.ModelName, s.P95MS, latencyCriticalRatio*100, s.WindowMS)
 		case ratio >= latencyWarningRatio:
 			status = health.StatusWarning
-			msg = fmt.Sprintf("%s p99 (%.1fms) exceeds %.0f%% of analysis window (%.1fms)",
-				s.ModelName, s.P99MS, latencyWarningRatio*100, s.WindowMS)
+			msg = fmt.Sprintf("%s p95 latency (%.1fms) exceeds %.0f%% of analysis window (%.1fms)",
+				s.ModelName, s.P95MS, latencyWarningRatio*100, s.WindowMS)
 		}
 
 		results = append(results, health.Result{
@@ -202,7 +205,7 @@ func (c *PerModelInferenceLatencyCheck) RunMulti(_ context.Context) []health.Res
 				"model_id":   s.ModelID,
 				"model_name": s.ModelName,
 				"avg_ms":     s.AvgMS,
-				"p99_ms":     s.P99MS,
+				"p95_ms":     s.P95MS,
 				"window_ms":  s.WindowMS,
 			},
 			Timestamp: time.Now(),

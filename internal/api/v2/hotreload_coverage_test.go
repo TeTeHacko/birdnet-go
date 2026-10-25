@@ -23,7 +23,6 @@ const (
 type hotReloadEntry struct {
 	categories []hotReloadCategory
 	action     string
-	todoAction string
 }
 
 // hotReloadRegistry maps dot-separated field paths to their reload behavior.
@@ -31,6 +30,10 @@ type hotReloadEntry struct {
 var hotReloadRegistry = map[string]hotReloadEntry{
 	// --- Top-level ---
 	"Debug": {categories: []hotReloadCategory{hotReloadFresh}},
+
+	// ConfigVersion is a runtime-managed one-shot migration marker, set by config load
+	// and hidden from the settings API; it is never edited by a user, so no reload path.
+	"ConfigVersion": {categories: []hotReloadCategory{hotReloadRuntime}},
 
 	// --- Runtime values (yaml:"-") ---
 	"Version":            {categories: []hotReloadCategory{hotReloadRuntime}},
@@ -47,13 +50,22 @@ var hotReloadRegistry = map[string]hotReloadEntry{
 	// --- BirdNET ---
 	"BirdNET.Debug":       {categories: []hotReloadCategory{hotReloadFresh}},
 	"BirdNET.Sensitivity": {categories: []hotReloadCategory{hotReloadFresh}},
-	"BirdNET.Threshold": {
-		categories: []hotReloadCategory{hotReloadFresh},
-		action:     "recalculate_dynamic_thresholds",
-	},
-	"BirdNET.Overlap":            {categories: []hotReloadCategory{hotReloadFresh}},
-	"BirdNET.Longitude":          {categories: []hotReloadCategory{hotReloadDisplay}, action: "rebuild_range_filter"},
-	"BirdNET.Latitude":           {categories: []hotReloadCategory{hotReloadDisplay}, action: "rebuild_range_filter"},
+	// The base threshold is read live per detection; the dynamic threshold applies
+	// it against the shared per-species level at read time, so no recalc action fires.
+	"BirdNET.Threshold": {categories: []hotReloadCategory{hotReloadFresh}},
+	// Overlap is read fresh by the false-positive filter per flush, AND drives the
+	// realtime analysis-buffer cadence, so a change reallocates the buffers via a
+	// full audio-capture restart (restart_audio_capture; analysisOverlapChanged in
+	// the detector table).
+	"BirdNET.Overlap": {categories: []hotReloadCategory{hotReloadFresh}, action: "restart_audio_capture"},
+	// The sun calculators read the coordinates fresh (the shared one and both datastores' via
+	// suncalc.NewSunCalcWithSource over conf.LiveLocation; the weather service rebuilds its own per
+	// poll). Not marked fresh because other consumers still capture them at startup: the
+	// BirdWeather client and the seasonal-tracking hemisphere.
+	"BirdNET.Longitude": {categories: []hotReloadCategory{hotReloadDisplay}, action: "rebuild_range_filter"},
+	"BirdNET.Latitude":  {categories: []hotReloadCategory{hotReloadDisplay}, action: "rebuild_range_filter"},
+	// Not marked fresh: the nighttime scheduler reads it live, but the daylight filter resolves
+	// it only at startup (initDaylightFilter), so a change does not reach every consumer.
 	"BirdNET.LocationConfigured": {categories: []hotReloadCategory{hotReloadDisplay}},
 	"BirdNET.Threads":            {categories: []hotReloadCategory{hotReloadFresh}, action: "reload_birdnet"},
 	"BirdNET.Locale":             {categories: []hotReloadCategory{hotReloadDisplay}, action: "reload_birdnet"},
@@ -67,18 +79,45 @@ var hotReloadRegistry = map[string]hotReloadEntry{
 	"BirdNET.Backend":            {categories: []hotReloadCategory{hotReloadFresh}, action: "reload_birdnet"},
 	"BirdNET.OpenVINODevice":     {categories: []hotReloadCategory{hotReloadFresh}, action: "reload_birdnet"},
 	"BirdNET.Version":            {categories: []hotReloadCategory{hotReloadFresh}, action: "reload_birdnet"},
+	// Read fresh by the model manager on every download, so a mirror change
+	// applies to the next install with no reload or restart.
+	"BirdNET.HuggingFaceEndpoint": {categories: []hotReloadCategory{hotReloadFresh}},
+	// Read fresh by the regions endpoint per request; nothing caches it at
+	// startup and it does not drive model loading, so no reload or restart is
+	// needed.
+	"BirdNET.ModelRegion": {categories: []hotReloadCategory{hotReloadFresh}},
 
 	// --- Perch ---
-	"Perch": {categories: []hotReloadCategory{hotReloadRestart}},
+	// Parent is restart: model/label path and locale changes reload the model.
+	// The threshold override + value are read live by the processor at detection
+	// time, so they hot-reload with no dynamic-threshold recalc action.
+	"Perch":                   {categories: []hotReloadCategory{hotReloadRestart}},
+	"Perch.Threshold":         {categories: []hotReloadCategory{hotReloadFresh}},
+	"Perch.OverrideThreshold": {categories: []hotReloadCategory{hotReloadFresh}},
+
+	// --- BirdNET v3.0 ---
+	"BirdNETV3":                   {categories: []hotReloadCategory{hotReloadRestart}},
+	"BirdNETV3.Threshold":         {categories: []hotReloadCategory{hotReloadFresh}},
+	"BirdNETV3.OverrideThreshold": {categories: []hotReloadCategory{hotReloadFresh}},
 
 	// --- Bat ---
 	"Bat": {categories: []hotReloadCategory{hotReloadFresh}},
+	// The bat base threshold is read live per detection like the other model bases,
+	// so a change takes effect at the next detection with no recalc action.
+	"Bat.Threshold": {categories: []hotReloadCategory{hotReloadFresh}},
 
 	// --- BSG ---
 	"BSG": {categories: []hotReloadCategory{hotReloadRestart}},
 
 	// --- Models ---
-	"Models": {categories: []hotReloadCategory{hotReloadRestart}},
+	// Enabled is authoritative since Phase 4: a change loads/unloads models at runtime via
+	// the reconcile_models signal (modelsEnabledChanged in the detector table).
+	"Models.Enabled": {categories: []hotReloadCategory{hotReloadFresh}, action: "reconcile_models"},
+	// Directory is resolved once at startup (ResolveModelsDir / NewModelManager).
+	"Models.Directory": {categories: []hotReloadCategory{hotReloadRestart}},
+	// AutoEnableMigrated is a runtime-managed one-shot migration marker, set by the classifier
+	// and hidden from the settings API; never user-edited, so no reload path.
+	"Models.AutoEnableMigrated": {categories: []hotReloadCategory{hotReloadRuntime}},
 
 	// --- LowMemory (applied once at startup: mallopt before threads, GOMEMLIMIT) ---
 	"LowMemory": {categories: []hotReloadCategory{hotReloadRestart}},
@@ -100,7 +139,7 @@ var hotReloadRegistry = map[string]hotReloadEntry{
 	"Realtime.Audio.Sources.*.Name":       {categories: []hotReloadCategory{hotReloadFresh}, action: "reconfigure_audio_sources"},
 	"Realtime.Audio.Sources.*.Device":     {categories: []hotReloadCategory{hotReloadFresh}, action: "reconfigure_audio_sources"},
 	"Realtime.Audio.Sources.*.SampleRate": {categories: []hotReloadCategory{hotReloadFresh}, action: "reconfigure_audio_sources"},
-	"Realtime.Audio.Sources.*.Gain":       {categories: []hotReloadCategory{hotReloadFresh}, action: "reconfigure_audio_sources"},
+	"Realtime.Audio.Sources.*.Gain":       {categories: []hotReloadCategory{hotReloadFresh}, action: "update_source_gains"},
 	"Realtime.Audio.Sources.*.Model":      {categories: []hotReloadCategory{hotReloadFresh}, action: "reconfigure_audio_sources"},
 	"Realtime.Audio.Sources.*.Models":     {categories: []hotReloadCategory{hotReloadFresh}, action: "reconfigure_audio_sources"},
 	"Realtime.Audio.Sources.*.Equalizer":  {categories: []hotReloadCategory{hotReloadFresh}},
@@ -110,8 +149,6 @@ var hotReloadRegistry = map[string]hotReloadEntry{
 	"Realtime.Audio.FfmpegVersion":        {categories: []hotReloadCategory{hotReloadRuntime}},
 	"Realtime.Audio.FfmpegMajor":          {categories: []hotReloadCategory{hotReloadRuntime}},
 	"Realtime.Audio.FfmpegMinor":          {categories: []hotReloadCategory{hotReloadRuntime}},
-	"Realtime.Audio.SoxPath":              {categories: []hotReloadCategory{hotReloadRuntime}},
-	"Realtime.Audio.SoxAudioTypes":        {categories: []hotReloadCategory{hotReloadRuntime}},
 	"Realtime.Audio.FfprobePath":          {categories: []hotReloadCategory{hotReloadRuntime}},
 	"Realtime.Audio.StreamTransport":      {categories: []hotReloadCategory{hotReloadFresh}},
 	"Realtime.Audio.Export":               {categories: []hotReloadCategory{hotReloadFresh}},
@@ -134,7 +171,9 @@ var hotReloadRegistry = map[string]hotReloadEntry{
 	"Realtime.DynamicThreshold.ValidHours": {categories: []hotReloadCategory{hotReloadFresh}},
 
 	// -- FalsePositiveFilter --
-	"Realtime.FalsePositiveFilter": {categories: []hotReloadCategory{hotReloadFresh}},
+	// The level is read fresh per flush. Crossing between off and on re-plans the
+	// analysis cadence cap (falsePositiveFilterActiveChanged in the detector table).
+	"Realtime.FalsePositiveFilter": {categories: []hotReloadCategory{hotReloadFresh}, action: "reconfigure_audio_sources"},
 
 	// -- Log (OBS) --
 	"Realtime.Log": {categories: []hotReloadCategory{hotReloadFresh}},
@@ -149,7 +188,7 @@ var hotReloadRegistry = map[string]hotReloadEntry{
 	"Realtime.Birdweather": {categories: []hotReloadCategory{hotReloadFresh}, action: "reconfigure_birdweather"},
 
 	// -- eBird --
-	"Realtime.EBird": {categories: []hotReloadCategory{hotReloadFresh}},
+	"Realtime.EBird": {categories: []hotReloadCategory{hotReloadFresh}, action: "reconfigure_ebird"},
 
 	// -- OpenWeather (runtime, yaml:"-") --
 	"Realtime.OpenWeather": {categories: []hotReloadCategory{hotReloadRuntime}},
@@ -166,6 +205,8 @@ var hotReloadRegistry = map[string]hotReloadEntry{
 	"Realtime.RTSP.Streams.*.Type":        {categories: []hotReloadCategory{hotReloadFresh}, action: "reconfigure_rtsp_sources"},
 	"Realtime.RTSP.Streams.*.Transport":   {categories: []hotReloadCategory{hotReloadFresh}, action: "reconfigure_rtsp_sources"},
 	"Realtime.RTSP.Streams.*.ChannelMode": {categories: []hotReloadCategory{hotReloadFresh}, action: "reconfigure_rtsp_sources"},
+	"Realtime.RTSP.Streams.*.MediaMode":   {categories: []hotReloadCategory{hotReloadFresh}, action: "reconfigure_rtsp_sources"},
+	"Realtime.RTSP.Streams.*.Gain":        {categories: []hotReloadCategory{hotReloadFresh}, action: "update_source_gains"},
 	"Realtime.RTSP.Streams.*.Equalizer":   {categories: []hotReloadCategory{hotReloadFresh}},
 	"Realtime.RTSP.Streams.*.QuietHours":  {categories: []hotReloadCategory{hotReloadFresh}, action: "reconfigure_quiet_hours"},
 	"Realtime.RTSP.Streams.*.Models":      {categories: []hotReloadCategory{hotReloadFresh}, action: "reconfigure_rtsp_sources"},
@@ -234,6 +275,24 @@ var hotReloadRegistry = map[string]hotReloadEntry{
 	// --- Sentry ---
 	"Sentry": {categories: []hotReloadCategory{hotReloadFresh}, action: "reconfigure_telemetry"},
 
+	// --- Diagnostics ---
+	// Two different mechanisms, both actionless, which is why this stays one
+	// coarse entry.
+	//
+	// Enabled and Token: the pprof routes are registered unconditionally and
+	// gated by middleware that reads the live snapshot per request, so a change
+	// is observed on the next request with no restart and no action. Enabling
+	// profiling also mints the token during the same save
+	// (ensureProfilingTokenForSave), so the endpoint is usable immediately
+	// rather than refusing until the next start.
+	//
+	// BlockRate and MutexFraction: applied directly by handleSettingsChanges via
+	// profiling.ApplyRates. They declare no action because the runtime setters
+	// are process-global calls with no dependencies; routing them through
+	// controlChan would queue them behind audio reconfiguration and would apply
+	// them only in realtime analysis mode, where the control monitor runs.
+	"Diagnostics": {categories: []hotReloadCategory{hotReloadFresh}},
+
 	// --- Output ---
 	"Output": {categories: []hotReloadCategory{hotReloadRestart}},
 
@@ -245,10 +304,10 @@ var hotReloadRegistry = map[string]hotReloadEntry{
 
 	// --- Alerting ---
 	"Alerting": {categories: []hotReloadCategory{hotReloadFresh}},
-}
 
-// Ceiling decreases as TODO actions are implemented; target is zero.
-const maxTodoActions = 0
+	// --- Import (in-app elevation toggle; per-request policy read live, no action) ---
+	"Import": {categories: []hotReloadCategory{hotReloadFresh}},
+}
 
 // TestSettingsHotReloadCoverage ensures every leaf field in conf.Settings has
 // a declared hot-reload behavior in the registry. Fails CI when a new field
@@ -302,9 +361,6 @@ func TestDetectorTableActionsReferenced(t *testing.T) {
 		if entry.action != "" {
 			registryActions[entry.action] = true
 		}
-		if entry.todoAction != "" {
-			registryActions[entry.todoAction] = true
-		}
 	}
 
 	for _, a := range SettingsChangeActions() {
@@ -315,22 +371,6 @@ func TestDetectorTableActionsReferenced(t *testing.T) {
 		assert.True(t, registryActions[a],
 			"audio detector action %q is not referenced by any registry entry", a)
 	}
-}
-
-// TestTodoActionCeiling asserts the number of TODO gaps trends toward zero.
-func TestTodoActionCeiling(t *testing.T) {
-	t.Parallel()
-
-	var todoCount int
-	for _, entry := range hotReloadRegistry {
-		if entry.todoAction != "" {
-			todoCount++
-		}
-	}
-	t.Logf("current TODO:action count: %d (ceiling: %d)", todoCount, maxTodoActions)
-	assert.LessOrEqual(t, todoCount, maxTodoActions,
-		"TODO:action count %d exceeds ceiling %d; implement detectors or raise ceiling intentionally",
-		todoCount, maxTodoActions)
 }
 
 func walkSettingsType(t reflect.Type, prefix string, visited map[reflect.Type]bool, uncovered *[]string) {
@@ -414,7 +454,7 @@ func lookupRegistry(path string) bool {
 }
 
 func unwrapPtr(t reflect.Type) reflect.Type {
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t

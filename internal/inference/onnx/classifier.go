@@ -7,9 +7,10 @@ import (
 )
 
 // Classifier runs bird species classification inference on audio segments.
-// It is safe for concurrent use from multiple goroutines.
+// It is safe for concurrent use from multiple goroutines, and Close may run
+// concurrently with predictions.
 type Classifier struct {
-	session     *ort.DynamicAdvancedSession
+	session     guardedSession
 	config      ModelConfig
 	labels      []string
 	topK        int
@@ -71,8 +72,9 @@ func WithSkipLabelValidation() ClassifierOption {
 }
 
 // WithSessionOptions provides a callback to configure the ONNX Runtime session options.
-// The callback receives the options after defaults (IntraOpNumThreads=1, InterOpNumThreads=1)
-// have been set, allowing the caller to override or add execution providers.
+// The callback receives the options after defaults (IntraOpNumThreads=1, InterOpNumThreads=1,
+// thread-pool spinning disabled) have been set, allowing the caller to override or add
+// execution providers.
 func WithSessionOptions(fn func(*ort.SessionOptions)) ClassifierOption {
 	return func(c *classifierConfig) { c.sessionOptsFn = fn }
 }
@@ -127,7 +129,7 @@ func NewClassifier(modelPath string, opts ...ClassifierOption) (*Classifier, err
 	}
 
 	return &Classifier{
-		session:     session,
+		session:     guardedSession{s: session},
 		config:      modelCfg,
 		labels:      labels,
 		topK:        cfg.topK,
@@ -183,7 +185,15 @@ func resolveModelType(cfg *classifierConfig, inputShapes [][]int64, numOutputs i
 
 // validateLabelCount checks that the label count matches the model's logits output dimension.
 func validateLabelCount(modelCfg *ModelConfig, outputInfos []ort.InputOutputInfo, labelCount int) error {
-	if modelCfg.LogitsIndex < 0 || modelCfg.LogitsIndex >= len(outputInfos) {
+	// An embedding-only model (LogitsIndex < 0) produces no logits, so it cannot serve
+	// the provided species labels. Reject it here so a model misconfigured as a
+	// label-validated classifier fails at construction with a clear message rather than
+	// only later at prediction time. Embedding-only consumers (the bat pipeline) load
+	// the model with WithSkipLabelValidation, which bypasses this check entirely.
+	if modelCfg.LogitsIndex < 0 {
+		return fmt.Errorf("birdnet: model produces no logits (embedding-only); it cannot be used as a label-validated classifier; load it with WithSkipLabelValidation for embedding extraction")
+	}
+	if modelCfg.LogitsIndex >= len(outputInfos) {
 		return fmt.Errorf("birdnet: LogitsIndex %d is out of range for model with %d outputs", modelCfg.LogitsIndex, len(outputInfos))
 	}
 	logitsDims := outputInfos[modelCfg.LogitsIndex].Dimensions
@@ -197,6 +207,49 @@ func validateLabelCount(modelCfg *ModelConfig, outputInfos []ort.InputOutputInfo
 	return nil
 }
 
+// sessionOptionSetter is the subset of *ort.SessionOptions that
+// applySessionDefaults configures, so the defaults can be tested without
+// loading the ONNX Runtime library.
+type sessionOptionSetter interface {
+	SetIntraOpNumThreads(n int) error
+	SetInterOpNumThreads(n int) error
+	AddSessionConfigEntry(key, value string) error
+}
+
+// ONNX Runtime session config keys (onnxruntime_session_options_config_keys.h)
+// that control whether idle thread-pool workers spin-wait for work or block.
+const (
+	ortConfigAllowIntraOpSpinning = "session.intra_op.allow_spinning"
+	ortConfigAllowInterOpSpinning = "session.inter_op.allow_spinning"
+	ortConfigValueDisabled        = "0"
+)
+
+// applySessionDefaults sets the session options every classifier session
+// starts from, before the caller's WithSessionOptions callback runs.
+//
+// Thread-pool spinning is disabled: ONNX Runtime spins by default, which keeps
+// every pool worker busy-waiting between ops and after each run. Real-time
+// analysis runs one short inference every second or so, so spinning burns
+// several times the CPU of the inference itself for little or no latency gain.
+// The entries have no effect at the single-thread default set here; they matter
+// because WithSessionOptions callbacks raise the thread count afterwards
+// (NewONNXClassifier uses runtime.NumCPU), and config entries survive that.
+func applySessionDefaults(so sessionOptionSetter) error {
+	if err := so.SetIntraOpNumThreads(1); err != nil {
+		return fmt.Errorf("birdnet: failed to set intra-op threads: %w", err)
+	}
+	if err := so.SetInterOpNumThreads(1); err != nil {
+		return fmt.Errorf("birdnet: failed to set inter-op threads: %w", err)
+	}
+	if err := so.AddSessionConfigEntry(ortConfigAllowIntraOpSpinning, ortConfigValueDisabled); err != nil {
+		return fmt.Errorf("birdnet: failed to disable intra-op spinning: %w", err)
+	}
+	if err := so.AddSessionConfigEntry(ortConfigAllowInterOpSpinning, ortConfigValueDisabled); err != nil {
+		return fmt.Errorf("birdnet: failed to disable inter-op spinning: %w", err)
+	}
+	return nil
+}
+
 // createSession builds an ONNX Runtime session with default options.
 func createSession(modelPath string, inputNames, outputNames []string, sessionOptsFn func(*ort.SessionOptions)) (*ort.DynamicAdvancedSession, error) {
 	sessOpts, err := ort.NewSessionOptions()
@@ -205,11 +258,11 @@ func createSession(modelPath string, inputNames, outputNames []string, sessionOp
 	}
 	defer func() { _ = sessOpts.Destroy() }()
 
-	if err := sessOpts.SetIntraOpNumThreads(1); err != nil {
-		return nil, fmt.Errorf("birdnet: failed to set intra-op threads: %w", err)
+	if err := applySessionDefaults(sessOpts); err != nil {
+		return nil, err
 	}
-	if err := sessOpts.SetInterOpNumThreads(1); err != nil {
-		return nil, fmt.Errorf("birdnet: failed to set inter-op threads: %w", err)
+	if err := DisableKleidiAIIfNeeded(sessOpts); err != nil {
+		return nil, err
 	}
 
 	if sessionOptsFn != nil {
@@ -258,7 +311,7 @@ func (c *Classifier) PredictRaw(audio []float32) ([]float32, error) {
 // PredictRawWithEmbeddings runs inference and returns both raw logits and embedding vector.
 // Returns nil embeddings if the model does not produce embeddings.
 func (c *Classifier) PredictRawWithEmbeddings(audio []float32) (logits, embeddings []float32, err error) {
-	if c.session == nil {
+	if c.session.isClosed() {
 		return nil, nil, ErrSessionClosed
 	}
 	if len(audio) != c.config.SampleCount {
@@ -278,25 +331,29 @@ func (c *Classifier) PredictRawWithEmbeddings(audio []float32) (logits, embeddin
 	}
 	defer destroyTensors(outputs)
 
-	err = c.session.Run([]ort.Value{inputTensor}, outputs)
+	err = c.session.run([]ort.Value{inputTensor}, outputs)
 	if err != nil {
 		return nil, nil, fmt.Errorf("birdnet: inference failed: %w", err)
 	}
 
-	logitsTensor, ok := outputs[c.config.LogitsIndex].(*ort.Tensor[float32])
-	if !ok {
-		return nil, nil, fmt.Errorf("birdnet: logits tensor has unexpected type")
+	// Embedding-only models (LogitsIndex < 0, e.g. the head-pruned bat backbone)
+	// produce no logits; skip logits extraction and return nil logits.
+	if c.config.LogitsIndex >= 0 {
+		logitsTensor, ok := outputs[c.config.LogitsIndex].(*ort.Tensor[float32])
+		if !ok {
+			return nil, nil, fmt.Errorf("birdnet: logits tensor has unexpected type")
+		}
+		allLogits := logitsTensor.GetData()
+		logitsSize := c.config.LogitsSize
+		if logitsSize <= 0 {
+			return nil, nil, fmt.Errorf("birdnet: invalid logits size %d", logitsSize)
+		}
+		if logitsSize > len(allLogits) {
+			return nil, nil, fmt.Errorf("birdnet: logits tensor too small: need %d, have %d", logitsSize, len(allLogits))
+		}
+		logits = make([]float32, logitsSize)
+		copy(logits, allLogits[:logitsSize])
 	}
-	allLogits := logitsTensor.GetData()
-	logitsSize := c.config.LogitsSize
-	if logitsSize <= 0 {
-		return nil, nil, fmt.Errorf("birdnet: invalid logits size %d", logitsSize)
-	}
-	if logitsSize > len(allLogits) {
-		return nil, nil, fmt.Errorf("birdnet: logits tensor too small: need %d, have %d", logitsSize, len(allLogits))
-	}
-	logits = make([]float32, logitsSize)
-	copy(logits, allLogits[:logitsSize])
 
 	if c.config.EmbeddingIndex >= 0 {
 		embTensor, ok := outputs[c.config.EmbeddingIndex].(*ort.Tensor[float32])
@@ -318,7 +375,7 @@ func (c *Classifier) PredictRawWithEmbeddings(audio []float32) (logits, embeddin
 // The audio slice must contain exactly Config().SampleCount float32 samples
 // (mono, at the model's sample rate, normalized to [-1.0, 1.0]).
 func (c *Classifier) Predict(audio []float32) (*Result, error) {
-	if c.session == nil {
+	if c.session.isClosed() {
 		return nil, ErrSessionClosed
 	}
 	if len(audio) != c.config.SampleCount {
@@ -343,7 +400,7 @@ func (c *Classifier) Predict(audio []float32) (*Result, error) {
 	defer destroyTensors(outputs)
 
 	// Run inference
-	err = c.session.Run(
+	err = c.session.run(
 		[]ort.Value{inputTensor},
 		outputs,
 	)
@@ -358,7 +415,7 @@ func (c *Classifier) Predict(audio []float32) (*Result, error) {
 // PredictBatch runs inference on multiple audio segments in a single batch.
 // Each segment must contain exactly Config().SampleCount samples.
 func (c *Classifier) PredictBatch(segments [][]float32) ([]*Result, error) {
-	if c.session == nil {
+	if c.session.isClosed() {
 		return nil, ErrSessionClosed
 	}
 	if len(segments) == 0 {
@@ -398,7 +455,7 @@ func (c *Classifier) PredictBatch(segments [][]float32) ([]*Result, error) {
 	defer destroyTensors(outputs)
 
 	// Run inference
-	err = c.session.Run(
+	err = c.session.run(
 		[]ort.Value{inputTensor},
 		outputs,
 	)
@@ -417,14 +474,11 @@ func (c *Classifier) PredictBatch(segments [][]float32) ([]*Result, error) {
 	return results, nil
 }
 
-// Close releases the ONNX session and associated resources.
+// Close releases the ONNX session. It waits for in-flight inference runs to
+// finish, is safe to call more than once and concurrently with Predict, and
+// every later Predict call returns ErrSessionClosed.
 func (c *Classifier) Close() error {
-	if c.session != nil {
-		err := c.session.Destroy()
-		c.session = nil
-		return err
-	}
-	return nil
+	return c.session.close()
 }
 
 // makeBatchInputShape replaces the batch dimension (first element) in the input shape.
@@ -459,19 +513,25 @@ func (c *Classifier) outputShape(outputIdx, batchSize int) ([]int64, error) {
 	batch := int64(batchSize)
 	switch c.config.Type {
 	case BirdNETv24:
+		// Index-aware so it covers the 2-output model (logits@0 + embedding@1), the
+		// head-pruned embedding-only model (embedding@0, no logits), and the plain
+		// 1-output classifier (logits@0, no embedding). EmbeddingIndex/LogitsIndex are
+		// -1 when absent, which never equals a real outputIdx (>= 0).
 		switch outputIdx {
-		case 0:
-			return []int64{batch, int64(c.config.LogitsSize)}, nil
-		case 1:
+		case c.config.EmbeddingIndex:
 			if c.config.EmbeddingSize > 0 {
 				return []int64{batch, int64(c.config.EmbeddingSize)}, nil
 			}
+		case c.config.LogitsIndex:
+			return []int64{batch, int64(c.config.LogitsSize)}, nil
 		}
 	case BirdNETv30:
+		// Index-aware (like the BirdNETv24 case) so it covers both export orderings:
+		// EmbeddingIndex/LogitsIndex are resolved by size in buildModelConfig.
 		switch outputIdx {
-		case 0:
+		case c.config.EmbeddingIndex:
 			return []int64{batch, int64(c.config.EmbeddingSize)}, nil
-		case 1:
+		case c.config.LogitsIndex:
 			return []int64{batch, int64(c.config.LogitsSize)}, nil
 		}
 	case PerchV2:
@@ -491,6 +551,11 @@ func (c *Classifier) outputShape(outputIdx, batchSize int) ([]int64, error) {
 
 // processOutput extracts predictions and embeddings from output tensors for a given batch index.
 func (c *Classifier) processOutput(outputs []ort.Value, batchIdx int) (*Result, error) {
+	// An embedding-only model produces no logits and therefore no species
+	// predictions; callers that need embeddings must use PredictRawWithEmbeddings.
+	if c.config.LogitsIndex < 0 {
+		return nil, fmt.Errorf("birdnet: model has no logits output; use PredictRawWithEmbeddings for embedding extraction")
+	}
 	logitsTensor, ok := outputs[c.config.LogitsIndex].(*ort.Tensor[float32])
 	if !ok {
 		return nil, fmt.Errorf("birdnet: logits tensor has unexpected type")
@@ -507,13 +572,7 @@ func (c *Classifier) processOutput(outputs []ort.Value, batchIdx int) (*Result, 
 	}
 	logits := allLogits[start:end]
 
-	var scores []float32
-	switch c.config.Type {
-	case BirdNETv24, BirdNETv30:
-		scores = sigmoidSlice(logits)
-	case PerchV2:
-		scores = softmax(logits)
-	}
+	scores := activationFor(c.config.Type, logits)
 
 	var embeddings []float32
 	if c.config.EmbeddingIndex >= 0 {

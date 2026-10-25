@@ -5,6 +5,7 @@ import (
 
 	"github.com/tphakala/birdnet-go/internal/detection"
 	"github.com/tphakala/birdnet-go/internal/inference"
+	"github.com/tphakala/birdnet-go/internal/openfauna"
 )
 
 // mappedRangeFilter wraps an inference.RangeFilter whose output indices correspond
@@ -13,29 +14,43 @@ import (
 // species) to work with any classifier (BirdNET v2.4, v3.0, Perch v2) without
 // changing predictFilter() or any downstream code.
 type mappedRangeFilter struct {
-	inner           inference.RangeFilter
-	classifierToGeo []int          // classifierIndex -> geomodelIndex; -1 means no match
-	numClassifier   int            // len(classifierLabels)
-	mappedCount     int            // number of classifier species with a geomodel match
-	unmappedScore   float32        // score for classifier species absent from geomodel
-	geomodelLabels  []string       // geomodel label set in geomodel output order
-	geomodelIndex   map[string]int // label -> index for O(1) lookup
+	inner            inference.RangeFilter
+	classifierToGeo  []int            // classifierIndex -> geomodelIndex; -1 means no match
+	classifierLabels []string         // the classifier label space the mapping was built from (coveredLabels)
+	numClassifier    int              // len(classifierLabels)
+	mappedCount      int              // number of classifier species with a geomodel match
+	unmappedScore    float32          // score for classifier species absent from geomodel
+	geomodelLabels   []string         // geomodel label set in geomodel output order
+	geomodelIndex    map[string]int   // label -> index for O(1) lookup
+	vocab            *LabelVocabulary // geomodelLabels plus their canonical-key memo, for the species endpoint
+}
+
+// canonicalSpeciesKey returns the match key for a model label: its scientific
+// name (the part before the first underscore in "ScientificName_CommonName"),
+// resolved through the OpenFauna taxonomic alias map and lowercased. Normalizing
+// both the geomodel and the classifier sides to the canonical name lets a legacy
+// classifier label (e.g. BirdNET v2.4 "Streptopelia senegalensis") match the
+// geomodel's current name for the same taxon ("Spilopelia senegalensis"), instead
+// of being treated as unmapped and silently filtered out when the geomodel uses a
+// newer taxonomy than the classifier. A non-aliased name resolves to itself, so
+// this is a no-op for species without a reclassification.
+func canonicalSpeciesKey(label string) string {
+	sci := detection.ExtractScientificName(label)
+	return strings.ToLower(openfauna.CanonicalName(sci))
 }
 
 // buildSpeciesMapping creates the classifier-to-geomodel index mapping by
-// matching scientific names (the part before the first underscore in
-// "ScientificName_CommonName" labels). The match is case-insensitive.
+// matching scientific names. Matching is case-insensitive and alias-aware (see
+// canonicalSpeciesKey).
 func buildSpeciesMapping(classifierLabels, geomodelLabels []string) []int {
 	geoIndex := make(map[string]int, len(geomodelLabels))
 	for i, label := range geomodelLabels {
-		sci := detection.ExtractScientificName(label)
-		geoIndex[strings.ToLower(sci)] = i
+		geoIndex[canonicalSpeciesKey(label)] = i
 	}
 
 	mapping := make([]int, len(classifierLabels))
 	for i, label := range classifierLabels {
-		sci := detection.ExtractScientificName(label)
-		if idx, ok := geoIndex[strings.ToLower(sci)]; ok {
+		if idx, ok := geoIndex[canonicalSpeciesKey(label)]; ok {
 			mapping[i] = idx
 		} else {
 			mapping[i] = -1
@@ -77,13 +92,15 @@ func newMappedRangeFilter(inner inference.RangeFilter, classifierLabels, geomode
 	}
 
 	return &mappedRangeFilter{
-		inner:           inner,
-		classifierToGeo: mapping,
-		numClassifier:   len(classifierLabels),
-		mappedCount:     mapped,
-		unmappedScore:   unmappedScore,
-		geomodelLabels:  geomodelLabels,
-		geomodelIndex:   geoIdx,
+		inner:            inner,
+		classifierToGeo:  mapping,
+		classifierLabels: classifierLabels,
+		numClassifier:    len(classifierLabels),
+		mappedCount:      mapped,
+		unmappedScore:    unmappedScore,
+		geomodelLabels:   geomodelLabels,
+		geomodelIndex:    geoIdx,
+		vocab:            NewLabelVocabulary(geomodelLabels),
 	}
 }
 
@@ -128,7 +145,7 @@ func (m *mappedRangeFilter) PredictSpeciesScores(lat, lon, week, threshold float
 // override matching, where the caller needs to search all known species
 // (not just those passing the range filter threshold).
 func (m *mappedRangeFilter) GeomodelLabels() []string {
-	return m.geomodelLabels
+	return m.vocab.Labels
 }
 
 // NumSpecies returns the number of classifier labels (not geomodel labels).

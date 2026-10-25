@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"slices"
 	"sync"
 	"time"
@@ -35,17 +34,19 @@ func (l *SlogLogger) isValid() bool {
 	return l != nil && l.slogLogger != nil
 }
 
-// NewSlogLogger creates a new slog-based logger with JSON output
+// NewSlogLogger creates a new slog-based logger with JSON output.
+// A nil writer selects the shared non-blocking stdout console writer.
 func NewSlogLogger(writer io.Writer, level LogLevel, timezone *time.Location) *SlogLogger {
 	if writer == nil {
-		writer = os.Stdout
+		writer = stdoutConsole
 	}
 	if timezone == nil {
 		timezone = time.UTC
 	}
 
 	opts := &slog.HandlerOptions{
-		Level: parseSlogLevel(level),
+		Level:       parseSlogLevel(level),
+		ReplaceAttr: timeZoneReplaceAttr(timezone),
 	}
 
 	handler := slog.NewJSONHandler(writer, opts)
@@ -63,9 +64,11 @@ func NewSlogLogger(writer io.Writer, level LogLevel, timezone *time.Location) *S
 // Use this for bootstrap/fallback scenarios before the central logger is initialized.
 // Output format matches CentralLogger console output: LEVEL  [module] message key=value
 // (Timestamps are omitted - journald/Docker adds them automatically)
+// Output goes through the shared non-blocking console writer, so a stalled
+// stdout reader never blocks the caller.
 func NewConsoleLogger(module string, level LogLevel) *SlogLogger {
 	tz := time.Local
-	handler := newTextHandler(os.Stdout, parseSlogLevel(level), tz)
+	handler := newTextHandler(stdoutConsole, parseSlogLevel(level), tz)
 
 	return &SlogLogger{
 		handler:    handler,
@@ -91,7 +94,8 @@ func NewSlogLoggerWithFile(filePath string, level LogLevel, timezone *time.Locat
 
 	// Create handler with buffered writer
 	opts := &slog.HandlerOptions{
-		Level: parseSlogLevel(level),
+		Level:       parseSlogLevel(level),
+		ReplaceAttr: timeZoneReplaceAttr(timezone),
 	}
 	handler := slog.NewJSONHandler(writer, opts)
 
@@ -134,7 +138,8 @@ func (l *SlogLogger) ReopenLogFile() error {
 
 	// Recreate handler with new writer
 	opts := &slog.HandlerOptions{
-		Level: l.level,
+		Level:       l.level,
+		ReplaceAttr: timeZoneReplaceAttr(l.timezone),
 	}
 	l.handler = slog.NewJSONHandler(writer, opts)
 	l.slogLogger = slog.New(l.handler) // update cached logger

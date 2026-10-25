@@ -42,11 +42,20 @@ var (
 			Component("analysis.jobqueue").
 			Category(errors.CategoryLimit).
 			Build()
+
+	// ErrJobDeferred signals that an action could not run yet and is intentionally
+	// deferring its own execution to a later retry (not a failure). Actions wrap this
+	// sentinel so LogJobRetryScheduled logs the reschedule at Debug instead of Warn,
+	// keeping expected backpressure (e.g. Extended Capture waiting for the capture tail
+	// to be recorded) out of the warning stream. Detected with errors.Is. Kept as a
+	// plain sentinel (not an EnhancedError) so it carries no telemetry category: a
+	// deferral is a normal control-flow signal, not a reportable error.
+	ErrJobDeferred = errors.NewStd("job execution deferred")
 )
 
 // RetryConfig holds the configuration for retry behavior of an action
 type RetryConfig struct {
-	Enabled      bool          // Whether retry is enabled for this action
+	Enabled      bool          // Whether retry is enabled for this action; false means a single attempt
 	MaxRetries   int           // Maximum number of retry attempts
 	InitialDelay time.Duration // Initial delay before first retry
 	MaxDelay     time.Duration // Maximum delay between retries
@@ -57,8 +66,10 @@ type RetryConfig struct {
 // that can be executed by the job queue.
 //
 // Implementations MUST respect context cancellation by checking ctx.Done()
-// periodically during Execute(). Failure to do so will cause goroutine leaks
-// when jobs time out.
+// periodically during Execute(). An attempt that ignores cancellation keeps
+// running after its timeout; the queue waits for it (up to a ceiling) before
+// starting another attempt of the same job, and its goroutine lives until
+// Execute returns.
 type Action interface {
 	Execute(ctx context.Context, data any) error
 	GetDescription() string // Returns a human-readable description of the action

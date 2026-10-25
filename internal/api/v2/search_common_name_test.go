@@ -6,264 +6,49 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	"github.com/tphakala/birdnet-go/internal/conf"
+	"github.com/tphakala/birdnet-go/internal/api/v2/apicore"
 	"github.com/tphakala/birdnet-go/internal/datastore"
-	"github.com/tphakala/birdnet-go/internal/datastore/mocks"
 )
 
-// testLabels contains representative BirdNET label strings used across
-// common-name resolution tests (format: "ScientificName_CommonName").
-var testLabels = []string{
-	"Strix aluco_Tawny Owl",
-	"Strix aluco_Lehtopöllö",
-	"Turdus merula_Eurasian Blackbird",
-	"Parus major_Great Tit",
-}
+// analyticsBatchFakeResolver is a test resolver that satisfies SpeciesNameResolver
+// and the optional batchLocalizer interface. The batch capability lets
+// scientific-only labels (no embedded common name) reach the commonToSci reverse
+// map and become resolvable. Shared by the search and exclude-list
+// canonicalization tests.
+type analyticsBatchFakeResolver struct{ batch map[string]string }
 
-// setupSearchTestController builds a minimal Controller with the given BirdNET
-// labels pre-loaded into both name maps.
-func setupSearchTestController(t *testing.T, labels []string) *Controller {
-	t.Helper()
-	e := echo.New()
-	c := &Controller{
-		Group: e.Group("/api/v2"),
+func (a *analyticsBatchFakeResolver) Resolve(string, string) string      { return "" }
+func (a *analyticsBatchFakeResolver) ResolveLocal(string) (string, bool) { return "", false }
+func (a *analyticsBatchFakeResolver) ResolveLocalizedBatch(names []string) map[string]string {
+	out := make(map[string]string, len(names))
+	for _, n := range names {
+		if v, ok := a.batch[n]; ok {
+			out[n] = v
+		}
 	}
-	c.Settings.Store(&conf.Settings{
-		BirdNET: conf.BirdNETConfig{
-			Labels: labels,
-		},
-	})
-	c.nameMaps.Store(buildNameMaps(labels, nil))
-	return c
+	return out
 }
 
-func TestResolveSpeciesToScientific(t *testing.T) {
-	t.Parallel()
-
-	c := setupSearchTestController(t, testLabels)
-
-	tests := []struct {
-		name    string
-		input   string
-		want    string
-		wantHit bool
-	}{
-		{
-			name:    "empty string returns empty string",
-			input:   "",
-			want:    "",
-			wantHit: false,
-		},
-		{
-			name:    "whitespace-only returns empty string without hit",
-			input:   "   ",
-			want:    "",
-			wantHit: false,
-		},
-		{
-			name:    "exact common-name match",
-			input:   "Tawny Owl",
-			want:    "Strix aluco",
-			wantHit: true,
-		},
-		{
-			name:    "case-insensitive match lowercase",
-			input:   "tawny owl",
-			want:    "Strix aluco",
-			wantHit: true,
-		},
-		{
-			name:    "case-insensitive match uppercase",
-			input:   "TAWNY OWL",
-			want:    "Strix aluco",
-			wantHit: true,
-		},
-		{
-			name:    "non-ASCII common name (Finnish)",
-			input:   "Lehtopöllö",
-			want:    "Strix aluco",
-			wantHit: true,
-		},
-		{
-			name:    "non-ASCII common name lowercase (Finnish)",
-			input:   "lehtopöllö",
-			want:    "Strix aluco",
-			wantHit: true,
-		},
-		{
-			name:    "scientific name passes through unchanged",
-			input:   "Strix aluco",
-			want:    "Strix aluco",
-			wantHit: false,
-		},
-		{
-			name:    "partial scientific name passes through unchanged",
-			input:   "Turdus",
-			want:    "Turdus",
-			wantHit: false,
-		},
-		{
-			name:    "unknown text passes through unchanged",
-			input:   "xyzzy",
-			want:    "xyzzy",
-			wantHit: false,
-		},
-		{
-			name:    "common name with surrounding whitespace resolves correctly",
-			input:   "  Tawny Owl  ",
-			want:    "Strix aluco",
-			wantHit: true,
-		},
-		{
-			// macOS and some composing keyboards submit NFD bytes for
-			// diacritics. The resolver must normalise to NFC so labels
-			// (which ship as NFC) still match.
-			name:    "NFD-form diacritic matches NFC-stored label",
-			input:   "Lehtopo\u0308llo\u0308",
-			want:    "Strix aluco",
-			wantHit: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got, hit := c.resolveSpeciesToScientific(tt.input)
-			assert.Equal(t, tt.want, got)
-			assert.Equal(t, tt.wantHit, hit)
-		})
-	}
-}
-
-// TestResolveSpeciesToScientific_AmbiguousCommonName verifies that when two
-// species share the same common name, the resolver passes the query through
-// untranslated (hit=false) rather than resolving it to an arbitrary species
-// based on label order.
-func TestResolveSpeciesToScientific_AmbiguousCommonName(t *testing.T) {
-	t.Parallel()
-
-	ambiguousLabels := []string{
-		"Strix aluco_Owl",
-		"Bubo bubo_Owl",
-		"Turdus merula_Eurasian Blackbird",
-	}
-	c := setupSearchTestController(t, ambiguousLabels)
-
-	resolved, hit := c.resolveSpeciesToScientific("Owl")
-	assert.Equal(t, "Owl", resolved, "ambiguous common name should pass through untranslated")
-	assert.False(t, hit, "ambiguous common name should not register as a hit")
-
-	// Non-ambiguous names must still resolve correctly.
-	resolved, hit = c.resolveSpeciesToScientific("Eurasian Blackbird")
-	assert.Equal(t, "Turdus merula", resolved)
-	assert.True(t, hit)
-}
-
-// TestUpdateCommonNameMap_PopulatesBothMaps verifies that UpdateCommonNameMap
-// populates both the scientific-to-common map and the common-to-scientific map
-// from the same label input, keeping them consistent.
-func TestUpdateCommonNameMap_PopulatesBothMaps(t *testing.T) {
-	t.Parallel()
-
-	e := echo.New()
-	c := &Controller{
-		Group: e.Group("/api/v2"),
-	}
-
-	labels := []string{
-		"Strix aluco_Tawny Owl",
-		"Parus major_Great Tit",
-	}
-	c.UpdateCommonNameMap(labels)
-
-	// Verify the scientific-to-common map (used by insights endpoints).
-	sciToCommon := c.loadCommonNameMap()
-	require.NotNil(t, sciToCommon)
-	assert.Equal(t, "Tawny Owl", sciToCommon["Strix aluco"])
-	assert.Equal(t, "Great Tit", sciToCommon["Parus major"])
-
-	// Verify the common-to-scientific map (used by the search resolver).
-	commonToSci := c.loadCommonToScientificMap()
-	require.NotNil(t, commonToSci)
-	assert.Equal(t, "Strix aluco", commonToSci["tawny owl"])
-	assert.Equal(t, "Parus major", commonToSci["great tit"])
-}
-
-// TestBuildNameMaps_AmbiguousCommonName verifies that a common name mapped
-// by two different scientific names is removed from commonToSci so the
-// search resolver passes ambiguous queries through untranslated.
-func TestBuildNameMaps_AmbiguousCommonName(t *testing.T) {
-	t.Parallel()
-
-	nm := buildNameMaps([]string{
-		"Strix aluco_Owl",
-		"Bubo bubo_Owl",
-		"Parus major_Great Tit",
-	}, nil)
-	require.NotNil(t, nm)
-
-	// sciToCommon keeps both species; scientific names are always unique.
-	assert.Equal(t, "Owl", nm.sciToCommon["Strix aluco"])
-	assert.Equal(t, "Owl", nm.sciToCommon["Bubo bubo"])
-
-	// commonToSci must NOT contain the ambiguous key.
-	_, ok := nm.commonToSci["owl"]
-	assert.False(t, ok, "ambiguous common-name key should be removed")
-
-	// A third label that repeats an already-ambiguous key should not
-	// accidentally restore the key.
-	nm = buildNameMaps([]string{
-		"Strix aluco_Owl",
-		"Bubo bubo_Owl",
-		"Tyto alba_Owl",
-	}, nil)
-	_, ok = nm.commonToSci["owl"]
-	assert.False(t, ok)
-
-	// Non-ambiguous names remain.
-	nm = buildNameMaps([]string{
-		"Strix aluco_Owl",
-		"Bubo bubo_Owl",
-		"Parus major_Great Tit",
-	}, nil)
-	assert.Equal(t, "Parus major", nm.commonToSci["great tit"])
-}
-
-// TestBuildNameMaps_MalformedLabels verifies that labels missing a scientific
-// name, a common name, or the separator are silently skipped rather than
-// producing empty keys.
-func TestBuildNameMaps_MalformedLabels(t *testing.T) {
-	t.Parallel()
-
-	nm := buildNameMaps([]string{
-		"Strix aluco_Tawny Owl",
-		"_MissingScientific",
-		"MissingCommon_",
-		"NoSeparatorAtAll",
-		"",
-		"   _   ",
-	}, nil)
-	require.NotNil(t, nm)
-	assert.Len(t, nm.sciToCommon, 1)
-	assert.Len(t, nm.commonToSci, 1)
-	assert.Equal(t, "Tawny Owl", nm.sciToCommon["Strix aluco"])
-	assert.Equal(t, "Strix aluco", nm.commonToSci["tawny owl"])
-}
+// Note: the ambiguous-common-name drop and malformed-label skipping previously
+// exercised here through buildNameMaps directly are now golden-tested in
+// internal/speciesindex, which owns the shared builder.
 
 // TestLoadNameMaps_CalledBeforeInit verifies that the load helpers return
-// non-nil empty maps when the Controller has not yet seeded nameMaps, so
-// callers can index without nil checks during the startup window.
+// non-nil empty maps (speciesindex.Empty semantics) when the Controller's name
+// index has not been seeded yet, so callers can index without nil checks during
+// the startup window.
 func TestLoadNameMaps_CalledBeforeInit(t *testing.T) {
 	t.Parallel()
 
-	c := &Controller{}
+	c := &Controller{Core: &apicore.Core{}}
 	assert.NotNil(t, c.loadCommonNameMap())
+	assert.NotNil(t, c.loadFoldedCommonNameMap())
 	assert.NotNil(t, c.loadCommonToScientificMap())
 	assert.Empty(t, c.loadCommonNameMap())
+	assert.Empty(t, c.loadFoldedCommonNameMap())
 	assert.Empty(t, c.loadCommonToScientificMap())
 }
 
@@ -271,34 +56,29 @@ func TestLoadNameMaps_CalledBeforeInit(t *testing.T) {
 // HTTP regression test for the localized common-name search fix. It verifies that when a search
 // request arrives with a localized common name for a secondary-model species
 // (a bat label that has no embedded common name in the label string and is
-// resolved only via the batch localizer), the name is resolved to the scientific
-// name before the datastore query runs. Pre-fix, the batch seam was absent so
-// the bat label never entered commonToSci and the search fell back to a
-// substring match on the unresolved localized string.
+// resolved only via the batch localizer), the raw term and resolved scientific
+// name both reach the datastore. Pre-fix, the batch seam was absent so the bat
+// label never entered commonToSci and the search fell back to a substring match
+// on the unresolved localized string.
 func TestHandleSearch_LocalizedCommonName_SecondaryModelSpecies(t *testing.T) {
-	t.Parallel()
 	t.Attr("component", "search")
 	t.Attr("feature", "localized-name-resolution")
 
-	e := echo.New()
-	mockDS := mocks.NewMockInterface(t)
-
-	controller := &Controller{
-		Group: e.Group("/api/v2"),
-		DS:    mockDS,
-	}
-	controller.Settings.Store(newValidTestSettings())
+	// Build the full facade so the detections domain handler is wired with the real
+	// loadCommonToScientificMap accessor over this controller's name maps. The search
+	// handler moved to the detections package; the facade exposes it via
+	// controller.detections. setupTestEnvironment publishes the test settings to the
+	// process-global snapshot, so this test must not call t.Parallel().
+	e, mockDS, controller := setupTestEnvironment(t)
 
 	// Wire a batch-capable resolver so the scientific-only bat label
 	// "Barbastella barbastellus" (no underscore-separated common name in the
-	// label string) gets a Finnish localized name via the batch path.
-	controller.SetNameResolver(&analyticsBatchFakeResolver{batch: map[string]string{
+	// label string) gets a Finnish localized name via the batch path. Feeding the
+	// scientific-only label triggers the batchLocalizer path and populates
+	// commonToSci with "mopsilepakko" -> "Barbastella barbastellus".
+	seedNames(t, controller, &analyticsBatchFakeResolver{batch: map[string]string{
 		"Barbastella barbastellus": "mopsilepakko",
-	}})
-	// Feed the scientific-only label so UpdateCommonNameMap triggers the
-	// batchLocalizer path and populates commonToSci with
-	// "mopsilepakko" -> "Barbastella barbastellus".
-	controller.UpdateCommonNameMap([]string{"Barbastella barbastellus"})
+	}}, []string{"Barbastella barbastellus"})
 
 	// Capture the SearchFilters that reach the datastore.
 	var captured *datastore.SearchFilters
@@ -317,15 +97,56 @@ func TestHandleSearch_LocalizedCommonName_SecondaryModelSpecies(t *testing.T) {
 	ctx := e.NewContext(req, rec)
 	ctx.SetPath("/api/v2/search")
 
-	err := controller.HandleSearch(ctx)
+	err := controller.detections.HandleSearch(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, rec.Code)
 
-	// The localized name must have been resolved to the scientific name before
-	// the datastore call. Pre-fix this would be "mopsilepakko" (unresolved).
+	// Keep the localized text for raw substring matching and add every matching
+	// scientific name from the active-locale common-name map.
 	require.NotNil(t, captured, "SearchDetections must have been called")
-	assert.Equal(t, "Barbastella barbastellus", captured.Species,
-		"localized bat name must resolve to scientific name before the datastore query")
+	assert.Equal(t, "mopsilepakko", captured.Species)
+	assert.Equal(t, []string{"Barbastella barbastellus"}, captured.SpeciesScientific)
+
+	mockDS.AssertExpectations(t)
+}
+
+// TestHandleSearch_ExactCommonNamePreservesSubstringUnion covers a taxonomic
+// split where "Barn Owl" is an exact common name for Tyto alba but is also a
+// substring of "American Barn Owl" (Tyto furcata). The exact resolution must be
+// additive; replacing the raw term with Tyto alba hides Tyto furcata detections.
+func TestHandleSearch_ExactCommonNamePreservesSubstringUnion(t *testing.T) {
+	t.Attr("component", "search")
+	t.Attr("feature", "common-name-substring-union")
+
+	e, mockDS, controller := setupTestEnvironment(t)
+	seedNames(t, controller, nil, []string{
+		"Tyto alba_Barn Owl",
+		"Tyto furcata_American Barn Owl",
+	})
+
+	var captured *datastore.SearchFilters
+	mockDS.EXPECT().
+		SearchDetections(mock.Anything).
+		RunAndReturn(func(f *datastore.SearchFilters) ([]datastore.DetectionRecord, int, error) {
+			captured = f
+			return nil, 0, nil
+		}).Once()
+
+	body := strings.NewReader(`{"species":"barn owl"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/search", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	ctx := e.NewContext(req, rec)
+	ctx.SetPath("/api/v2/search")
+
+	err := controller.detections.HandleSearch(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	require.NotNil(t, captured, "SearchDetections must have been called")
+	assert.Equal(t, "barn owl", captured.Species,
+		"raw common name must remain available for substring matching")
+	assert.Equal(t, []string{"Tyto alba", "Tyto furcata"}, captured.SpeciesScientific,
+		"all active-locale common-name substring matches must be added")
 
 	mockDS.AssertExpectations(t)
 }

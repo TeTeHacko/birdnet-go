@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 
@@ -16,17 +17,18 @@ import (
 // Common string constants to avoid repetition.
 const (
 	armFallback     = "arm"
-	envDocker       = "Docker"
-	envPodman       = "Podman"
-	envLXC          = "LXC"
-	envNspawn       = "systemd-nspawn"
-	envContainerGen = "Container"
+	EnvDocker       = "Docker"
+	EnvPodman       = "Podman"
+	EnvLXC          = "LXC"
+	EnvNspawn       = "systemd-nspawn"
+	EnvContainerGen = "Container"
 )
 
 // Cached detection results — environment never changes at runtime.
 var (
 	cachedCPUArch   string
 	cachedCPUModel  string
+	cachedCPUFlags  []string
 	cachedEnvType   string
 	cachedEnvDetail string
 	archOnce        sync.Once
@@ -93,17 +95,32 @@ func GetCPUArch() string {
 	return cachedCPUArch
 }
 
-// GetCPUModel returns the CPU model name using gopsutil.
-// Returns empty string if detection fails.
-func GetCPUModel() string {
+// loadCPUInfo fills the cached CPU model and flags from gopsutil, once.
+func loadCPUInfo() {
 	cpuOnce.Do(func() {
 		infos, err := cpu.Info()
 		if err != nil || len(infos) == 0 {
 			return
 		}
 		cachedCPUModel = infos[0].ModelName
+		cachedCPUFlags = slices.Clone(infos[0].Flags)
 	})
+}
+
+// GetCPUModel returns the CPU model name using gopsutil.
+// Returns empty string if detection fails.
+func GetCPUModel() string {
+	loadCPUInfo()
 	return cachedCPUModel
+}
+
+// GetCPUFlags returns the CPU feature flags reported by gopsutil, for example
+// "avx2" or "asimd". It is best effort: the list is filled on Linux (amd64 and
+// arm64) and on Intel macOS, and is empty on Windows and Apple Silicon, where
+// gopsutil does not report flags. The result is a copy the caller may modify.
+func GetCPUFlags() []string {
+	loadCPUInfo()
+	return slices.Clone(cachedCPUFlags)
 }
 
 // DetectEnvironment returns the runtime environment type and optional detail.
@@ -120,12 +137,7 @@ func DetectEnvironment(rootPath string) (envType, detail string) {
 // (Docker, Podman, LXC, systemd-nspawn, or generic container).
 func IsContainer() bool {
 	envType, _ := GetEnvironment()
-	switch envType {
-	case envDocker, envPodman, envLXC, envNspawn, envContainerGen:
-		return true
-	default:
-		return false
-	}
+	return IsContainerEnv(envType)
 }
 
 // GetEnvironment returns the cached environment detection result.
@@ -142,10 +154,10 @@ func GetEnvironment() (envType, detail string) {
 func detectLinuxEnvironment(root string) (envType, detail string) {
 	// 1. Container detection — sentinel files
 	if fileExists(filepath.Join(root, ".dockerenv")) {
-		return envDocker, ""
+		return EnvDocker, ""
 	}
 	if fileExists(filepath.Join(root, "run", ".containerenv")) {
-		return envPodman, ""
+		return EnvPodman, ""
 	}
 
 	// 2. Container detection — environment variable (only in production mode,
@@ -188,15 +200,15 @@ func detectLinuxEnvironment(root string) (envType, detail string) {
 func mapContainerEnvVar(value string) (envType, detail string) {
 	switch strings.ToLower(value) {
 	case "docker":
-		return envDocker, ""
+		return EnvDocker, ""
 	case "podman":
-		return envPodman, ""
+		return EnvPodman, ""
 	case "lxc":
-		return envLXC, ""
-	case envNspawn:
-		return envNspawn, ""
+		return EnvLXC, ""
+	case EnvNspawn:
+		return EnvNspawn, ""
 	default:
-		return envContainerGen, value
+		return EnvContainerGen, value
 	}
 }
 
@@ -212,13 +224,13 @@ func detectFromCgroup(path string) string {
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.Contains(line, "docker") {
-			return envDocker
+			return EnvDocker
 		}
 		if strings.Contains(line, "podman") {
-			return envPodman
+			return EnvPodman
 		}
 		if strings.Contains(line, "lxc") {
-			return envLXC
+			return EnvLXC
 		}
 	}
 	return ""

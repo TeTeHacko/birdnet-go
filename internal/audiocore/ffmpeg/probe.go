@@ -6,25 +6,72 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/tphakala/birdnet-go/internal/audiocore/audioformat"
+	"github.com/tphakala/birdnet-go/internal/conf"
 	"github.com/tphakala/birdnet-go/internal/errors"
 	"github.com/tphakala/birdnet-go/internal/privacy"
 )
 
 // MinBatSampleRate is the minimum source capture rate in Hz for bat detection
 // models. Streams below this rate cannot carry ultrasonic content.
-const MinBatSampleRate = 96000
+const MinBatSampleRate = audioformat.MinBatSampleRate
 
 // ErrNoAudioStreamsFound reports that ffprobe found no audio streams in the input.
 var ErrNoAudioStreamsFound = errors.NewStd("no audio streams found in probe output")
 
 // probeTimeout is the maximum time to wait for ffprobe stream probing.
-// This is separate from FFprobeTimeout (3s) used for local file validation;
-// live streams may need longer to connect and negotiate.
+// Live streams may need longer to connect and negotiate.
 const probeTimeout = 10 * time.Second
+
+// ErrFFprobeNotAvailable reports that no ffprobe binary could be resolved.
+var ErrFFprobeNotAvailable = errors.NewStd("ffprobe is not available")
+
+var (
+	ffprobePathMu         sync.RWMutex
+	configuredFFprobePath string
+)
+
+// SetFFprobePath sets the validated ffprobe path, derived from the configured
+// ffmpeg location during startup. Safe for concurrent use.
+func SetFFprobePath(path string) {
+	ffprobePathMu.Lock()
+	configuredFFprobePath = path
+	ffprobePathMu.Unlock()
+}
+
+// GetFFprobePath returns the currently configured ffprobe binary path.
+func GetFFprobePath() string {
+	ffprobePathMu.RLock()
+	defer ffprobePathMu.RUnlock()
+	return configuredFFprobePath
+}
+
+// getFfprobeBinaryName returns the platform-appropriate ffprobe binary name.
+func getFfprobeBinaryName() string {
+	if runtime.GOOS == osWindows {
+		return "ffprobe.exe"
+	}
+	return "ffprobe"
+}
+
+// resolveFFprobeBinary returns the ffprobe binary path, falling back to
+// PATH lookup if the configured path is empty.
+func resolveFFprobeBinary() (string, error) {
+	if path := GetFFprobePath(); path != "" {
+		return path, nil
+	}
+	found, err := exec.LookPath(getFfprobeBinaryName())
+	if err != nil {
+		return "", ErrFFprobeNotAvailable
+	}
+	return found, nil
+}
 
 // lossyCodecs lists codecs that destroy ultrasonic content, making them
 // unsuitable for bat detection which relies on high-frequency audio.
@@ -64,15 +111,32 @@ type ffprobeStream struct {
 // audio properties. It applies a 10-second timeout and sanitizes the URL
 // in error messages to avoid leaking credentials.
 func ProbeStreamInfo(ctx context.Context, url string) (*StreamInfo, error) {
-	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
-	defer cancel()
-
 	ffprobeBinary, err := resolveFFprobeBinary()
 	if err != nil {
 		return nil, err
 	}
 
-	args := buildProbeArgs(url)
+	info, err := runProbe(ctx, ffprobeBinary, url, true)
+	// Some cameras cannot SETUP the RTSP audio track alone, so the audio-only
+	// restriction breaks the handshake (issue #3902). Retry once requesting the
+	// full stream. Skip the retry when the parent context is done (shutdown/
+	// caller cancel), so a cancel is not spent on a doomed second attempt; a
+	// per-attempt probe timeout leaves ctx live, so a hung audio-only handshake
+	// still falls back. ErrNoAudioStreamsFound means the handshake succeeded but
+	// the input has no audio, which the fallback cannot fix, so skip it there too.
+	if err != nil && ctx.Err() == nil && isRTSPURL(url) && !errors.Is(err, ErrNoAudioStreamsFound) {
+		info, err = runProbe(ctx, ffprobeBinary, url, false)
+	}
+	return info, err
+}
+
+// runProbe executes a single ffprobe attempt. audioOnly controls whether the
+// RTSP handshake is restricted to audio tracks via -allowed_media_types audio.
+func runProbe(ctx context.Context, ffprobeBinary, url string, audioOnly bool) (*StreamInfo, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	args := buildProbeArgs(url, audioOnly)
 
 	cmd := exec.CommandContext(probeCtx, ffprobeBinary, args...) //nolint:gosec // G204: ffprobeBinary validated by config or exec.LookPath, URL from user config
 	var stdout, stderr bytes.Buffer
@@ -137,13 +201,16 @@ func parseProbeOutput(data []byte) (*StreamInfo, error) {
 
 // buildProbeArgs constructs the ffprobe argument list for the given URL.
 // For RTSP/RTSPS URLs, it prepends -rtsp_transport tcp to force TCP transport.
-func buildProbeArgs(url string) []string {
+// When audioOnly is true it also restricts the handshake to audio tracks; the
+// fallback path passes false for cameras that cannot SETUP audio alone (#3902).
+func buildProbeArgs(url string, audioOnly bool) []string {
 	args := make([]string, 0, 10)
 
-	// For RTSP streams, force TCP transport before the input URL.
-	lower := strings.ToLower(url)
-	if strings.HasPrefix(lower, "rtsp://") || strings.HasPrefix(lower, "rtsps://") {
-		args = append(args, "-rtsp_transport", "tcp")
+	// For RTSP streams, force TCP transport before the input URL and restrict the
+	// handshake to audio tracks so ffprobe never SETUPs the camera's video track
+	// (issue #3798); -select_streams below only filters ffprobe's output.
+	if isRTSPURL(url) {
+		args = appendRTSPMediaArgs(args, conf.DefaultTransport, audioOnly)
 	}
 
 	args = append(args,

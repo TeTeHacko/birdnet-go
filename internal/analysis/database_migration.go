@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	apiv2 "github.com/tphakala/birdnet-go/internal/api/v2"
+	importsapi "github.com/tphakala/birdnet-go/internal/api/v2/imports"
 	"github.com/tphakala/birdnet-go/internal/classifier"
 	"github.com/tphakala/birdnet-go/internal/conf"
 	"github.com/tphakala/birdnet-go/internal/datastore"
@@ -17,6 +17,7 @@ import (
 	"github.com/tphakala/birdnet-go/internal/detection"
 	"github.com/tphakala/birdnet-go/internal/errors"
 	"github.com/tphakala/birdnet-go/internal/logger"
+	"github.com/tphakala/birdnet-go/internal/suncalc"
 )
 
 // migrationSetupConfig holds configuration for migration infrastructure setup.
@@ -30,8 +31,9 @@ type migrationSetupConfig struct {
 
 // setupMigrationWorker performs the common setup after manager creation and initialization.
 // It creates repositories, the migration worker, stores the manager for cleanup, and handles state recovery.
-// The caller should close the manager if this function returns an error.
-func setupMigrationWorker(cfg *migrationSetupConfig) error {
+// It returns the state manager it created. The caller should close the manager
+// if this function returns an error.
+func setupMigrationWorker(cfg *migrationSetupConfig) (*datastoreV2.StateManager, error) {
 	// Get dialect from manager interface (avoids redundant parameter)
 	isMySQL := cfg.manager.IsMySQL()
 
@@ -44,7 +46,7 @@ func setupMigrationWorker(cfg *migrationSetupConfig) error {
 	// Look up required lookup table IDs (seeded during Manager.Initialize())
 	var speciesLabelType entities.LabelType
 	if err := v2DB.Where("name = ?", "species").FirstOrCreate(&speciesLabelType, entities.LabelType{Name: "species"}).Error; err != nil {
-		return errors.New(err).
+		return nil, errors.New(err).
 			Component("analysis").
 			Category(errors.CategoryDatabase).
 			Context("operation", "get_species_label_type").
@@ -53,7 +55,7 @@ func setupMigrationWorker(cfg *migrationSetupConfig) error {
 
 	var avesClass entities.TaxonomicClass
 	if err := v2DB.Where("name = ?", "Aves").FirstOrCreate(&avesClass, entities.TaxonomicClass{Name: "Aves"}).Error; err != nil {
-		return errors.New(err).
+		return nil, errors.New(err).
 			Component("analysis").
 			Category(errors.CategoryDatabase).
 			Context("operation", "get_aves_taxonomic_class").
@@ -70,7 +72,7 @@ func setupMigrationWorker(cfg *migrationSetupConfig) error {
 			Variant:   detection.DefaultModelVariant,
 			ModelType: entities.ModelTypeBird,
 		}).Error; err != nil {
-		return errors.New(err).
+		return nil, errors.New(err).
 			Component("analysis").
 			Category(errors.CategoryDatabase).
 			Context("operation", "get_default_model").
@@ -85,7 +87,7 @@ func setupMigrationWorker(cfg *migrationSetupConfig) error {
 	// Create repositories for auxiliary data migration
 	weatherRepo := repository.NewWeatherRepository(v2DB, nil, cfg.useV2Prefix, isMySQL)
 	imageCacheRepo := repository.NewImageCacheRepository(v2DB, nil, labelRepo, cfg.useV2Prefix, isMySQL)
-	thresholdRepo := repository.NewDynamicThresholdRepository(v2DB, nil, labelRepo, cfg.useV2Prefix, isMySQL)
+	thresholdRepo := repository.NewDynamicThresholdRepository(v2DB, nil, cfg.useV2Prefix, isMySQL)
 	notificationRepo := repository.NewNotificationHistoryRepository(v2DB, nil, labelRepo, cfg.useV2Prefix, isMySQL)
 
 	// Create the legacy detection repository
@@ -159,7 +161,7 @@ func setupMigrationWorker(cfg *migrationSetupConfig) error {
 		Telemetry:           migrationTelemetry,
 	})
 	if err != nil {
-		return errors.New(err).
+		return nil, errors.New(err).
 			Component("analysis").
 			Category(errors.CategoryDatabase).
 			Context("operation", "create_migration_worker").
@@ -167,8 +169,8 @@ func setupMigrationWorker(cfg *migrationSetupConfig) error {
 	}
 
 	// Inject dependencies into the API layer
-	apiv2.SetMigrationDependencies(stateManager, worker)
-	apiv2.SetMigrationTelemetry(migrationTelemetry)
+	importsapi.SetMigrationDependencies(stateManager, worker)
+	importsapi.SetMigrationTelemetry(migrationTelemetry)
 
 	// Check for state recovery - resume migration if it was in progress
 	state, err := stateManager.GetState()
@@ -195,7 +197,7 @@ func setupMigrationWorker(cfg *migrationSetupConfig) error {
 			// Create cancellable context for the worker - this allows graceful shutdown
 			// to stop the worker by cancelling this context
 			workerCtx, workerCancel := context.WithCancel(context.Background())
-			apiv2.SetMigrationWorkerCancel(workerCancel)
+			importsapi.SetMigrationWorkerCancel(workerCancel)
 			if startErr := worker.Start(workerCtx); startErr != nil {
 				workerCancel() // Clean up on failure
 				migrationLogger.Warn("failed to resume migration worker",
@@ -205,13 +207,29 @@ func setupMigrationWorker(cfg *migrationSetupConfig) error {
 		}
 	}
 
-	return nil
+	return stateManager, nil
+}
+
+// migrationInfra bundles what migration infrastructure setup produces: the v2
+// manager (closed on shutdown) and the state manager the telemetry monitor reads.
+type migrationInfra struct {
+	manager datastoreV2.Manager
+	states  *datastoreV2.StateManager
+	// metadata is the v2 app_metadata store the push reminder keeps its state in.
+	metadata appMetadataStore
+}
+
+// newMetadataStore builds the v2 app_metadata repository for a migration
+// manager. useV2Prefix is true for MySQL, where the v2 tables share a database.
+func newMetadataStore(manager datastoreV2.Manager, useV2Prefix bool) appMetadataStore {
+	return repository.NewAppMetadataRepository(manager.DB(), nil, useV2Prefix, manager.IsMySQL())
 }
 
 // initializeMigrationInfrastructure sets up the v2 database migration infrastructure.
 // This creates the StateManager and Worker instances needed for the migration API.
 // The function handles state recovery on restart and resumes migration if it was in progress.
-func initializeMigrationInfrastructure(settings *conf.Settings, ds datastore.Interface) (datastoreV2.Manager, error) {
+// It returns the v2 manager and state manager, or nil, nil when no database applies.
+func initializeMigrationInfrastructure(settings *conf.Settings, ds datastore.Interface) (*migrationInfra, error) {
 	log := GetLogger()
 
 	// Get the database directory from the legacy database path
@@ -221,8 +239,7 @@ func initializeMigrationInfrastructure(settings *conf.Settings, ds datastore.Int
 		dataDir = datastoreV2.GetDataDirFromLegacyPath(settings.Output.SQLite.Path)
 	case settings.Output.MySQL.Enabled:
 		// MySQL uses v2_ prefixed tables in the same database
-		mgr, err := initializeMySQLMigrationInfrastructure(settings, ds, log)
-		return mgr, err
+		return initializeMySQLMigrationInfrastructure(settings, ds, log)
 	default:
 		log.Debug("no database configured, skipping migration infrastructure",
 			logger.String("operation", "initialize_migration_infrastructure"))
@@ -255,7 +272,7 @@ func initializeMigrationInfrastructure(settings *conf.Settings, ds datastore.Int
 	v2Path := datastoreV2.V2MigrationPathFromConfigured(settings.Output.SQLite.Path)
 	if err := initializeV2WithSelfHealing(v2Manager, v2Path, log); err != nil {
 		if errors.Is(err, datastoreV2.ErrV2SchemaCorrupted) {
-			// Self-healing failed or was not safe — close and return.
+			// Self-healing failed or was not safe: close and return.
 			if closeErr := v2Manager.Close(); closeErr != nil {
 				log.Warn("failed to close v2 manager after self-healing failure",
 					logger.Error(closeErr),
@@ -267,7 +284,7 @@ func initializeMigrationInfrastructure(settings *conf.Settings, ds datastore.Int
 				Context("operation", "initialize_v2_database").
 				Build()
 		}
-		// Non-corruption error — close and return.
+		// Non-corruption error: close and return.
 		if closeErr := v2Manager.Close(); closeErr != nil {
 			log.Warn("failed to close v2 manager after initialization failure",
 				logger.Error(closeErr),
@@ -323,13 +340,14 @@ func initializeMigrationInfrastructure(settings *conf.Settings, ds datastore.Int
 	v2Manager.StartPeriodicCheckpoint()
 
 	// Setup the migration worker using the common helper
-	if err := setupMigrationWorker(&migrationSetupConfig{
+	states, err := setupMigrationWorker(&migrationSetupConfig{
 		manager:     v2Manager,
 		ds:          ds,
 		log:         log,
 		useV2Prefix: false, // SQLite uses separate file, not prefixed tables
 		opName:      "initialize_migration_infrastructure",
-	}); err != nil {
+	})
+	if err != nil {
 		if closeErr := v2Manager.Close(); closeErr != nil {
 			log.Warn("failed to close v2 manager after worker setup failure",
 				logger.Error(closeErr),
@@ -338,14 +356,15 @@ func initializeMigrationInfrastructure(settings *conf.Settings, ds datastore.Int
 		return nil, err
 	}
 
-	return v2Manager, nil
+	return &migrationInfra{manager: v2Manager, states: states, metadata: newMetadataStore(v2Manager, false)}, nil
 }
 
 // initializeMySQLMigrationInfrastructure sets up migration infrastructure for MySQL.
 // Unlike SQLite which uses a separate file, MySQL shares the same database.
 // V2 tables use the v2_ prefix to avoid collisions with legacy auxiliary tables
 // (e.g., dynamic_thresholds, image_caches) that share the same base names.
-func initializeMySQLMigrationInfrastructure(settings *conf.Settings, ds datastore.Interface, log logger.Logger) (datastoreV2.Manager, error) {
+// It returns the v2 manager and the state manager the migration worker uses.
+func initializeMySQLMigrationInfrastructure(settings *conf.Settings, ds datastore.Interface, log logger.Logger) (*migrationInfra, error) {
 	// Create v2 MySQL manager with v2_ prefix to avoid collisions with legacy
 	// auxiliary tables that share the same base names. TableName() methods have
 	// been removed so NamingStrategy.TablePrefix now takes effect.
@@ -384,13 +403,14 @@ func initializeMySQLMigrationInfrastructure(settings *conf.Settings, ds datastor
 	// Setup the migration worker using the common helper.
 	// useV2Prefix is true so the migration worker creates v2_ prefixed tables,
 	// avoiding collisions with legacy auxiliary tables that share the same base names.
-	if err := setupMigrationWorker(&migrationSetupConfig{
+	states, err := setupMigrationWorker(&migrationSetupConfig{
 		manager:     v2Manager,
 		ds:          ds,
 		log:         log,
 		useV2Prefix: true, // v2_ prefix avoids collisions with legacy auxiliary tables
 		opName:      "initialize_mysql_migration",
-	}); err != nil {
+	})
+	if err != nil {
 		if closeErr := v2Manager.Close(); closeErr != nil {
 			log.Warn("failed to close MySQL v2 manager after worker setup failure",
 				logger.Error(closeErr),
@@ -399,7 +419,7 @@ func initializeMySQLMigrationInfrastructure(settings *conf.Settings, ds datastor
 		return nil, err
 	}
 
-	return v2Manager, nil
+	return &migrationInfra{manager: v2Manager, states: states, metadata: newMetadataStore(v2Manager, true)}, nil
 }
 
 // initializeV2OnlyMode creates a V2OnlyDatastore when migration is complete.
@@ -500,7 +520,7 @@ func initializeV2OnlyMode(settings *conf.Settings) (*v2only.Datastore, error) {
 	sourceRepo := repository.NewAudioSourceRepository(v2DB, nil, useV2Prefix, isMySQL)
 	weatherRepo := repository.NewWeatherRepository(v2DB, nil, useV2Prefix, isMySQL)
 	imageCacheRepo := repository.NewImageCacheRepository(v2DB, nil, labelRepo, useV2Prefix, isMySQL)
-	thresholdRepo := repository.NewDynamicThresholdRepository(v2DB, nil, labelRepo, useV2Prefix, isMySQL)
+	thresholdRepo := repository.NewDynamicThresholdRepository(v2DB, nil, useV2Prefix, isMySQL)
 	notificationRepo := repository.NewNotificationHistoryRepository(v2DB, nil, labelRepo, useV2Prefix, isMySQL)
 	appEventRepo := repository.NewAppEventRepository(v2DB, nil, useV2Prefix, isMySQL)
 
@@ -525,8 +545,11 @@ func initializeV2OnlyMode(settings *conf.Settings) (*v2only.Datastore, error) {
 		AppEvent:       appEventRepo,
 		Logger:         log,
 		Timezone:       time.Local,
-		Labels:         settings.BirdNET.Labels, // For GetThresholdEvents workaround (#1907)
+		Labels:         settings.BirdNET.Labels, // For common<->scientific name-map resolution
 		SpeciesCodeMap: scientificIndex,
+		// Sun calculator for civil dawn (dawn-chorus onset) and time-of-day classification,
+		// matching the legacy datastore.New wiring. It follows the live station location.
+		SunCalc: suncalc.NewSunCalcWithSource(conf.LiveLocation(settings)),
 	})
 	if err != nil {
 		_ = v2Manager.Close()

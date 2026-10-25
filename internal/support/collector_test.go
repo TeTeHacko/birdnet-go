@@ -5,16 +5,21 @@ import (
 	"bytes"
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	diagpkg "github.com/tphakala/birdnet-go/internal/diagnostics"
 	"github.com/tphakala/birdnet-go/internal/privacy"
+	"github.com/tphakala/birdnet-go/internal/sysinfo"
 	"gopkg.in/yaml.v3"
 )
 
@@ -24,29 +29,20 @@ var updateGoldenFiles = flag.Bool("update", false, "update golden files")
 
 // Test constants
 const (
-	// File sizes for testing
-	testLogSizeLimit  = 5000
-	testLogSizeSmall  = 1000
-	testLogSizeMedium = 4000
-	testLogSizeLarge  = 4500
-	testLogSizeTiny   = 0
-
 	// Test durations
-	testDuration24Hours = 24 * time.Hour
-	testDuration1Hour   = 1 * time.Hour
-	testDuration48Hours = 48 * time.Hour
-	testDuration1Minute = 1 * time.Minute
+	testWindowDaily  = 24 * time.Hour
+	testWindowHourly = 1 * time.Hour
+	testWindowBrief  = 1 * time.Minute
 
 	// Test sizes in bytes
 	testSize10MB = 10 * 1024 * 1024
 	testSize1KB  = 1024
 )
 
-// TestLogFileCollector_isLogFile tests the log file detection
-func TestLogFileCollector_isLogFile(t *testing.T) {
+// TestHasLogSuffix tests the log-file suffix detection that selects which files
+// are collected into the support dump.
+func TestHasLogSuffix(t *testing.T) {
 	t.Parallel()
-
-	lfc := &logFileCollector{}
 
 	tests := []struct {
 		name     string
@@ -77,61 +73,7 @@ func TestLogFileCollector_isLogFile(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tt.want, lfc.isLogFile(tt.filename), "isLogFile(%q)", tt.filename)
-		})
-	}
-}
-
-// TestLogFileCollector_isFileWithinTimeRange tests time range checking
-func TestLogFileCollector_isFileWithinTimeRange(t *testing.T) {
-	now := time.Now()
-	lfc := &logFileCollector{
-		cutoffTime: now.Add(-testDuration24Hours), // 24 hours ago
-	}
-
-	tests := []struct {
-		name    string
-		modTime time.Time
-		want    bool
-	}{
-		{"recent file", now.Add(-testDuration1Hour), true},
-		{"file at cutoff", now.Add(-testDuration24Hours), true},
-		{"old file", now.Add(-testDuration48Hours), false},
-		{"future file", now.Add(testDuration1Hour), true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Create a mock FileInfo
-			info := &mockFileInfo{modTime: tt.modTime}
-			assert.Equal(t, tt.want, lfc.isFileWithinTimeRange(info), "isFileWithinTimeRange()")
-		})
-	}
-}
-
-// TestLogFileCollector_canAddFile tests size limit checking
-func TestLogFileCollector_canAddFile(t *testing.T) {
-	tests := []struct {
-		name      string
-		totalSize int64
-		maxSize   int64
-		fileSize  int64
-		want      bool
-	}{
-		{"within limit", testLogSizeSmall, testLogSizeLimit, testLogSizeSmall, true},
-		{"exactly at limit", testLogSizeMedium, testLogSizeLimit, testLogSizeSmall, true},
-		{"exceeds limit", testLogSizeLarge, testLogSizeLimit, testLogSizeSmall, false},
-		{"zero file size", testLogSizeSmall, testLogSizeLimit, testLogSizeTiny, true},
-		{"already at max", testLogSizeLimit, testLogSizeLimit, testLogSizeSmall, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			lfc := &logFileCollector{
-				totalSize: tt.totalSize,
-				maxSize:   tt.maxSize,
-			}
-			assert.Equal(t, tt.want, lfc.canAddFile(tt.fileSize), "canAddFile(%d)", tt.fileSize)
+			assert.Equal(t, tt.want, hasLogSuffix(tt.filename), "hasLogSuffix(%q)", tt.filename)
 		})
 	}
 }
@@ -286,6 +228,25 @@ func TestCollector_scrubConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "mask usb-id serials in device values",
+			config: map[string]any{
+				"realtime": map[string]any{"audio": map[string]any{"source": "usb-id:0d8c:0014:SN12345"}},
+				"sources": []any{
+					map[string]any{"name": "Mic", "device": "usb-id:0d8c:0014:SN12345"},
+					map[string]any{"device": "usb-path:usb-0000:00:14.0-3"},
+					map[string]any{"device": "hw:1,0"},
+				},
+			},
+			want: map[string]any{
+				"realtime": map[string]any{"audio": map[string]any{"source": "usb-id:0d8c:0014:<redacted>"}},
+				"sources": []any{
+					map[string]any{"name": "Mic", "device": "usb-id:0d8c:0014:<redacted>"},
+					map[string]any{"device": "usb-path:usb-0000:00:14.0-3"},
+					map[string]any{"device": "hw:1,0"},
+				},
+			},
+		},
+		{
 			name: "handle mixed case keys",
 			config: map[string]any{
 				"Password": "secret",
@@ -371,6 +332,36 @@ func TestCollector_scrubConfig(t *testing.T) {
 							"enabled":  true,
 						},
 					},
+				},
+			},
+		},
+		{
+			name: "classify security address lists",
+			config: map[string]any{
+				"security": map[string]any{
+					"trustedProxies":          []any{"cloudflare", "198.51.100.20", "10.0.0.0/8"},
+					"plainhttpsessionclients": []any{"172.18.0.5", "127.0.0.1"},
+				},
+			},
+			want: map[string]any{
+				"security": map[string]any{
+					"trustedProxies":          []any{"cloudflare", "[redacted public address]", "[redacted private range]"},
+					"plainhttpsessionclients": []any{"[redacted private address]", "[redacted loopback address]"},
+				},
+			},
+		},
+		{
+			name: "empty security address lists stay empty",
+			config: map[string]any{
+				"security": map[string]any{
+					"trustedProxies":          []any{},
+					"plainhttpsessionclients": []any{},
+				},
+			},
+			want: map[string]any{
+				"security": map[string]any{
+					"trustedProxies":          []any{},
+					"plainhttpsessionclients": []any{},
 				},
 			},
 		},
@@ -564,22 +555,6 @@ func compareConfigs(a, b map[string]any) bool {
 	}
 	return true
 }
-
-// mockFileInfo implements os.FileInfo for testing
-type mockFileInfo struct {
-	name    string
-	size    int64
-	mode    os.FileMode
-	modTime time.Time
-	isDir   bool
-}
-
-func (m *mockFileInfo) Name() string       { return m.name }
-func (m *mockFileInfo) Size() int64        { return m.size }
-func (m *mockFileInfo) Mode() os.FileMode  { return m.mode }
-func (m *mockFileInfo) ModTime() time.Time { return m.modTime }
-func (m *mockFileInfo) IsDir() bool        { return m.isDir }
-func (m *mockFileInfo) Sys() any           { return nil }
 
 // TestIsDefaultValue tests default value detection for redaction skipping
 func TestIsDefaultValue(t *testing.T) {
@@ -862,7 +837,7 @@ func TestCollector_collectJournalLogs(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
 		diagnostics := &LogSourceDiagnostics{PathsSearched: []SearchedPath{}, Details: make(map[string]any)}
-		logs, err := c.collectJournalLogs(ctx, testDuration1Hour, false, diagnostics)
+		logs, err := c.collectJournalLogs(ctx, testWindowHourly, false, diagnostics)
 
 		// If journalctl is not available or service doesn't exist, we should get our sentinel error
 		if err != nil {
@@ -906,7 +881,7 @@ func TestCollectionDiagnostics_Population(t *testing.T) {
 						Summary: DiagnosticSummary{
 							TotalEntries: 10,
 							TimeRange: TimeRange{
-								From: time.Now().Add(-testDuration24Hours),
+								From: time.Now().Add(-testWindowDaily),
 								To:   time.Now(),
 							},
 						},
@@ -993,12 +968,12 @@ func TestCollector_collectLogFilesWithDiagnostics(t *testing.T) {
 	tests := []struct {
 		name     string
 		duration time.Duration
-		validate func(t *testing.T, logs []LogEntry, diag *LogSourceDiagnostics)
+		validate func(t *testing.T, acc *logScanAccum, diag *LogSourceDiagnostics)
 	}{
 		{
 			name:     "successful log collection",
-			duration: testDuration24Hours,
-			validate: func(t *testing.T, logs []LogEntry, diag *LogSourceDiagnostics) {
+			duration: testWindowDaily,
+			validate: func(t *testing.T, acc *logScanAccum, diag *LogSourceDiagnostics) {
 				t.Helper()
 				// Check that paths were searched
 				assert.NotEmpty(t, diag.PathsSearched)
@@ -1013,13 +988,14 @@ func TestCollector_collectLogFilesWithDiagnostics(t *testing.T) {
 		},
 		{
 			name:     "old logs filtered by duration",
-			duration: testDuration1Minute, // Very short duration to filter out test log
-			validate: func(t *testing.T, logs []LogEntry, diag *LogSourceDiagnostics) {
+			duration: testWindowBrief, // Very short duration to filter out test log
+			validate: func(t *testing.T, acc *logScanAccum, diag *LogSourceDiagnostics) {
 				t.Helper()
 				// Paths should still be searched
 				assert.NotEmpty(t, diag.PathsSearched)
-				// But logs might be filtered out
-				// logs might be empty after filtering
+				// The 2024-dated fixture is older than the 1-minute window, so
+				// every entry is filtered out and the counted total is zero.
+				assert.Zero(t, acc.entries)
 			},
 		},
 	}
@@ -1030,9 +1006,11 @@ func TestCollector_collectLogFilesWithDiagnostics(t *testing.T) {
 				Details: make(map[string]any),
 			}
 
-			logs, _, _ := c.collectLogFilesWithDiagnostics(tt.duration, testSize10MB, false, diagnostics)
+			var acc logScanAccum
+			err := c.collectLogFilesWithDiagnostics(t.Context(), tt.duration, testSize10MB, &acc, diagnostics)
+			require.NoError(t, err)
 
-			tt.validate(t, logs, diagnostics)
+			tt.validate(t, &acc, diagnostics)
 		})
 	}
 }
@@ -1052,7 +1030,7 @@ func TestCollector_Collect_AlwaysIncludesDiagnostics(t *testing.T) {
 		IncludeLogs:       true,  // Enable logs to avoid validation error
 		IncludeConfig:     false, // Disable config
 		IncludeSystemInfo: false, // Disable system info
-		LogDuration:       testDuration1Hour,
+		LogDuration:       testWindowHourly,
 		MaxLogSize:        testSize1KB,
 	}
 
@@ -1074,7 +1052,7 @@ func TestCollector_Collect_AlwaysIncludesDiagnostics(t *testing.T) {
 		IncludeLogs:       true,
 		IncludeConfig:     true,
 		IncludeSystemInfo: true,
-		LogDuration:       testDuration1Hour,
+		LogDuration:       testWindowHourly,
 		MaxLogSize:        testSize1KB,
 	}
 
@@ -1199,7 +1177,6 @@ func createComprehensiveMockConfig() map[string]any {
 			"audio": map[string]any{
 				"source":          "plughw:1,0",
 				"ffmpegPath":      "/usr/bin/ffmpeg",
-				"soxPath":         "/usr/bin/sox",
 				"streamTransport": "auto",
 				"soundLevel": map[string]any{
 					"enabled":              true,
@@ -1989,4 +1966,153 @@ func TestComprehensivePrivacyScrubbing_Integration(t *testing.T) {
 	t.Run("url_structural_redaction", func(t *testing.T) {
 		assertURLStructuralRedaction(t, got)
 	})
+}
+
+func TestCreateArchiveIncludesJournal(t *testing.T) {
+	t.Parallel()
+	// Fully hermetic: the collector locates the journal via
+	// diagnostics.JournalPathIn(c.configPath), so a journal written into
+	// the test's temp config dir is picked up with no environment coupling.
+	configDir := t.TempDir()
+	jp := diagpkg.JournalPathIn(configDir)
+	require.NoError(t, os.MkdirAll(filepath.Dir(jp), 0o750))
+	journalLine := `{"schema_version":1,"type":"boot","timestamp":"2026-07-18T10:00:00Z","cwd":"/home/someuser/birdnet"}` + "\n"
+	require.NoError(t, os.WriteFile(jp, []byte(journalLine), 0o600))
+
+	c := NewCollector(configDir, t.TempDir(), "sys-id", "20260716")
+	opts := CollectorOptions{IncludeDeploymentInfo: true, AnonymizePII: true}
+	dump, err := c.Collect(t.Context(), opts)
+	require.NoError(t, err)
+	archive, err := c.CreateArchive(t.Context(), dump, opts)
+	require.NoError(t, err)
+
+	zr, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
+	require.NoError(t, err)
+	var journalEntry *zip.File
+	for _, f := range zr.File {
+		if f.Name == "diagnostics/journal.jsonl" {
+			journalEntry = f
+		}
+	}
+	require.NotNil(t, journalEntry, "journal must ship in the archive")
+
+	// The journal goes through the same line-by-line anonymization
+	// pipeline as log files: the user path must not survive verbatim.
+	rc, err := journalEntry.Open()
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, rc.Close()) })
+	shipped, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	assert.Contains(t, string(shipped), `"type":"boot"`)
+	assert.Contains(t, string(shipped), `"timestamp":"2026-07-18T10:00:00Z"`,
+		"timestamps must survive the scrubber unchanged")
+	assert.NotContains(t, string(shipped), "/home/someuser/birdnet",
+		"journal lines are scrubbed on the way out")
+}
+
+func TestCreateArchiveSkipsMissingJournal(t *testing.T) {
+	t.Parallel()
+	c := NewCollector(t.TempDir(), t.TempDir(), "sys-id", "20260716")
+	opts := CollectorOptions{IncludeDeploymentInfo: true, AnonymizePII: true}
+	dump, err := c.Collect(t.Context(), opts)
+	require.NoError(t, err)
+	archive, err := c.CreateArchive(t.Context(), dump, opts)
+	require.NoError(t, err, "absent journal must not fail archive creation")
+
+	zr, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
+	require.NoError(t, err)
+	for _, f := range zr.File {
+		assert.NotEqual(t, "diagnostics/journal.jsonl", f.Name)
+	}
+}
+
+// TestJournalSkipReasonValues pins the strings that appear in support dumps.
+func TestJournalSkipReasonValues(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "skipped_reason", journalSkippedReasonKey)
+	assert.Equal(t, "running_in_container", journalSkipContainer)
+	assert.Equal(t, "unsupported_os", journalSkipUnsupportedOS)
+	assert.Equal(t, "journalctl_not_found", journalSkipNotInstalled)
+}
+
+// TestCollectLogs_SkipsJournaldWithoutJournalctl removes journalctl from PATH,
+// so the host gate reports a skip on every OS and collectLogs must record it
+// as not attempted instead of a failed command.
+func TestCollectLogs_SkipsJournaldWithoutJournalctl(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	c := NewCollector(t.TempDir(), t.TempDir(), "sys-id", "20260716")
+	diag := LogCollectionDiagnostics{
+		JournalLogs: LogSourceDiagnostics{Details: make(map[string]any)},
+		FileLogs:    LogSourceDiagnostics{Details: make(map[string]any)},
+	}
+	c.collectLogs(t.Context(), testWindowHourly, testSize1KB, false, &diag)
+
+	jl := diag.JournalLogs
+	assert.False(t, jl.Attempted)
+	assert.Contains(t, []any{journalSkipUnsupportedOS, journalSkipContainer, journalSkipNotInstalled},
+		jl.Details[journalSkippedReasonKey])
+	if runtime.GOOS == osLinux && !sysinfo.IsContainer() {
+		// The PATH branch is the only gate that can fire here.
+		assert.Equal(t, journalSkipNotInstalled, jl.Details[journalSkippedReasonKey])
+	}
+	assert.Empty(t, jl.Error)
+	assert.NotEqual(t, "command_failed", jl.Details["error_type"])
+}
+
+func TestJournalSkipReason(t *testing.T) {
+	t.Parallel()
+
+	found := func(string) (string, error) { return "/usr/bin/journalctl", nil }
+	missing := func(string) (string, error) { return "", fmt.Errorf("lookup: %w", exec.ErrNotFound) }
+
+	tests := []struct {
+		name        string
+		goos        string
+		inContainer bool
+		lookPath    func(string) (string, error)
+		want        string
+		wantCalls   int
+	}{
+		{"darwin", "darwin", false, found, journalSkipUnsupportedOS, 0},
+		{"windows", "windows", false, found, journalSkipUnsupportedOS, 0},
+		{"linux container with journalctl", osLinux, true, found, journalSkipContainer, 0},
+		{"linux container without journalctl", osLinux, true, missing, journalSkipContainer, 0},
+		{"linux host without journalctl", osLinux, false, missing, journalSkipNotInstalled, 1},
+		{"linux host with journalctl", osLinux, false, found, "", 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			calls := 0
+			lookPath := func(name string) (string, error) {
+				calls++
+				assert.Equal(t, journalctlBinary, name)
+				return tt.lookPath(name)
+			}
+			assert.Equal(t, tt.want, journalSkipReason(tt.goos, tt.inContainer, lookPath))
+			assert.Equal(t, tt.wantCalls, calls)
+		})
+	}
+}
+
+func TestMarkJournalSkipped(t *testing.T) {
+	t.Parallel()
+	diag := LogSourceDiagnostics{
+		Attempted:     true,
+		Successful:    true,
+		Error:         "stale failure",
+		EntriesFound:  7,
+		Command:       "journalctl -u birdnet-go.service",
+		PathsSearched: []SearchedPath{},
+		Details:       map[string]any{"error_type": "command_failed", "stale": 1},
+	}
+	markJournalSkipped(&diag, journalSkipUnsupportedOS)
+	assert.False(t, diag.Attempted)
+	assert.False(t, diag.Successful)
+	assert.Empty(t, diag.Error)
+	assert.Zero(t, diag.EntriesFound)
+	assert.Empty(t, diag.Command)
+	assert.NotNil(t, diag.PathsSearched)
+	assert.Equal(t, map[string]any{journalSkippedReasonKey: journalSkipUnsupportedOS}, diag.Details)
 }

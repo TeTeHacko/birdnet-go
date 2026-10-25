@@ -6,14 +6,6 @@ import (
 	"github.com/tphakala/birdnet-go/internal/datastore/v2/entities"
 )
 
-// AudioSourceWithDetectionCount pairs an audio source with the number of detections
-// recorded against it. Used to populate the analytics source-filter picker, where the
-// frontend wants both the metadata and the activity count for a single round trip.
-type AudioSourceWithDetectionCount struct {
-	Source         *entities.AudioSource
-	DetectionCount int64
-}
-
 // AudioSourceRepository provides access to the audio_sources table.
 type AudioSourceRepository interface {
 	// GetOrCreate retrieves an existing audio source or creates a new one.
@@ -42,13 +34,6 @@ type AudioSourceRepository interface {
 	// GetAll retrieves all audio sources.
 	GetAll(ctx context.Context) ([]*entities.AudioSource, error)
 
-	// GetAllWithDetectionCount returns every audio source that has at least one detection,
-	// joined with its detection count and ordered by detection count descending.
-	// Sources with zero detections are excluded so the analytics picker stays focused on
-	// sources with usable data. The query uses the prefix-aware table names so it works
-	// in both standard and v2_prefixed (MySQL migration) schemas.
-	GetAllWithDetectionCount(ctx context.Context) ([]AudioSourceWithDetectionCount, error)
-
 	// GetByNodeName retrieves all audio sources for a specific node.
 	GetByNodeName(ctx context.Context, nodeName string) ([]*entities.AudioSource, error)
 
@@ -58,6 +43,7 @@ type AudioSourceRepository interface {
 	// Delete removes an audio source by ID.
 	// Returns ErrAudioSourceNotFound if not found.
 	// Note: Detections referencing this source will have their source_id set to NULL.
+	// Privacy filter hourly rollup rows of the source are deleted with it.
 	Delete(ctx context.Context, id uint) error
 
 	// Update modifies an audio source's display name or config.

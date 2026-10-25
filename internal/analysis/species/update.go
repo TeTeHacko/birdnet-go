@@ -139,6 +139,17 @@ func (t *SpeciesTracker) updateSeasonalTrackingLocked(scientificName string, det
 // UpdateSpecies updates the first seen time for a species if necessary
 // Returns true if this is a new species detection
 func (t *SpeciesTracker) UpdateSpecies(scientificName string, detectionTime time.Time) bool {
+	// While the background load is in flight the maps are not yet populated, so
+	// every species would look new. Suppress (return not-new) and skip recording;
+	// the detection is still persisted by the caller and tracked from the next one.
+	if t.warming.Load() {
+		return false
+	}
+
+	// Collapse taxonomic aliases so this taxon keys identically to its history,
+	// regardless of which name (legacy or canonical) the caller passed.
+	scientificName = canonicalSpeciesName(scientificName)
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -157,8 +168,17 @@ func (t *SpeciesTracker) UpdateSpecies(scientificName string, detectionTime time
 	return isNewSpecies
 }
 
-// IsNewSpecies checks if a species is considered "new" within the configured window
+// IsNewSpecies checks the inclusive calendar-day badge window, like GetSpeciesStatus.
+// Notification eligibility uses the separate elapsed-time window in CheckAndUpdateSpecies.
 func (t *SpeciesTracker) IsNewSpecies(scientificName string) bool {
+	// Suppress while warming: the maps are empty mid-load, so an unguarded check
+	// would report every species as never-seen-before.
+	if t.warming.Load() {
+		return false
+	}
+
+	scientificName = canonicalSpeciesName(scientificName)
+
 	t.mu.RLock()
 	firstSeen, exists := t.speciesFirstSeen[scientificName]
 	t.mu.RUnlock()
@@ -188,7 +208,18 @@ func (t *SpeciesTracker) checkAndUpdateLifetimeLocked(scientificName string, det
 
 	// Calculate calendar days since first seen (DST-safe, clamped to 0)
 	daysSince := calculateDaysSince(detectionTime, firstSeen)
-	return daysSince <= t.windowDays, daysSince
+	if audioDate, ok := t.speciesFirstAudioDate[scientificName]; ok && audioDate.Before(firstSeen) {
+		firstSeen = audioDate
+	}
+	// Notification eligibility must expire before an equally long suppression
+	// interval does (#4013). The inclusive calendar-day window used for badges
+	// can outlast that interval, especially across a daylight-saving transition.
+	// Anchor to the first audio day's local midnight: historical loads retain
+	// that calendar date (parsed in UTC), keeping the deadline stable on reload.
+	year, month, day := firstSeen.Date()
+	start := time.Date(year, month, day, 0, 0, 0, 0, detectionTime.Location())
+	window := time.Duration(t.windowDays) * hoursPerDay * time.Hour
+	return detectionTime.Before(start.Add(window)), daysSince
 }
 
 // addYearlyIfNewLocked adds species to yearly tracking if not already present. Assumes lock is held.
@@ -218,15 +249,34 @@ func (t *SpeciesTracker) addSeasonalIfNewLocked(scientificName string, detection
 // CheckAndUpdateSpecies atomically checks if a species is new and updates the tracker
 // This prevents race conditions where multiple concurrent detections of the same species
 // could all be considered "new" before any of them update the tracker.
-// Returns (isNew, daysSinceFirstSeen)
+// Returns (eligible for a new-species notification, calendar days since first seen).
+// Badge visibility uses the separate calendar-day window in GetSpeciesStatus.
 func (t *SpeciesTracker) CheckAndUpdateSpecies(scientificName string, detectionTime time.Time) (isNew bool, daysSinceFirstSeen int) {
 	isNew, daysSinceFirstSeen, _ = t.CheckAndUpdateSpeciesWithNovelty(scientificName, detectionTime)
 	return
 }
 
-// CheckAndUpdateSpeciesWithNovelty atomically checks species status, updates
-// tracking, and returns novelty episode details for alert rules.
+// CheckAndUpdateSpeciesWithNovelty atomically checks new-species notification
+// eligibility, updates tracking, and returns novelty episode details for alert rules.
 func (t *SpeciesTracker) CheckAndUpdateSpeciesWithNovelty(scientificName string, detectionTime time.Time) (isNew bool, daysSinceFirstSeen int, novelty NoveltyStatus) {
+	// While warming, suppress new-species/novelty and skip recording so the empty
+	// maps cannot produce a spurious first-detection. Checked before t.mu so it
+	// never blocks on the lock the background loader holds.
+	//
+	// daysSinceFirstSeen is 0 here, NOT the -1 "unknown" sentinel used by
+	// warmingSpeciesStatus: this value flows to events.NewDetectionEvent, which
+	// rejects a negative daysSinceFirstSeen. A -1 would drop the ordinary
+	// detection.occurred event for every detection during warm-up and break
+	// alert rules. With isNew=false the value is not interpreted as "new today".
+	if t.warming.Load() {
+		return false, 0, inactiveNoveltyStatus(inactiveNoveltyValue)
+	}
+
+	// Collapse taxonomic aliases so the lookup and recording below key this taxon
+	// identically to its loaded history (canonical names) regardless of which name
+	// the detection carried.
+	scientificName = canonicalSpeciesName(scientificName)
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 

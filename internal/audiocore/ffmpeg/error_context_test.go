@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/tphakala/birdnet-go/internal/audiocore"
 )
 
 func TestExtractErrorContext_ConnectionTimeout(t *testing.T) {
@@ -96,7 +98,7 @@ func TestExtractErrorContext_EmptyString(t *testing.T) {
 }
 
 func TestFormatForConsole(t *testing.T) {
-	ctx := &ErrorContext{
+	ctx := &audiocore.StreamErrorContext{
 		ErrorType:      "connection_timeout",
 		PrimaryMessage: "Connection timed out",
 		TargetHost:     "192.168.1.1",
@@ -149,7 +151,7 @@ func TestFormatForConsole(t *testing.T) {
 
 // TestFormatForConsole_NoTroubleshooting tests formatting when no troubleshooting steps are provided.
 func TestFormatForConsole_NoTroubleshooting(t *testing.T) {
-	ctx := &ErrorContext{
+	ctx := &audiocore.StreamErrorContext{
 		ErrorType:       "unknown",
 		PrimaryMessage:  "Unknown error",
 		UserFacingMsg:   "An unknown error occurred",
@@ -193,7 +195,7 @@ func TestErrorContext_ShouldOpenCircuit(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.description, func(t *testing.T) {
-			ctx := &ErrorContext{ErrorType: tt.errorType}
+			ctx := &audiocore.StreamErrorContext{ErrorType: tt.errorType}
 			assert.Equal(t, tt.shouldOpen, ctx.ShouldOpenCircuit(), tt.description)
 		})
 	}
@@ -221,7 +223,7 @@ func TestErrorContext_ShouldRestart(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.description, func(t *testing.T) {
-			ctx := &ErrorContext{ErrorType: tt.errorType}
+			ctx := &audiocore.StreamErrorContext{ErrorType: tt.errorType}
 			assert.Equal(t, tt.shouldRestart, ctx.ShouldRestart(), tt.description)
 		})
 	}
@@ -481,15 +483,17 @@ Error opening input file rtsp://user:p@ssw0rd!@host.local:8554/live`,
 			require.NotNil(t, ctx, "Expected error context, got nil")
 			assert.Equal(t, tt.expectedType, ctx.ErrorType)
 
-			// Check that RawFFmpegOutput is sanitized.
-			assert.NotContains(t, ctx.RawFFmpegOutput, "password", "RawFFmpegOutput contains unsanitized 'password'")
-			assert.NotContains(t, ctx.RawFFmpegOutput, "secret", "RawFFmpegOutput contains unsanitized 'secret'")
-			assert.NotContains(t, ctx.RawFFmpegOutput, "p@ssw0rd", "RawFFmpegOutput contains unsanitized 'p@ssw0rd'")
+			// Check that RawProducerOutput is sanitized.
+			assert.NotContains(t, ctx.RawProducerOutput, "password", "RawProducerOutput contains unsanitized 'password'")
+			assert.NotContains(t, ctx.RawProducerOutput, "secret", "RawProducerOutput contains unsanitized 'secret'")
+			assert.NotContains(t, ctx.RawProducerOutput, "p@ssw0rd", "RawProducerOutput contains unsanitized 'p@ssw0rd'")
 
-			// Check that credentials should be replaced with ***.
-			if !strings.Contains(ctx.RawFFmpegOutput, "***") {
-				t.Log("Note: RawFFmpegOutput should contain *** placeholders for credentials")
-			}
+			// SanitizeFFmpegError strips the user:pass@ credentials from the URL
+			// rather than masking them, so the sanitized output keeps the scheme
+			// and host but not the secret. Assert the URL line survived as a
+			// non-vacuous positive control for the credential-absence checks above.
+			assert.Contains(t, ctx.RawProducerOutput, "rtsp://",
+				"sanitized output should retain the stream URL, not be emptied")
 
 			// Check TargetHost is clean.
 			if tt.checkHost {
@@ -720,4 +724,69 @@ Error opening input files: Input/output error`
 
 	// Should also extract the port.
 	assert.Equal(t, 8554, ctx.TargetPort)
+}
+
+func TestExtractErrorContext_DNSResolutionFailed_LocalHost(t *testing.T) {
+	stderrOutput := `[tcp @ 0x563f02f73b40] Failed to resolve hostname remote-mic.local: Name or service not known
+[in#0 @ 0x563f02f706c0] Error opening input: Input/output error
+Error opening input file rtsp://remote-mic.local:8554/mic.
+Error opening input files: Input/output error`
+
+	ctx := ExtractErrorContext(stderrOutput)
+
+	require.NotNil(t, ctx, "Expected error context, got nil")
+	assert.Equal(t, "dns_resolution_failed", ctx.ErrorType)
+	assert.Equal(t, "remote-mic.local", ctx.TargetHost)
+	assert.True(t, ctx.ShouldOpenCircuit(), "DNS resolution failure should open circuit breaker")
+	assert.False(t, ctx.ShouldRestart(), "DNS resolution failure should not trigger restart")
+}
+
+func TestExtractErrorContext_DNSResolutionFailed_HTTPLocalHost(t *testing.T) {
+	stderrOutput := `[tcp @ 0x55d0c1e3a280] Failed to resolve hostname mic.local: Name or service not known
+[in#0 @ 0x55d0c1e1f6c0] Error opening input: Input/output error
+Error opening input file http://mic.local:8000/stream.
+Error opening input files: Input/output error`
+
+	ctx := ExtractErrorContext(stderrOutput)
+
+	require.NotNil(t, ctx, "Expected error context, got nil")
+	assert.Equal(t, "dns_resolution_failed", ctx.ErrorType)
+	assert.Equal(t, "mic.local", ctx.TargetHost)
+}
+
+func TestBuildDNSErrorMessage_LocalHostInContainerWithoutSocket(t *testing.T) {
+	// Not parallel: detectEnv is a package-level seam.
+	orig := detectEnv
+	detectEnv = func() mdnsEnv { return mdnsEnv{inContainer: true} }
+	t.Cleanup(func() { detectEnv = orig })
+
+	ctx := &audiocore.StreamErrorContext{ErrorType: audiocore.ErrTypeDNSResolutionFailed}
+	extractDNSError(ctx, `[tcp @ 0x563f02f73b40] Failed to resolve hostname remote-mic.local: Name or service not known
+Error opening input file rtsp://remote-mic.local:8554/mic.`)
+	require.Equal(t, "remote-mic.local", ctx.TargetHost)
+
+	buildDNSErrorMessage(ctx)
+
+	joined := strings.Join(ctx.TroubleShooting, "\n")
+	assert.Contains(t, joined, "/run/avahi-daemon:/run/avahi-daemon:ro")
+	assert.Contains(t, joined, "ping remote-mic.local")
+	assert.NotContains(t, joined, "nslookup")
+	assert.Equal(t, audiocore.ErrTypeDNSResolutionFailed, ctx.ErrorType)
+}
+
+func TestBuildDNSErrorMessage_NonLocalHostUnchanged(t *testing.T) {
+	ctx := &audiocore.StreamErrorContext{TargetHost: "cam.example.com"}
+
+	buildDNSErrorMessage(ctx)
+
+	assert.Equal(t, []string{
+		"Double-check the hostname for typos (common with FQDNs)",
+		"Verify the hostname is correct and exists",
+		"Test DNS resolution: nslookup cam.example.com",
+		"Try ping: ping cam.example.com",
+		"Check your DNS server configuration (/etc/resolv.conf)",
+		"Verify network connectivity is working",
+		"Try using IP address instead of hostname as a workaround",
+		"Check if the domain name is registered and active",
+	}, ctx.TroubleShooting)
 }

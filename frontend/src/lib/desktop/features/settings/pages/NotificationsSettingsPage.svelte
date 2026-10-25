@@ -8,6 +8,8 @@
 
   Features:
   - Push notification provider management (add/edit/delete)
+  - Rules notice in place of the legacy detection filters while the alert
+    engine is active (the filters only apply when it is not)
   - Notification template customization
   - Alert rule list with toggle, test, edit, delete
   - Inline rule editor (AlertRuleEditor component)
@@ -19,7 +21,7 @@
   @component
 -->
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { downloadBlob } from '$lib/utils/fileHelpers';
   import Checkbox from '$lib/desktop/components/forms/Checkbox.svelte';
   import TextInput from '$lib/desktop/components/forms/TextInput.svelte';
@@ -80,6 +82,7 @@
     fetchAlertHistory,
     clearAlertHistory,
     fetchAlertSchema,
+    fetchAlertStatus,
     exportAlertRules,
     importAlertRules,
   } from '$lib/api/alerts';
@@ -87,7 +90,9 @@
   import { formatLocalDateTime } from '$lib/utils/date';
   import { schemaObjectTypeLabel } from '$lib/utils/alertSchema';
   import { translateField } from '$lib/utils/notifications';
-  import { navigation } from '$lib/stores/navigation.svelte';
+  import { handleAppLinkClick } from '$lib/stores/navigation.svelte';
+  import { buildAppUrl } from '$lib/utils/urlHelpers';
+  import { SETTINGS_ROUTES } from '$lib/utils/settingsRoutes';
 
   const logger = loggers.settings;
 
@@ -158,7 +163,7 @@
     ntfyUsername: string;
     ntfyPassword: string;
     ntfyCheckHost: string;
-    ntfyCheckStatus: 'idle' | 'checking' | 'https' | 'http' | 'unreachable';
+    ntfyCheckStatus: 'idle' | 'checking' | 'https' | 'http' | 'unreachable' | 'checkError';
     gotifyServer: string;
     gotifyToken: string;
     gotifyProtocol: 'https' | 'http';
@@ -274,6 +279,7 @@
     'detectionUrl',
     'imageUrl',
     'daysSinceFirstSeen',
+    'daysSinceLastSeen',
   ] as const;
 
   const templateFieldNames: Record<(typeof templateFieldKeys)[number], string> = {
@@ -291,6 +297,7 @@
     detectionUrl: 'DetectionURL',
     imageUrl: 'ImageURL',
     daysSinceFirstSeen: 'DaysSinceFirstSeen',
+    daysSinceLastSeen: 'DaysSinceLastSeen',
   };
 
   let templateFields = $derived(
@@ -400,6 +407,12 @@
   let loadingRules = $state(false);
   let schema = $state<AlertSchema | null>(null);
   let v2Available = $state(true);
+  // Whether the alert engine handles detection notifications; null while unknown.
+  // When true, the legacy detection filters on the Channels tab have no effect.
+  let alertEngineActive = $state<boolean | null>(null);
+  let legacyMinConfidence = $derived(pushSettings.minConfidenceThreshold ?? 0);
+  let legacyCooldownMinutes = $derived(pushSettings.speciesCooldownMinutes ?? 0);
+  let hasLegacyFilterValues = $derived(legacyMinConfidence > 0 || legacyCooldownMinutes > 0);
 
   let historyData = $state<AlertHistoryType[]>([]);
   let historyTotal = $state(0);
@@ -759,8 +772,8 @@
         const ntfyPattern =
           /^ntfy:\/\/(?:([^:@/?]+)(?::([^@/?]*))?@)?([^/?]+)(?:\/([^?]*))?(?:\?(.*))?$/;
         /* eslint-enable security/detect-unsafe-regex */
-        if (safeRegexTest(ntfyPattern, url, 500)) {
-          const match = url.match(ntfyPattern)!;
+        const match = safeRegexTest(ntfyPattern, url, 500) ? url.match(ntfyPattern) : null;
+        if (match) {
           const [, user, pass, hostOrTopic, pathPart, queryString] = match;
 
           serviceFormData.ntfyUsername = user ? decodeURIComponent(user) : '';
@@ -786,8 +799,8 @@
         /* eslint-disable security/detect-unsafe-regex -- no nested quantifiers; each segment is bounded by literal anchors */
         const gotifyPattern = /^gotify:\/\/([^/?]+)(?:\/([^?]*))?(?:\?(.*))?$/;
         /* eslint-enable security/detect-unsafe-regex */
-        if (safeRegexTest(gotifyPattern, url, 500)) {
-          const match = url.match(gotifyPattern)!;
+        const match = safeRegexTest(gotifyPattern, url, 500) ? url.match(gotifyPattern) : null;
+        if (match) {
           const [, host, token, queryString] = match;
 
           serviceFormData.gotifyServer = host || '';
@@ -1019,8 +1032,11 @@
     serviceFormData.ntfyCheckStatus = 'checking';
 
     try {
-      const result = await api.get<{ recommended: string; https: boolean; http: boolean }>(
-        `/api/v2/notifications/check-ntfy-server?host=${encodeURIComponent(host)}`
+      // POST (not GET) so the request carries the CSRF token: the endpoint runs a
+      // side-effecting outbound probe and must not be a CSRF-exempt safe GET.
+      const result = await api.post<{ recommended: string; https: boolean; http: boolean }>(
+        '/api/v2/notifications/check-ntfy-server',
+        { host }
       );
 
       if (serviceFormData.ntfyCheckHost !== host) return;
@@ -1032,10 +1048,13 @@
       } else {
         serviceFormData.ntfyCheckStatus = 'unreachable';
       }
-    } catch {
-      if (serviceFormData.ntfyCheckHost === host) {
-        serviceFormData.ntfyCheckStatus = 'unreachable';
-      }
+    } catch (error) {
+      if (serviceFormData.ntfyCheckHost !== host) return;
+      // A genuine network/timeout failure means the server is unreachable. An HTTP
+      // error (an invalid host rejected by the API, or a session/CSRF problem) means
+      // the check could not be completed - a distinct state, not "unreachable".
+      serviceFormData.ntfyCheckStatus =
+        error instanceof ApiError && !error.isNetworkError ? 'checkError' : 'unreachable';
     }
   }
 
@@ -1113,6 +1132,33 @@
       }
       logger.error('Failed to load alert schema', err, { component: 'NotificationsSettingsPage' });
     }
+  }
+
+  async function loadAlertStatus() {
+    try {
+      const status = await fetchAlertStatus();
+      alertEngineActive = status.engine_active;
+    } catch (err) {
+      // Fall back to showing the filters: they are live whenever the engine is
+      // not, so hiding them on an unknown state could hide working settings.
+      alertEngineActive = false;
+      if (err instanceof ApiError && err.status === 409) {
+        v2Available = false;
+        return;
+      }
+      logger.error('Failed to load alert engine status', err, {
+        component: 'NotificationsSettingsPage',
+      });
+    }
+  }
+
+  // The link switches tabs, which unmounts the Channels panel and the link with
+  // it; move focus to the Rules tab so it does not fall back to the page body.
+  async function openRulesTab(event: MouseEvent) {
+    handleAppLinkClick(event);
+    if (!event.defaultPrevented) return;
+    await tick();
+    document.getElementById('settings-tab-rules')?.focus();
   }
 
   async function loadHistory() {
@@ -1350,6 +1396,9 @@
   // onMount
   // ============================================================
   onMount(async () => {
+    // Rules and history do not depend on the engine status, so a slow status
+    // call must not hold them back.
+    loadAlertStatus();
     await Promise.all([loadNotificationSettings(), loadSchema()]);
     // Load rules and history after schema is ready
     loadRules();
@@ -1372,12 +1421,9 @@
       {#snippet children()}
         {t('settings.alerts.v2Required')}
         <a
-          href="/ui/system/database"
+          href={buildAppUrl('/ui/system/database')}
           class="underline font-medium ml-1 hover:opacity-80"
-          onclick={(e: MouseEvent) => {
-            e.preventDefault();
-            navigation.navigate('/ui/system/database');
-          }}
+          onclick={handleAppLinkClick}
         >
           {t('settings.alerts.v2RequiredLink')}
         </a>
@@ -1422,8 +1468,38 @@
             </p>
           {/if}
 
-          <!-- Detection Filters Section -->
-          {#if pushSettings.enabled}
+          <!-- Detection Filters Section: replaced by a pointer to the Rules tab
+               while the alert engine is active, since the filters are unused then -->
+          {#if pushSettings.enabled && alertEngineActive}
+            <ErrorAlert type="info" role="note">
+              {#snippet children()}
+                <div class="space-y-2">
+                  <p>
+                    {t('settings.notifications.push.rulesNotice.message', {
+                      pushAction: t('settings.alerts.editor.actionPush'),
+                      ruleName: t('settings.alerts.builtInRules.newSpecies.name'),
+                      eventName: t('settings.alerts.schema.events.detection_occurred'),
+                    })}
+                  </p>
+                  {#if hasLegacyFilterValues}
+                    <p>
+                      {t('settings.notifications.push.rulesNotice.previousFilters', {
+                        confidence: Math.round(legacyMinConfidence * 100),
+                        minutes: legacyCooldownMinutes,
+                      })}
+                    </p>
+                  {/if}
+                  <a
+                    href={buildAppUrl(SETTINGS_ROUTES.notificationsRules)}
+                    onclick={openRulesTab}
+                    class="inline-block font-medium underline hover:opacity-80"
+                  >
+                    {t('settings.notifications.push.rulesNotice.openRules')}
+                  </a>
+                </div>
+              {/snippet}
+            </ErrorAlert>
+          {:else if pushSettings.enabled && alertEngineActive === false}
             <div class="rounded-lg bg-[var(--color-base-200)]">
               <div class="p-6">
                 <h3 class="text-base font-semibold mb-4">
@@ -1609,6 +1685,7 @@
                         <SelectDropdown
                           bind:value={serviceFormData.ntfyProtocol}
                           options={protocolOptions}
+                          aria-label={t('settings.notifications.push.services.ntfy.protocol.label')}
                           variant="select"
                           size="sm"
                           menuSize="sm"
@@ -1642,6 +1719,10 @@
                         {:else if serviceFormData.ntfyCheckStatus === 'unreachable'}
                           <span class="text-xs text-[var(--color-error)]"
                             >{t('settings.notifications.push.services.ntfy.connectionFailed')}</span
+                          >
+                        {:else if serviceFormData.ntfyCheckStatus === 'checkError'}
+                          <span class="text-xs text-[var(--color-warning)]"
+                            >{t('settings.notifications.push.services.ntfy.checkError')}</span
                           >
                         {/if}
                       </div>
@@ -1722,6 +1803,7 @@
                       <SelectDropdown
                         bind:value={serviceFormData.gotifyProtocol}
                         options={protocolOptions}
+                        aria-label={t('settings.notifications.push.services.gotify.protocol.label')}
                         variant="select"
                         size="sm"
                         menuSize="sm"
@@ -2005,17 +2087,23 @@
                   <!-- Form Actions -->
                   <div class="flex gap-2 justify-end">
                     <button
+                      type="button"
                       onclick={closeProviderForm}
                       class="inline-flex items-center justify-center h-8 px-3 text-sm font-medium rounded-lg bg-transparent hover:bg-black/5 dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-base-content)] focus-visible:ring-offset-2 transition-colors"
                     >
                       {t('settings.notifications.push.form.cancelButton')}
                     </button>
                     <button
+                      type="button"
                       onclick={saveProvider}
-                      class="inline-flex items-center justify-center h-8 px-3 text-sm font-medium rounded-lg bg-[var(--color-primary)] text-[var(--color-primary-content)] hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)] focus-visible:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="inline-flex items-center justify-center h-8 px-3 text-sm font-medium rounded-lg bg-[var(--color-primary)] text-[var(--color-primary-content)] hover:not-disabled:bg-[var(--color-primary-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)] focus-visible:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       disabled={!isServiceFormValid ||
                         (selectedService === 'ntfy' &&
                           (serviceFormData.ntfyCheckStatus === 'checking' || !!ntfyCheckPromise))}
+                      title={selectedService === 'ntfy' &&
+                      (serviceFormData.ntfyCheckStatus === 'checking' || !!ntfyCheckPromise)
+                        ? t('settings.notifications.push.form.saveWaitingNtfyCheck')
+                        : undefined}
                     >
                       {t('settings.notifications.push.form.saveButton')}
                     </button>
@@ -2033,8 +2121,9 @@
               </h3>
               {#if !showProviderForm}
                 <button
+                  type="button"
                   onclick={openAddProviderForm}
-                  class="inline-flex items-center justify-center gap-1 h-8 px-3 text-sm font-medium rounded-lg bg-[var(--color-primary)] text-[var(--color-primary-content)] hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)] focus-visible:ring-offset-2 transition-colors"
+                  class="inline-flex items-center justify-center gap-1 h-8 px-3 text-sm font-medium rounded-lg bg-[var(--color-primary)] text-[var(--color-primary-content)] hover:bg-[var(--color-primary-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)] focus-visible:ring-offset-2 transition-colors"
                 >
                   <Plus class="size-4" />
                   {t('settings.notifications.push.providers.addButton')}
@@ -2082,6 +2171,7 @@
                               : t('settings.notifications.push.providers.typeBadge.shoutrrr')}
                           </span>
                           <button
+                            type="button"
                             onclick={() => openEditProviderForm(index)}
                             class="inline-flex items-center justify-center w-6 h-6 rounded bg-transparent hover:bg-black/5 dark:hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             title={t('settings.notifications.push.providers.editButton')}
@@ -2091,6 +2181,7 @@
                             <Pencil class="size-3.5" />
                           </button>
                           <button
+                            type="button"
                             onclick={() => deleteProvider(index)}
                             class="inline-flex items-center justify-center w-6 h-6 rounded bg-transparent hover:bg-black/5 dark:hover:bg-white/10 text-[var(--color-error)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             title={t('settings.notifications.push.providers.deleteButton')}
@@ -2214,6 +2305,7 @@
 
                 <div class="flex gap-2 justify-end">
                   <button
+                    type="button"
                     onclick={resetTemplates}
                     class="inline-flex items-center justify-center h-8 px-3 text-sm font-medium rounded-lg bg-transparent hover:bg-black/5 dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-base-content)] focus-visible:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     disabled={savingTemplate || generating}
@@ -2221,9 +2313,10 @@
                     {t('settings.notifications.templates.resetButton')}
                   </button>
                   <button
+                    type="button"
                     onclick={saveTemplateConfig}
                     class="inline-flex items-center justify-center gap-2 h-8 px-3 text-sm font-medium rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed {hasTemplateChanges
-                      ? 'bg-[var(--color-primary)] text-[var(--color-primary-content)] hover:opacity-90 focus-visible:ring-[var(--color-primary)]'
+                      ? 'bg-[var(--color-primary)] text-[var(--color-primary-content)] hover:not-disabled:bg-[var(--color-primary-hover)] focus-visible:ring-[var(--color-primary)]'
                       : 'bg-transparent hover:bg-black/5 dark:hover:bg-white/10 focus-visible:ring-[var(--color-base-content)]'}"
                     disabled={savingTemplate || generating || !hasTemplateChanges}
                   >
@@ -2241,6 +2334,7 @@
                     {/if}
                   </button>
                   <button
+                    type="button"
                     onclick={sendTestNewSpeciesNotification}
                     disabled={generating || savingTemplate}
                     class="inline-flex items-center justify-center gap-2 h-8 px-3 text-sm font-medium rounded-lg bg-[var(--color-secondary)] text-[var(--color-secondary-content)] hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-secondary)] focus-visible:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -2503,6 +2597,7 @@
           <!-- Action buttons -->
           <div class="flex items-center gap-1 flex-shrink-0">
             <button
+              type="button"
               class="inline-flex items-center justify-center size-7 rounded-md text-[var(--color-base-content)]/70 hover:bg-[var(--color-base-200)] hover:text-[var(--color-base-content)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               title={t('settings.alerts.actionLabels.test')}
               aria-label={t('settings.alerts.actionLabels.test')}
@@ -2512,6 +2607,7 @@
               <Play class="size-3.5" />
             </button>
             <button
+              type="button"
               class="inline-flex items-center justify-center size-7 rounded-md text-[var(--color-base-content)]/70 hover:bg-[var(--color-base-200)] hover:text-[var(--color-base-content)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               title={t('settings.alerts.actionLabels.edit')}
               aria-label={t('settings.alerts.actionLabels.edit')}

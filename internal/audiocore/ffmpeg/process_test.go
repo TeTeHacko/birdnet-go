@@ -2,12 +2,14 @@ package ffmpeg
 
 import (
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tphakala/birdnet-go/internal/audiocore"
+	"github.com/tphakala/birdnet-go/internal/conf"
 )
 
 // TestBuildFFmpegArgs_RTSP verifies that BuildFFmpegArgs produces the correct
@@ -23,6 +25,9 @@ func TestBuildFFmpegArgs_RTSP(t *testing.T) {
 		Channels:   1,
 		Transport:  "tcp",
 		LogLevel:   "error",
+		// Auto mode requests audio-only on the initial handshake (the default is
+		// now full-stream); see TestBuildFFmpegArgs_MediaModes for the full matrix.
+		MediaMode: "auto",
 	}
 
 	args := BuildFFmpegArgs(cfg, nil)
@@ -33,7 +38,13 @@ func TestBuildFFmpegArgs_RTSP(t *testing.T) {
 	require.Less(t, rtspIdx+1, len(args), "-rtsp_transport must have a value")
 	assert.Equal(t, "tcp", args[rtspIdx+1])
 
-	// RTSP must use -timeout; the legacy -stimeout was removed in FFmpeg 5.x+.
+	// Only audio streams should be requested during RTSP handshake in auto mode.
+	allowedMediaIdx := slices.Index(args, "-allowed_media_types")
+	require.NotEqual(t, -1, allowedMediaIdx, "expected -allowed_media_types flag for RTSP")
+	require.Less(t, allowedMediaIdx+1, len(args), "-allowed_media_types must have a value")
+	assert.Equal(t, "audio", args[allowedMediaIdx+1])
+
+	// Empty FFmpegPath yields an unknown version, which safely falls back to -timeout.
 	timeoutIdx := slices.Index(args, "-timeout")
 	require.NotEqual(t, -1, timeoutIdx, "expected -timeout flag for RTSP")
 	assert.Equal(t, -1, slices.Index(args, "-stimeout"), "RTSP must not use legacy -stimeout")
@@ -52,6 +63,106 @@ func TestBuildFFmpegArgs_RTSP(t *testing.T) {
 	assert.Contains(t, args, "-ac")
 	assert.Contains(t, args, "-f")
 	assert.Contains(t, args, "-vn")
+}
+
+// TestBuildFFmpegArgs_RTSPEmptyTransportFallsBackToDefault guards issue #4240:
+// an RTSP stream whose Transport is empty (e.g. a migrated config that cleared
+// the global transport) must never emit -rtsp_transport "". FFmpeg cannot parse
+// an empty value and the stream fails to open. The builder falls back to the
+// default transport instead.
+func TestBuildFFmpegArgs_RTSPEmptyTransportFallsBackToDefault(t *testing.T) {
+	t.Parallel()
+
+	cfg := &StreamConfig{
+		URL:        "rtsp://camera.example.com/live",
+		Type:       "rtsp",
+		SampleRate: 48000,
+		BitDepth:   16,
+		Channels:   1,
+		Transport:  "", // empty: migration cleared it, engine default was also empty
+		LogLevel:   "error",
+		MediaMode:  "auto",
+	}
+
+	args := BuildFFmpegArgs(cfg, nil)
+
+	rtspIdx := slices.Index(args, "-rtsp_transport")
+	require.NotEqual(t, -1, rtspIdx, "expected -rtsp_transport flag")
+	require.Less(t, rtspIdx+1, len(args), "-rtsp_transport must have a value")
+	assert.Equal(t, conf.DefaultTransport, args[rtspIdx+1],
+		"empty transport must fall back to the default, never an empty string")
+	assert.NotEmpty(t, args[rtspIdx+1], "-rtsp_transport value must not be empty")
+}
+
+// TestBuildFFmpegArgs_MediaModes verifies the audio-only request tracks the
+// configured media mode: audio-only and auto request -allowed_media_types audio
+// on the initial handshake, full-stream never does, and an unset mode defaults to
+// full-stream (#3953). -vn is present in every mode so video is dropped after
+// decode regardless.
+func TestBuildFFmpegArgs_MediaModes(t *testing.T) {
+	t.Parallel()
+
+	baseCfg := func(mode string) *StreamConfig {
+		return &StreamConfig{
+			URL:        "rtsp://camera.example.com/live",
+			Type:       "rtsp",
+			SampleRate: 48000,
+			BitDepth:   16,
+			Channels:   1,
+			Transport:  "tcp",
+			LogLevel:   "error",
+			MediaMode:  mode,
+		}
+	}
+
+	tests := []struct {
+		name          string
+		mode          string
+		wantAudioOnly bool
+	}{
+		{"empty defaults to full-stream", "", false},
+		{"auto requests audio-only first", "auto", true},
+		{"audio-only requests audio-only", "audio-only", true},
+		{"full-stream never requests audio-only", "full-stream", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			args := BuildFFmpegArgs(baseCfg(tt.mode), nil)
+			assert.Equalf(t, tt.wantAudioOnly, hasAudioOnlyFlag(args),
+				"audio-only flag mismatch for media mode %q", tt.mode)
+			assert.Contains(t, args, "-vn", "video must be dropped after decode in every mode")
+		})
+	}
+}
+
+// TestResolveAudioOnly covers the media-mode decision helpers directly, including
+// the default branch for an invalid/unknown mode (which validation rejects but
+// which must still resolve to the safe full-stream default).
+func TestResolveAudioOnly(t *testing.T) {
+	t.Parallel()
+
+	cfg := func(mode string) *StreamConfig { return &StreamConfig{MediaMode: mode} }
+
+	// resolveAudioOnly: (mode, fallbackEngaged) -> audioOnly
+	assert.False(t, resolveAudioOnly(cfg(""), false), "empty defaults to full-stream")
+	assert.False(t, resolveAudioOnly(cfg("full-stream"), false))
+	assert.True(t, resolveAudioOnly(cfg("audio-only"), false))
+	assert.True(t, resolveAudioOnly(cfg("audio-only"), true), "audio-only ignores the latch")
+	assert.True(t, resolveAudioOnly(cfg("auto"), false), "auto requests audio-only before fallback")
+	assert.False(t, resolveAudioOnly(cfg("auto"), true), "auto drops audio-only after fallback")
+	assert.False(t, resolveAudioOnly(cfg("video-only"), false), "invalid mode falls through to full-stream default")
+
+	// mediaModeAllowsFallback: only auto allows the reactive fallback.
+	assert.True(t, mediaModeAllowsFallback(cfg("auto")))
+	assert.False(t, mediaModeAllowsFallback(cfg("audio-only")))
+	assert.False(t, mediaModeAllowsFallback(cfg("full-stream")))
+	assert.False(t, mediaModeAllowsFallback(cfg("")), "empty (full-stream default) does not allow fallback")
+
+	// effectiveMediaMode: canonical string for logging.
+	assert.Equal(t, "full-stream", effectiveMediaMode(cfg("")))
+	assert.Equal(t, "auto", effectiveMediaMode(cfg("auto")))
 }
 
 // TestBuildFFmpegArgs_HTTP verifies that BuildFFmpegArgs produces the correct
@@ -99,7 +210,7 @@ func TestBuildFFmpegArgs_CustomTimeout(t *testing.T) {
 		Transport: "tcp",
 	}
 
-	// User provides -timeout; RTSP now also uses -timeout.
+	// Empty FFmpegPath yields an unknown version, so RTSP uses -timeout.
 	customParams := []string{"-timeout", "5000000"}
 	args := BuildFFmpegArgs(cfg, customParams)
 
@@ -125,11 +236,97 @@ func TestBuildFFmpegArgs_CustomTimeout(t *testing.T) {
 func TestTimeoutParamForSource(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "-timeout", timeoutParamForSource(audiocore.SourceTypeRTSP))
-	assert.Equal(t, "-timeout", timeoutParamForSource(audiocore.SourceTypeHTTP))
-	assert.Equal(t, "-timeout", timeoutParamForSource(audiocore.SourceTypeHLS))
-	assert.Equal(t, "-timeout", timeoutParamForSource(audiocore.SourceTypeRTMP))
-	assert.Equal(t, "-timeout", timeoutParamForSource(audiocore.SourceTypeUDP))
+	tests := []struct {
+		name        string
+		sourceType  audiocore.SourceType
+		ffmpegMajor int
+		want        string
+	}{
+		{"rtsp_ffmpeg4_uses_stimeout", audiocore.SourceTypeRTSP, 4, "-stimeout"},
+		{"rtsp_ffmpeg5_uses_timeout", audiocore.SourceTypeRTSP, 5, "-timeout"},
+		{"rtsp_ffmpeg6_uses_timeout", audiocore.SourceTypeRTSP, 6, "-timeout"},
+		{"rtsp_ffmpeg7_uses_timeout", audiocore.SourceTypeRTSP, 7, "-timeout"},
+		{"rtsp_unknown_uses_timeout", audiocore.SourceTypeRTSP, 0, "-timeout"},
+		{"http_ffmpeg4_uses_timeout", audiocore.SourceTypeHTTP, 4, "-timeout"},
+		{"http_ffmpeg7_uses_timeout", audiocore.SourceTypeHTTP, 7, "-timeout"},
+		{"hls_ffmpeg4_uses_timeout", audiocore.SourceTypeHLS, 4, "-timeout"},
+		{"hls_ffmpeg7_uses_timeout", audiocore.SourceTypeHLS, 7, "-timeout"},
+		{"rtmp_ffmpeg4_uses_timeout", audiocore.SourceTypeRTMP, 4, "-timeout"},
+		{"rtmp_ffmpeg7_uses_timeout", audiocore.SourceTypeRTMP, 7, "-timeout"},
+		{"udp_ffmpeg4_uses_timeout", audiocore.SourceTypeUDP, 4, "-timeout"},
+		{"udp_ffmpeg7_uses_timeout", audiocore.SourceTypeUDP, 7, "-timeout"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, timeoutParamForSource(tt.sourceType, tt.ffmpegMajor))
+		})
+	}
+}
+
+func TestBuildFFmpegArgs_RTSP_LegacyFFmpeg4(t *testing.T) {
+	tests := []struct {
+		name          string
+		ffmpegPath    string
+		ffmpegMajor   int
+		wantFlag      string
+		forbiddenFlag string
+	}{
+		{
+			name:          "ffmpeg4_uses_stimeout",
+			ffmpegPath:    "/fake/ffmpeg4",
+			ffmpegMajor:   4,
+			wantFlag:      "-stimeout",
+			forbiddenFlag: "-timeout",
+		},
+		{
+			name:          "ffmpeg7_uses_timeout",
+			ffmpegPath:    "/fake/ffmpeg7",
+			ffmpegMajor:   7,
+			wantFlag:      "-timeout",
+			forbiddenFlag: "-stimeout",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ffmpegMajorCache.Store(tt.ffmpegPath, tt.ffmpegMajor)
+			t.Cleanup(func() {
+				ffmpegMajorCache.Delete(tt.ffmpegPath)
+			})
+
+			cfg := &StreamConfig{
+				URL:        "rtsp://camera.example.com/live",
+				Type:       "rtsp",
+				Transport:  "tcp",
+				FFmpegPath: tt.ffmpegPath,
+			}
+
+			args := BuildFFmpegArgs(cfg, nil)
+
+			assertFlagValue(t, args, tt.wantFlag, strconv.FormatInt(defaultTimeoutMicroseconds, 10))
+			assert.NotContains(t, args, tt.forbiddenFlag)
+		})
+	}
+}
+
+func TestResolveFfmpegMajor_DoesNotCacheFailedProbe(t *testing.T) {
+	// A path that cannot be executed yields major 0 and must NOT be cached, so a
+	// later start re-probes instead of permanently pinning the -timeout fallback
+	// (which would suppress -stimeout on a real FFmpeg 4.x host after a transient
+	// first-probe failure).
+	const badPath = "/nonexistent/ffmpeg-resolve-probe-test"
+	ffmpegMajorCache.Delete(badPath)
+	t.Cleanup(func() {
+		ffmpegMajorCache.Delete(badPath)
+	})
+
+	require.Equal(t, 0, resolveFfmpegMajor(badPath), "unresolvable binary must report unknown version")
+
+	_, cached := ffmpegMajorCache.Load(badPath)
+	assert.False(t, cached, "a failed probe must not be cached")
 }
 
 func TestStripTimeoutParams(t *testing.T) {

@@ -21,8 +21,17 @@
   import { useAudioPlayback } from '$lib/utils/useAudioPlayback.svelte';
   import { useDelayedLoading } from '$lib/utils/delayedLoading.svelte';
   import { buildAppUrl } from '$lib/utils/urlHelpers';
+  import { get } from 'svelte/store';
+  import { dashboardSettings } from '$lib/stores/settings';
   import { t } from '$lib/i18n';
+  import { playButtonLabelKey } from '$lib/utils/audio';
   import { loggers } from '$lib/utils/logger';
+  import {
+    SPECTROGRAM_REASON,
+    fetchSpectrogramStatus,
+    isTerminalSpectrogramReason,
+    markSpectrogramSourceMissing,
+  } from '$lib/utils/spectrogramStatus';
 
   const logger = loggers.audio;
 
@@ -41,7 +50,7 @@
   // --- Audio engine (shared composable) ---
   // Initial values are intentionally captured here; audioUrl reactivity is
   // handled below via $effect calling audio.setAudioUrl(). The composable
-  // stores detectionId only for logging and callbacks are stable references.
+  // reads detectionId once, for logging and the known-missing check, and callbacks are stable references.
   // svelte-ignore state_referenced_locally
   const initialAudioUrl = audioUrl;
   // svelte-ignore state_referenced_locally
@@ -50,9 +59,11 @@
   const initialOnPlayStart = onPlayStart;
   // svelte-ignore state_referenced_locally
   const initialOnPlayEnd = onPlayEnd;
+  const defaultGainDb = get(dashboardSettings)?.defaultAudioGain ?? 0;
   const audio = useAudioPlayback({
     audioUrl: initialAudioUrl,
     detectionId: initialDetectionId,
+    defaultGainDb,
     onPlayStart: initialOnPlayStart,
     onPlayEnd: initialOnPlayEnd,
   });
@@ -71,9 +82,18 @@
     },
   });
 
-  // Spectrogram retry
-  const MAX_RETRIES = 3;
-  const RETRY_DELAYS = [500, 1000, 2000];
+  // Spectrogram retry. When a detection's audio clip is still being produced (Extended
+  // Capture defers the clip write until the capture tail is recorded, which the server
+  // reports as 503 + Retry-After), the <img> onerror keeps retrying so the spectrogram
+  // resolves without a manual reload. The short leading delays keep recovery snappy for
+  // the common fast case (a normal encode race resolving in ~1s), while the tail caps at
+  // 15s, strictly under useDelayedLoading's 30s timeoutMs, so a retry never lands after
+  // the loading timeout has flipped the view to the error state and back (which would
+  // flash the error icon mid-wait). The budget sums to ~2.5 min, which covers a typical
+  // pending window; a maximum-length extended-capture clip can still outlast it, after
+  // which the error state shows and a reload retries. The last delay repeats past the array.
+  const MAX_RETRIES = 14;
+  const RETRY_DELAYS = [500, 1000, 2000, 4000, 8000, 15000];
   let retryCount = $state(0);
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let cacheKey = $state(0);
@@ -83,6 +103,50 @@
       `/api/v2/spectrogram/${encodeURIComponent(detectionId)}?size=${spectrogramSize}&raw=true${cacheKey > 0 ? `&t=${cacheKey}` : ''}`
     )
   );
+
+  // The status is read once, at the first failure of an image: a terminal reason
+  // (the source clip is gone or cannot be rendered) ends the retries, which can
+  // only repeat the same answer.
+  let statusAbortController: AbortController | undefined;
+
+  function cancelStatusCheck() {
+    statusAbortController?.abort();
+    statusAbortController = undefined;
+  }
+
+  function clearRetryTimer() {
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = undefined;
+    }
+  }
+
+  async function endRetriesOnTerminalReason() {
+    cancelStatusCheck();
+    const controller = new AbortController();
+    statusAbortController = controller;
+    const checkedId = detectionId;
+    const status = await fetchSpectrogramStatus(
+      buildAppUrl(
+        `/api/v2/spectrogram/${encodeURIComponent(checkedId)}/status?size=${spectrogramSize}&raw=true`
+      ),
+      controller.signal
+    );
+    if (controller.signal.aborted || !status || !isTerminalSpectrogramReason(status.reason)) return;
+
+    logger.debug('Spectrogram cannot be rendered, ending retries', {
+      detectionId: checkedId,
+      reason: status.reason,
+    });
+    if (status.reason === SPECTROGRAM_REASON.sourceMissing) {
+      markSpectrogramSourceMissing(checkedId);
+    }
+    clearRetryTimer();
+    spectrogramLoader.setError();
+  }
+
+  // Ends a status check still in flight when the player is destroyed.
+  $effect(() => cancelStatusCheck);
 
   // Track previous detection ID to detect changes and reset spectrogram state.
   // Uses a non-reactive variable since we only compare inside the $effect.
@@ -96,10 +160,8 @@
       retryCount = 0;
       cacheKey = 0;
       spectrogramLoader.setLoading(true);
-      if (retryTimer) {
-        clearTimeout(retryTimer);
-        retryTimer = undefined;
-      }
+      cancelStatusCheck();
+      clearRetryTimer();
     }
   });
 
@@ -108,20 +170,17 @@
     if (spectrogramUrl) {
       spectrogramLoader.setLoading(true);
     }
-    return () => {
-      if (retryTimer) {
-        clearTimeout(retryTimer);
-        retryTimer = undefined;
-      }
-    };
+    return clearRetryTimer;
   });
 
   function handleSpectrogramLoad() {
     spectrogramLoader.setLoading(false);
     retryCount = 0;
+    cancelStatusCheck();
   }
 
   function handleSpectrogramError() {
+    if (retryCount === 0) void endRetriesOnTerminalReason();
     if (retryCount < MAX_RETRIES) {
       const delay = RETRY_DELAYS[Math.min(retryCount, RETRY_DELAYS.length - 1)];
       retryCount++;
@@ -174,7 +233,7 @@
       class:is-playing={audio.isPlaying}
       onclick={handlePlayClick}
       disabled={audio.isLoading}
-      aria-label={audio.isPlaying ? t('media.audio.pause') : t('media.audio.play')}
+      aria-label={t(playButtonLabelKey(audio.isLoading, audio.isPlaying))}
     >
       {#if audio.isLoading}
         <div

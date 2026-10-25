@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/viper"
 	"github.com/tphakala/birdnet-go/cmd/authors"
 	"github.com/tphakala/birdnet-go/cmd/benchmark"
+	"github.com/tphakala/birdnet-go/cmd/importstage"
 	"github.com/tphakala/birdnet-go/cmd/license"
 	"github.com/tphakala/birdnet-go/cmd/notify"
 	"github.com/tphakala/birdnet-go/cmd/rangefilter"
@@ -39,6 +40,7 @@ func RootCommand(settings *conf.Settings) *cobra.Command {
 	supportCmd := support.Command(settings)
 	benchmarkCmd := benchmark.Command(settings)
 	notifyCmd := notify.Command(settings)
+	importStageCmd := importstage.Command(settings)
 
 	subcommands := []*cobra.Command{
 		serveCmd,
@@ -48,13 +50,18 @@ func RootCommand(settings *conf.Settings) *cobra.Command {
 		supportCmd,
 		benchmarkCmd,
 		notifyCmd,
+		importStageCmd,
 	}
 
 	rootCmd.AddCommand(subcommands...)
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
-		// Skip setup for authors and license commands
-		if cmd.Name() != authorsCmd.Name() && cmd.Name() != licenseCmd.Name() {
+		// Skip setup for informational and privileged primitive commands.
+		// import-stage runs as root via sudo and must not trigger daemon init,
+		// config loading, telemetry, or network calls.
+		if cmd.Name() != authorsCmd.Name() &&
+			cmd.Name() != licenseCmd.Name() &&
+			cmd.Name() != importStageCmd.Name() {
 			if err := initialize(); err != nil {
 				return fmt.Errorf("error initializing: %w", err)
 			}
@@ -76,7 +83,12 @@ func initialize() error {
 func setupFlags(rootCmd *cobra.Command, settings *conf.Settings) error {
 	rootCmd.PersistentFlags().StringVarP(&conf.ConfigPath, "config", "c", conf.ConfigPath, "Path to config file (defaults to OS-specific config search locations)")
 	rootCmd.PersistentFlags().BoolVarP(&settings.Debug, "debug", "d", viper.GetBool("debug"), "Enable debug output")
-	rootCmd.PersistentFlags().StringVar(&settings.BirdNET.Locale, "locale", viper.GetString("birdnet.locale"), "Set the locale for labels. Accepts full name or 2-letter code.")
+	// The locale default comes from the loaded settings rather than from viper.
+	// Config load already normalized it (conf.ValidateSettings turns e.g. "en" into
+	// "en-uk"), while viper still holds the raw config value. Passing the raw value
+	// here would make cobra write it straight back over the normalized one at flag
+	// registration time, so every command would run with an unnormalized locale.
+	rootCmd.PersistentFlags().StringVar(&settings.BirdNET.Locale, "locale", settings.BirdNET.Locale, "Set the locale for labels. Accepts a full name (\"German\"), a language code (\"de\"), or a regional code (\"en-uk\", \"pt-br\").")
 	rootCmd.PersistentFlags().IntVarP(&settings.BirdNET.Threads, "threads", "j", viper.GetInt("birdnet.threads"), "Number of CPU threads to use for analysis (default 0 which is all CPUs)")
 	rootCmd.PersistentFlags().Float64VarP(&settings.BirdNET.Sensitivity, "sensitivity", "s", viper.GetFloat64("birdnet.sensitivity"), "Sigmoid sensitivity value between 0.0 and 1.5")
 	rootCmd.PersistentFlags().Float64VarP(&settings.BirdNET.Threshold, "threshold", "t", viper.GetFloat64("birdnet.threshold"), "Confidency threshold for detections, value between 0.1 to 1.0")

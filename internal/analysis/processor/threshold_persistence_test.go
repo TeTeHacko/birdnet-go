@@ -12,6 +12,7 @@ import (
 	"github.com/tphakala/birdnet-go/internal/conf"
 	"github.com/tphakala/birdnet-go/internal/datastore"
 	"github.com/tphakala/birdnet-go/internal/detection"
+	"github.com/tphakala/birdnet-go/internal/diskmanager"
 	"github.com/tphakala/birdnet-go/internal/errors"
 	"gorm.io/gorm"
 )
@@ -57,7 +58,7 @@ func (m *MockDatastore) GetAllNotes() ([]datastore.Note, error) {
 func (m *MockDatastore) GetTopBirdsData(context.Context, string, float64, int) ([]datastore.Note, error) {
 	return make([]datastore.Note, 0), nil
 }
-func (m *MockDatastore) GetBatchHourlyOccurrences(context.Context, string, []string, float64) (map[string][24]int, error) {
+func (m *MockDatastore) GetBatchHourlyOccurrences(context.Context, string, string, []string, float64) (map[string][24]int, error) {
 	return make(map[string][24]int), nil
 }
 func (m *MockDatastore) SpeciesDetections(string, string, string, int, bool, int, int) ([]datastore.Note, error) {
@@ -79,14 +80,22 @@ func (m *MockDatastore) GetNoteClipPath(string) (string, error) {
 	return "", datastore.ErrNoteReviewNotFound
 }
 func (m *MockDatastore) GetNoteModelType(_ string) (string, error) { return "bird", nil }
-func (m *MockDatastore) DeleteNoteClipPath(string) error           { return nil }
+func (m *MockDatastore) GetNoteKeptSpectrogram(_ string) (clipName, modelType string, err error) {
+	return "", "bird", nil
+}
+
+func (m *MockDatastore) RecordClipSampleRate(_ context.Context, _ uint, _ string, _ int) error {
+	return nil
+}
+
+func (m *MockDatastore) FillClipSampleRate(_ context.Context, _ uint, _ string, _ int) (bool, error) {
+	return false, nil
+}
+func (m *MockDatastore) DeleteNoteClipPath(string) error { return nil }
 func (m *MockDatastore) GetNoteReview(string) (*datastore.NoteReview, error) {
 	return nil, datastore.ErrNoteReviewNotFound
 }
 func (m *MockDatastore) SaveNoteReview(*datastore.NoteReview) error { return nil }
-func (m *MockDatastore) ListAnalyticsSourcesData(context.Context) ([]datastore.AnalyticsSourceInfo, error) {
-	return nil, nil
-}
 func (m *MockDatastore) GetNoteComments(string) ([]datastore.NoteComment, error) {
 	return make([]datastore.NoteComment, 0), nil
 }
@@ -136,32 +145,66 @@ func (m *MockDatastore) SaveImageCache(*datastore.ImageCache) error { return nil
 func (m *MockDatastore) GetAllImageCaches(string) ([]datastore.ImageCache, error) {
 	return make([]datastore.ImageCache, 0), nil
 }
-func (m *MockDatastore) GetLockedNotesClipPaths() ([]string, error)               { return make([]string, 0), nil }
-func (m *MockDatastore) ClearNoteClipPathsByNames(_ []string) (int64, error)      { return 0, nil }
+func (m *MockDatastore) GetLockedNotesClipPaths() ([]string, error)          { return make([]string, 0), nil }
+func (m *MockDatastore) ClearNoteClipPathsByNames(_ []string) (int64, error) { return 0, nil }
+func (m *MockDatastore) RetainNoteSpectrogramsByClipNames(_ []string) (int64, error) {
+	return 0, nil
+}
+func (m *MockDatastore) GetNoteClipReferences(_ uint, _ int) ([]diskmanager.ClipReference, error) {
+	return nil, nil
+}
 func (m *MockDatastore) CountHourlyDetections(string, string, int) (int64, error) { return 0, nil }
-func (m *MockDatastore) GetSpeciesSummaryData(context.Context, string, string, ...uint) ([]datastore.SpeciesSummaryData, error) {
+func (m *MockDatastore) GetSpeciesSummaryData(context.Context, string, string) ([]datastore.SpeciesSummaryData, error) {
 	return make([]datastore.SpeciesSummaryData, 0), nil
 }
-func (m *MockDatastore) GetHourlyAnalyticsData(context.Context, string, string, ...uint) ([]datastore.HourlyAnalyticsData, error) {
+func (m *MockDatastore) GetHourlyAnalyticsData(context.Context, string, string) ([]datastore.HourlyAnalyticsData, error) {
 	return make([]datastore.HourlyAnalyticsData, 0), nil
 }
-func (m *MockDatastore) GetDailyAnalyticsData(context.Context, string, string, string, ...uint) ([]datastore.DailyAnalyticsData, error) {
+func (m *MockDatastore) GetDailyAnalyticsData(context.Context, string, string, string) ([]datastore.DailyAnalyticsData, error) {
 	return make([]datastore.DailyAnalyticsData, 0), nil
 }
-func (m *MockDatastore) GetDetectionTrends(context.Context, string, int, ...uint) ([]datastore.DailyAnalyticsData, error) {
+func (m *MockDatastore) GetDetectionTrends(context.Context, string, int) ([]datastore.DailyAnalyticsData, error) {
 	return make([]datastore.DailyAnalyticsData, 0), nil
 }
-func (m *MockDatastore) GetHourlyDistribution(context.Context, string, string, string, ...uint) ([]datastore.HourlyDistributionData, error) {
+func (m *MockDatastore) GetHourlyDistribution(context.Context, string, string, string) ([]datastore.HourlyDistributionData, error) {
 	return make([]datastore.HourlyDistributionData, 0), nil
 }
-func (m *MockDatastore) GetNewSpeciesDetections(context.Context, string, string, int, int, ...uint) ([]datastore.NewSpeciesData, error) {
+func (m *MockDatastore) GetNewSpeciesDetections(context.Context, string, string, int, int) ([]datastore.NewSpeciesData, error) {
 	return make([]datastore.NewSpeciesData, 0), nil
 }
-func (m *MockDatastore) GetSpeciesFirstDetectionInPeriod(context.Context, string, string, int, int, ...uint) ([]datastore.NewSpeciesData, error) {
+func (m *MockDatastore) GetSpeciesFirstDetectionInPeriod(context.Context, string, string, int, int) ([]datastore.NewSpeciesData, error) {
 	return make([]datastore.NewSpeciesData, 0), nil
 }
-func (m *MockDatastore) GetSpeciesDiversityData(context.Context, string, string, ...uint) ([]datastore.DailyAnalyticsData, error) {
+func (m *MockDatastore) GetSpeciesDiversityData(context.Context, string, string) ([]datastore.DailyAnalyticsData, error) {
 	return nil, nil
+}
+func (m *MockDatastore) GetActivityHeatmap(context.Context, string, string, string) (datastore.ActivityHeatmapData, error) {
+	return datastore.ActivityHeatmapData{}, nil
+}
+func (m *MockDatastore) GetHourlyDistributionBySpecies(context.Context, string, string, []string, int) ([]datastore.SpeciesHourlyDistribution, error) {
+	return []datastore.SpeciesHourlyDistribution{}, nil
+}
+func (m *MockDatastore) GetDailyActivityOnset(context.Context, string, string, string) ([]datastore.DailyActivityOnset, error) {
+	return []datastore.DailyActivityOnset{}, nil
+}
+
+func (m *MockDatastore) GetConfidenceHistogram(context.Context, string, string, string, int, int) ([]datastore.SpeciesConfidenceHistogram, error) {
+	return []datastore.SpeciesConfidenceHistogram{}, nil
+}
+func (m *MockDatastore) GetSpeciesAccumulation(context.Context, string, string) ([]datastore.SpeciesAccumulationPoint, error) {
+	return []datastore.SpeciesAccumulationPoint{}, nil
+}
+func (m *MockDatastore) GetAudioSources(context.Context, string, string) ([]datastore.AudioSourceSummary, error) {
+	return []datastore.AudioSourceSummary{}, nil
+}
+func (m *MockDatastore) GetYearOverYear(_ context.Context, _ string) (datastore.YearOverYearResult, error) {
+	return datastore.YearOverYearResult{Points: []datastore.YearOverYearPoint{}}, nil
+}
+func (m *MockDatastore) GetSpeciesPhenology(context.Context, string, string, int) ([]datastore.SpeciesPhenologyPoint, error) {
+	return []datastore.SpeciesPhenologyPoint{}, nil
+}
+func (m *MockDatastore) GetAcousticSuccession(context.Context, string, string, []string, int) ([]datastore.SpeciesHourlyCounts, error) {
+	return []datastore.SpeciesHourlyCounts{}, nil
 }
 func (m *MockDatastore) SearchDetections(*datastore.SearchFilters) ([]datastore.DetectionRecord, int, error) {
 	return make([]datastore.DetectionRecord, 0), 0, nil
@@ -179,12 +222,7 @@ func (m *MockDatastore) SaveDynamicThreshold(threshold *datastore.DynamicThresho
 	return nil
 }
 
-func (m *MockDatastore) GetDynamicThreshold(speciesName, modelName string) (*datastore.DynamicThreshold, error) {
-	key := speciesName + ":" + modelName
-	if threshold, exists := m.thresholds[key]; exists {
-		return threshold, nil
-	}
-	// Fall back to species-only lookup for backward compatibility in tests
+func (m *MockDatastore) GetDynamicThreshold(speciesName string) (*datastore.DynamicThreshold, error) {
 	if threshold, exists := m.thresholds[speciesName]; exists {
 		return threshold, nil
 	}
@@ -328,28 +366,26 @@ func (m *MockDatastore) DeleteAllThresholdEvents() (int64, error) {
 }
 
 // BG-17 fix: Add notification history methods
-func (m *MockDatastore) GetActiveNotificationHistory(after time.Time) ([]datastore.NotificationHistory, error) {
+func (m *MockDatastore) GetActiveNotificationHistory(_ context.Context, after time.Time) ([]datastore.NotificationHistory, error) {
 	return []datastore.NotificationHistory{}, nil
 }
 
-func (m *MockDatastore) GetNotificationHistory(scientificName, notificationType string) (*datastore.NotificationHistory, error) {
+func (m *MockDatastore) GetNotificationHistory(_ context.Context, scientificName, notificationType string) (*datastore.NotificationHistory, error) {
 	return nil, errors.Newf("notification history not found").
 		Component("datastore").
 		Category(errors.CategoryNotFound).
 		Build()
 }
 
-func (m *MockDatastore) SaveNotificationHistory(history *datastore.NotificationHistory) error {
+func (m *MockDatastore) SaveNotificationHistory(_ context.Context, history *datastore.NotificationHistory) error {
 	return nil
 }
 
-func (m *MockDatastore) DeleteExpiredNotificationHistory(before time.Time) (int64, error) {
+func (m *MockDatastore) DeleteExpiredNotificationHistory(_ context.Context, before time.Time) (int64, error) {
 	return 0, nil
 }
 
-func (m *MockDatastore) SchemaVersion() string                           { return datastore.SchemaVersionLegacy }
-func (m *MockDatastore) UpdateNameMaps(_ []string)                       {}
-func (m *MockDatastore) SetNameResolver(_ datastore.SpeciesNameResolver) {}
+func (m *MockDatastore) SchemaVersion() string { return datastore.SchemaVersionLegacy }
 func (m *MockDatastore) GetDatabaseStats(_ context.Context) (*datastore.DatabaseStats, error) {
 	return &datastore.DatabaseStats{
 		Type:      "mock",
@@ -449,12 +485,11 @@ func TestLoadDynamicThresholdsFromDB(t *testing.T) {
 		p := createTestProcessor()
 		mockDs := p.Ds.(*MockDatastore)
 
-		// Pre-populate mock database with valid thresholds
+		// Pre-populate mock database with valid thresholds (keyed per species)
 		now := time.Now()
 		mockDs.thresholds = map[string]*datastore.DynamicThreshold{
 			"american crow": {
 				SpeciesName:   "american crow",
-				ModelName:     "BirdNET",
 				Level:         1,
 				CurrentValue:  0.75,
 				BaseThreshold: 0.7,
@@ -466,7 +501,6 @@ func TestLoadDynamicThresholdsFromDB(t *testing.T) {
 			},
 			"blue jay": {
 				SpeciesName:   "blue jay",
-				ModelName:     "BirdNET",
 				Level:         2,
 				CurrentValue:  0.8,
 				BaseThreshold: 0.7,
@@ -483,21 +517,19 @@ func TestLoadDynamicThresholdsFromDB(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, p.DynamicThresholds, 2)
 
-		// Verify american crow threshold (composite key: "BirdNET:american crow")
-		crowKey := dynamicThresholdKey("BirdNET", "american crow")
-		crowThreshold := p.DynamicThresholds[crowKey]
+		// Verify american crow threshold (keyed by species name)
+		crowThreshold := p.DynamicThresholds["american crow"]
 		require.NotNil(t, crowThreshold)
 		assert.Equal(t, 1, crowThreshold.Level)
-		assert.InDelta(t, 0.75, crowThreshold.CurrentValue, 0.001)
+		assert.InDelta(t, 0.7, crowThreshold.BaseThreshold, 0.001, "BaseThreshold loads from DB")
 		assert.Equal(t, 5, crowThreshold.HighConfCount)
 		assert.Equal(t, 48, crowThreshold.ValidHours)
 
-		// Verify blue jay threshold (composite key: "BirdNET:blue jay")
-		jayKey := dynamicThresholdKey("BirdNET", "blue jay")
-		jayThreshold := p.DynamicThresholds[jayKey]
+		// Verify blue jay threshold (keyed by species name)
+		jayThreshold := p.DynamicThresholds["blue jay"]
 		require.NotNil(t, jayThreshold)
 		assert.Equal(t, 2, jayThreshold.Level)
-		assert.InDelta(t, 0.8, jayThreshold.CurrentValue, 0.001)
+		assert.InDelta(t, 0.7, jayThreshold.BaseThreshold, 0.001, "BaseThreshold loads from DB")
 		assert.Equal(t, 10, jayThreshold.HighConfCount)
 	})
 
@@ -509,14 +541,12 @@ func TestLoadDynamicThresholdsFromDB(t *testing.T) {
 		mockDs.thresholds = map[string]*datastore.DynamicThreshold{
 			"american crow": {
 				SpeciesName:  "american crow",
-				ModelName:    "BirdNET",
 				Level:        1,
 				CurrentValue: 0.75,
 				ExpiresAt:    now.Add(24 * time.Hour), // Valid
 			},
 			"blue jay": {
 				SpeciesName:  "blue jay",
-				ModelName:    "BirdNET",
 				Level:        2,
 				CurrentValue: 0.8,
 				ExpiresAt:    now.Add(-1 * time.Hour), // Expired
@@ -527,10 +557,8 @@ func TestLoadDynamicThresholdsFromDB(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.Len(t, p.DynamicThresholds, 1, "Should only load non-expired threshold")
-		crowKey := dynamicThresholdKey("BirdNET", "american crow")
-		jayKey := dynamicThresholdKey("BirdNET", "blue jay")
-		assert.Contains(t, p.DynamicThresholds, crowKey)
-		assert.NotContains(t, p.DynamicThresholds, jayKey)
+		assert.Contains(t, p.DynamicThresholds, "american crow")
+		assert.NotContains(t, p.DynamicThresholds, "blue jay")
 	})
 }
 
@@ -541,19 +569,17 @@ func TestPersistDynamicThresholds(t *testing.T) {
 		mockDs := p.Ds.(*MockDatastore)
 
 		now := time.Now()
-		// Add thresholds to in-memory map using composite keys
-		crowKey := dynamicThresholdKey("BirdNET", "american crow")
-		jayKey := dynamicThresholdKey("BirdNET", "blue jay")
-		p.DynamicThresholds[crowKey] = &DynamicThreshold{
+		// Add thresholds to in-memory map (keyed per species)
+		p.DynamicThresholds["american crow"] = &DynamicThreshold{
 			Level:         1,
-			CurrentValue:  0.75,
+			BaseThreshold: 0.75,
 			Timer:         now.Add(24 * time.Hour),
 			HighConfCount: 5,
 			ValidHours:    48,
 		}
-		p.DynamicThresholds[jayKey] = &DynamicThreshold{
+		p.DynamicThresholds["blue jay"] = &DynamicThreshold{
 			Level:         2,
-			CurrentValue:  0.8,
+			BaseThreshold: 0.8,
 			Timer:         now.Add(48 * time.Hour),
 			HighConfCount: 10,
 			ValidHours:    48,
@@ -569,9 +595,8 @@ func TestPersistDynamicThresholds(t *testing.T) {
 		savedCrow := mockDs.thresholds["american crow"]
 		require.NotNil(t, savedCrow)
 		assert.Equal(t, 1, savedCrow.Level)
-		assert.InDelta(t, 0.75, savedCrow.CurrentValue, 0.001)
+		assert.InDelta(t, 0.75, savedCrow.BaseThreshold, 0.001, "BaseThreshold should be persisted")
 		assert.Equal(t, 5, savedCrow.HighConfCount)
-		assert.Equal(t, "BirdNET", savedCrow.ModelName, "ModelName should be persisted")
 	})
 
 	t.Run("EmptyThresholdsMap", func(t *testing.T) {
@@ -589,25 +614,23 @@ func TestPersistDynamicThresholds(t *testing.T) {
 		mockDs := p.Ds.(*MockDatastore)
 
 		now := time.Now()
-		crowKey := dynamicThresholdKey("BirdNET", "american crow")
-		jayKey := dynamicThresholdKey("BirdNET", "blue jay")
-		p.DynamicThresholds[crowKey] = &DynamicThreshold{
-			Level:        1,
-			CurrentValue: 0.75,
-			Timer:        now.Add(24 * time.Hour), // Valid
+		p.DynamicThresholds["american crow"] = &DynamicThreshold{
+			Level:         1,
+			BaseThreshold: 0.75,
+			Timer:         now.Add(24 * time.Hour), // Valid
 		}
-		p.DynamicThresholds[jayKey] = &DynamicThreshold{
-			Level:        2,
-			CurrentValue: 0.8,
-			Timer:        now.Add(-1 * time.Hour), // Expired
+		p.DynamicThresholds["blue jay"] = &DynamicThreshold{
+			Level:         2,
+			BaseThreshold: 0.8,
+			Timer:         now.Add(-1 * time.Hour), // Expired
 		}
 
 		err := p.persistDynamicThresholds(t.Context())
 
 		require.NoError(t, err)
 		assert.Len(t, p.DynamicThresholds, 1, "Expired threshold should be removed from memory")
-		assert.Contains(t, p.DynamicThresholds, crowKey)
-		assert.NotContains(t, p.DynamicThresholds, jayKey)
+		assert.Contains(t, p.DynamicThresholds, "american crow")
+		assert.NotContains(t, p.DynamicThresholds, "blue jay")
 
 		// Only valid threshold should be saved to database
 		assert.Len(t, mockDs.thresholds, 1)
@@ -622,11 +645,10 @@ func TestFlushDynamicThresholds(t *testing.T) {
 		mockDs := p.Ds.(*MockDatastore)
 
 		now := time.Now()
-		crowKey := dynamicThresholdKey("BirdNET", "american crow")
-		p.DynamicThresholds[crowKey] = &DynamicThreshold{
-			Level:        1,
-			CurrentValue: 0.75,
-			Timer:        now.Add(24 * time.Hour),
+		p.DynamicThresholds["american crow"] = &DynamicThreshold{
+			Level:         1,
+			BaseThreshold: 0.75,
+			Timer:         now.Add(24 * time.Hour),
 		}
 
 		err := p.FlushDynamicThresholds()
@@ -725,35 +747,30 @@ func (e NoSuchTableError) Error() string {
 	return "no such table: " + e.TableName
 }
 
-// TestBatchSaveWithBaseThreshold tests that base threshold is preserved
+// TestBatchSaveWithBaseThreshold verifies the in-memory BaseThreshold (the model
+// base recorded at last learn) round-trips through persistence, and that the saved
+// CurrentValue is derived from it and the level.
 func TestBatchSaveWithBaseThreshold(t *testing.T) {
 	t.Run("PreserveBaseThreshold", func(t *testing.T) {
 		p := createTestProcessor()
 		mockDs := p.Ds.(*MockDatastore)
 
-		// Set custom threshold in settings
-		p.Settings.Realtime.Species.Config = map[string]conf.SpeciesConfig{
-			"american crow": {
-				Threshold: 0.65,
-			},
-		}
-
 		now := time.Now()
-		crowKey := dynamicThresholdKey("BirdNET", "american crow")
-		p.DynamicThresholds[crowKey] = &DynamicThreshold{
-			Level:        1,
-			CurrentValue: 0.75,
-			Timer:        now.Add(24 * time.Hour),
+		p.DynamicThresholds["american crow"] = &DynamicThreshold{
+			Level:         1,
+			BaseThreshold: 0.65,
+			Timer:         now.Add(24 * time.Hour),
 		}
 
 		err := p.persistDynamicThresholds(t.Context())
 
 		require.NoError(t, err)
 
-		// Verify base threshold was calculated and saved (BatchSave stores by species name)
+		// Verify base threshold round-trips and CurrentValue is derived (75% of 0.65).
 		savedThreshold := mockDs.thresholds["american crow"]
 		require.NotNil(t, savedThreshold)
-		assert.InDelta(t, 0.65, savedThreshold.BaseThreshold, 0.001, "Base threshold should match custom config")
+		assert.InDelta(t, 0.65, savedThreshold.BaseThreshold, 0.001, "BaseThreshold should round-trip")
+		assert.InDelta(t, 0.65*0.75, savedThreshold.CurrentValue, 0.001, "CurrentValue derived from base and level")
 	})
 }
 
@@ -887,4 +904,62 @@ func TestDrainPendingResetsRequeuesOnFailure(t *testing.T) {
 		assert.Empty(t, p.pendingResets,
 			"pendingResets should remain empty after successful reset-all")
 	})
+}
+
+// TestConvertThresholdsForPersistence_PreservesTimestamps verifies the #4195 timestamp
+// fix at the processor layer: convertThresholdsForPersistence copies the real per-entry
+// FirstCreated/LastTriggered from the in-memory struct instead of stamping the flush time,
+// falls back to now for zero values, and skips empty-species keys without aborting.
+func TestConvertThresholdsForPersistence_PreservesTimestamps(t *testing.T) {
+	t.Parallel()
+	p := createTestProcessor()
+	settings := p.currentSettings()
+
+	firstCreated := time.Now().Add(-72 * time.Hour)
+	lastTriggered := time.Now().Add(-90 * time.Minute)
+	future := time.Now().Add(24 * time.Hour)
+
+	p.DynamicThresholds["american crow"] = &DynamicThreshold{
+		Level:          2,
+		BaseThreshold:  0.7,
+		Timer:          future,
+		HighConfCount:  3,
+		ValidHours:     48,
+		ScientificName: "Corvus brachyrhynchos",
+		FirstCreated:   firstCreated,
+		LastTriggered:  lastTriggered,
+	}
+	// An empty-key entry must not be persisted, must not abort the batch, and must be
+	// routed into the eviction path so it cannot linger in memory forever.
+	p.DynamicThresholds[""] = &DynamicThreshold{
+		Level: 1, Timer: future, ValidHours: 48, FirstCreated: firstCreated, LastTriggered: lastTriggered,
+	}
+
+	dbThresholds, expired := p.convertThresholdsForPersistence(settings)
+
+	require.Len(t, dbThresholds, 1, "empty-key entry must not be persisted")
+	assert.Equal(t, []string{""}, expired, "empty-key entry must be routed to eviction")
+	got := dbThresholds[0]
+	assert.Equal(t, "american crow", got.SpeciesName)
+	// The flush time is now; the real values are hours in the past, so a regression that
+	// stamped now (the #4195 bug) would fail these tight bounds.
+	assert.WithinDuration(t, firstCreated, got.FirstCreated, time.Second, "FirstCreated must be the real per-entry value, not the flush time")
+	assert.WithinDuration(t, lastTriggered, got.LastTriggered, time.Second, "LastTriggered must be the real per-entry value, not the flush time")
+}
+
+// TestConvertThresholdsForPersistence_ZeroTimestampFallback verifies that an in-memory
+// entry with zero FirstCreated/LastTriggered falls back to now (never persisted as zero).
+func TestConvertThresholdsForPersistence_ZeroTimestampFallback(t *testing.T) {
+	t.Parallel()
+	p := createTestProcessor()
+	p.DynamicThresholds["blue jay"] = &DynamicThreshold{
+		Level: 1, BaseThreshold: 0.7, Timer: time.Now().Add(24 * time.Hour), ValidHours: 48,
+	}
+
+	dbThresholds, _ := p.convertThresholdsForPersistence(p.currentSettings())
+	require.Len(t, dbThresholds, 1)
+	got := dbThresholds[0]
+	assert.False(t, got.FirstCreated.IsZero(), "zero FirstCreated must fall back to now")
+	assert.WithinDuration(t, time.Now(), got.FirstCreated, 5*time.Second)
+	assert.Equal(t, got.FirstCreated, got.LastTriggered, "zero LastTriggered falls back to FirstCreated")
 }

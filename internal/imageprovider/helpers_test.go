@@ -1,3 +1,12 @@
+// Image URLs in this package's tests point at 127.0.0.1 on purpose.
+//
+// A cached image URL is not inert: a refresh hands it to DownloadAndStore, which
+// really fetches it. With hosts like upload.wikimedia.org and example.com in the
+// fixtures, running the test suite opened live connections to those hosts, and a
+// keep-alive connection still idle when the package finished failed the
+// TestMain goroutine-leak check at random. The SSRF dialer rejects a loopback
+// literal before resolving or dialing anything, so these URLs stay opaque
+// strings and the suite touches no network.
 package imageprovider
 
 import (
@@ -10,9 +19,12 @@ import (
 	"github.com/tphakala/birdnet-go/internal/datastore"
 )
 
-// TestIsCacheEntryStale tests the TTL logic for cache entries.
+// TestIsCacheEntryStale tests the TTL logic for cache entries against a fixed
+// instant, so the boundary cases do not depend on the wall clock.
 func TestIsCacheEntryStale(t *testing.T) {
 	t.Parallel()
+
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
 		name       string
@@ -22,44 +34,62 @@ func TestIsCacheEntryStale(t *testing.T) {
 	}{
 		{
 			name:       "fresh positive entry",
-			cachedAt:   time.Now().Add(-1 * time.Hour),
+			cachedAt:   now.Add(-1 * time.Hour),
 			isNegative: false,
 			wantStale:  false,
 		},
 		{
 			name:       "stale positive entry (older than 30 days)",
-			cachedAt:   time.Now().Add(-31 * 24 * time.Hour),
+			cachedAt:   now.Add(-31 * 24 * time.Hour),
 			isNegative: false,
 			wantStale:  true,
 		},
 		{
 			name:       "positive entry just before TTL boundary",
-			cachedAt:   time.Now().Add(-30*24*time.Hour + 1*time.Second), // 1 second fresher than TTL
+			cachedAt:   now.Add(-defaultCacheTTL + time.Nanosecond),
 			isNegative: false,
 			wantStale:  false,
 		},
 		{
+			name:       "positive entry exactly at TTL boundary",
+			cachedAt:   now.Add(-defaultCacheTTL),
+			isNegative: false,
+			wantStale:  false,
+		},
+		{
+			name:       "positive entry just past TTL boundary",
+			cachedAt:   now.Add(-defaultCacheTTL - time.Nanosecond),
+			isNegative: false,
+			wantStale:  true,
+		},
+		{
 			name:       "fresh negative entry",
-			cachedAt:   time.Now().Add(-5 * time.Minute),
+			cachedAt:   now.Add(-5 * time.Minute),
 			isNegative: true,
 			wantStale:  false,
 		},
 		{
 			name:       "stale negative entry (older than 15 minutes)",
-			cachedAt:   time.Now().Add(-20 * time.Minute),
+			cachedAt:   now.Add(-20 * time.Minute),
 			isNegative: true,
 			wantStale:  true,
 		},
 		{
 			name:       "negative entry just before TTL boundary",
-			cachedAt:   time.Now().Add(-15*time.Minute + 1*time.Second), // 1 second fresher than TTL
+			cachedAt:   now.Add(-negativeCacheTTL + time.Nanosecond),
 			isNegative: true,
 			wantStale:  false,
 		},
 		{
-			name:       "very old positive entry",
-			cachedAt:   time.Now().Add(-30 * 24 * time.Hour),
-			isNegative: false,
+			name:       "negative entry exactly at TTL boundary",
+			cachedAt:   now.Add(-negativeCacheTTL),
+			isNegative: true,
+			wantStale:  false,
+		},
+		{
+			name:       "negative entry just past TTL boundary",
+			cachedAt:   now.Add(-negativeCacheTTL - time.Nanosecond),
+			isNegative: true,
 			wantStale:  true,
 		},
 		{
@@ -73,10 +103,22 @@ func TestIsCacheEntryStale(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := isCacheEntryStale(tt.cachedAt, tt.isNegative)
-			assert.Equal(t, tt.wantStale, got, "isCacheEntryStale(%v, %v)", tt.cachedAt, tt.isNegative)
+			got := isCacheEntryStaleAt(tt.cachedAt, tt.isNegative, now)
+			assert.Equal(t, tt.wantStale, got, "isCacheEntryStaleAt(%v, %v, %v)", tt.cachedAt, tt.isNegative, now)
 		})
 	}
+}
+
+// TestIsCacheEntryStaleUsesWallClock checks that isCacheEntryStale applies the
+// TTL against the current time. The margins are hours and days, far larger
+// than any scheduler or timer jitter.
+func TestIsCacheEntryStaleUsesWallClock(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, isCacheEntryStale(time.Now().Add(-time.Hour), false))
+	assert.True(t, isCacheEntryStale(time.Now().Add(-defaultCacheTTL-time.Hour), false))
+	assert.False(t, isCacheEntryStale(time.Now().Add(-time.Minute), true))
+	assert.True(t, isCacheEntryStale(time.Now().Add(-negativeCacheTTL-time.Hour), true))
 }
 
 func TestFindStaleEntriesSkipsNegativeEntries(t *testing.T) {
@@ -87,12 +129,12 @@ func TestFindStaleEntriesSkipsNegativeEntries(t *testing.T) {
 	entries := []datastore.ImageCache{
 		{
 			ScientificName: "Turdus merula",
-			URL:            "https://example.com/blackbird.jpg",
+			URL:            "https://127.0.0.1/blackbird.jpg",
 			CachedAt:       now.Add(-defaultCacheTTL - time.Hour),
 		},
 		{
 			ScientificName: "Parus major",
-			URL:            "https://example.com/great-tit.jpg",
+			URL:            "https://127.0.0.1/great-tit.jpg",
 			CachedAt:       now.Add(-time.Hour),
 		},
 		{
@@ -128,21 +170,21 @@ func TestDbEntryToBirdImage(t *testing.T) {
 			entry: &datastore.ImageCache{
 				ScientificName: "Parus major",
 				ProviderName:   "wikimedia",
-				URL:            "http://example.com/parus.jpg",
+				URL:            "http://127.0.0.1/parus.jpg",
 				LicenseName:    "CC BY-SA 4.0",
 				LicenseURL:     "http://creativecommons.org/licenses/by-sa/4.0/",
 				AuthorName:     "John Doe",
-				AuthorURL:      "http://example.com/johndoe",
+				AuthorURL:      "http://127.0.0.1/johndoe",
 				CachedAt:       cachedTime,
 			},
 			want: BirdImage{
 				ScientificName: "Parus major",
 				SourceProvider: "wikimedia",
-				URL:            "http://example.com/parus.jpg",
+				URL:            "http://127.0.0.1/parus.jpg",
 				LicenseName:    "CC BY-SA 4.0",
 				LicenseURL:     "http://creativecommons.org/licenses/by-sa/4.0/",
 				AuthorName:     "John Doe",
-				AuthorURL:      "http://example.com/johndoe",
+				AuthorURL:      "http://127.0.0.1/johndoe",
 				CachedAt:       cachedTime,
 			},
 		},
@@ -166,13 +208,13 @@ func TestDbEntryToBirdImage(t *testing.T) {
 			entry: &datastore.ImageCache{
 				ScientificName: "Turdus merula",
 				ProviderName:   "avicommons",
-				URL:            "http://example.com/blackbird.jpg",
+				URL:            "http://127.0.0.1/blackbird.jpg",
 				CachedAt:       cachedTime,
 			},
 			want: BirdImage{
 				ScientificName: "Turdus merula",
 				SourceProvider: "avicommons",
-				URL:            "http://example.com/blackbird.jpg",
+				URL:            "http://127.0.0.1/blackbird.jpg",
 				CachedAt:       cachedTime,
 			},
 		},
@@ -407,7 +449,7 @@ func TestBuildDebugURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := buildDebugURL(tt.params)
+			got := (&wikiMediaProvider{}).buildDebugURL(tt.params)
 			require.NotEmpty(t, got, "buildDebugURL should not return empty string")
 			tt.check(t, got)
 		})
@@ -425,7 +467,7 @@ func TestBirdImageIsNegativeEntry(t *testing.T) {
 	}{
 		{
 			name: "positive entry",
-			img:  BirdImage{URL: "http://example.com/bird.jpg"},
+			img:  BirdImage{URL: "http://127.0.0.1/bird.jpg"},
 			want: false,
 		},
 		{
@@ -460,12 +502,27 @@ func TestBirdImageGetTTL(t *testing.T) {
 	}{
 		{
 			name: "positive entry gets default TTL",
-			img:  BirdImage{URL: "http://example.com/bird.jpg"},
+			img:  BirdImage{URL: "http://127.0.0.1/bird.jpg"},
 			want: defaultCacheTTL,
 		},
 		{
 			name: "negative entry gets shorter TTL",
 			img:  BirdImage{URL: negativeEntryMarker},
+			want: negativeCacheTTL,
+		},
+		{
+			name: "negative entry with Engine (legacy non-avian class) gets permanent TTL",
+			img:  BirdImage{URL: negativeEntryMarker, ScientificName: "Engine"},
+			want: nonAvianCacheTTL,
+		},
+		{
+			name: "negative entry with Power (split first-token of power_tool) gets permanent TTL",
+			img:  BirdImage{URL: negativeEntryMarker, ScientificName: "Power"},
+			want: nonAvianCacheTTL,
+		},
+		{
+			name: "negative entry with real bird binomial gets shorter TTL",
+			img:  BirdImage{URL: negativeEntryMarker, ScientificName: "Turdus merula"},
 			want: negativeCacheTTL,
 		},
 	}
@@ -540,6 +597,13 @@ func TestIsNonAvianClass(t *testing.T) {
 		{"noise is non-avian", "Noise", true},
 		{"environmental is non-avian", "Environmental", true},
 		{"engine is non-avian", "Engine", true},
+		// Perch v2 (FSD50K) classes via nonbird package - NOT in legacy map:
+		{"Power (first-token of power_tool) is non-avian", "Power", true},
+		{"power_tool (full Perch label) is non-avian", "power_tool", true},
+		{"speech is non-avian", "speech", true},
+		{"Speech is non-avian (case-insensitive)", "Speech", true},
+		{"growling is non-avian", "growling", true},
+		// Negatives:
 		{"real bird species is avian", "Cyanistes caeruleus", false},
 		{"another bird species is avian", "Turdus merula", false},
 		{"empty string is avian", "", false},

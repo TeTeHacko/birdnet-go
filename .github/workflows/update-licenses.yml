@@ -1,0 +1,141 @@
+name: Update Licenses
+
+on:
+  push:
+    paths:
+      - 'go.mod'
+      - 'go.sum'
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  update-licenses:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+      - uses: actions/checkout@v7
+      
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '26'
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install go-licenses
+        run: go install github.com/google/go-licenses@latest
+
+      - name: Generate LICENSES.md
+        run: |
+          # Create frontend/static directory if it doesn't exist
+          mkdir -p frontend/static
+
+          echo "# Licenses" > frontend/static/LICENSES.md
+          echo "" >> frontend/static/LICENSES.md
+          echo "## BirdNET-Go" >> frontend/static/LICENSES.md
+          echo "" >> frontend/static/LICENSES.md
+          echo "Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International" >> frontend/static/LICENSES.md
+          echo "https://creativecommons.org/licenses/by-nc-sa/4.0/" >> frontend/static/LICENSES.md
+          echo "" >> frontend/static/LICENSES.md
+
+          # Bundled data blobs are not Go module dependencies, so go-licenses does
+          # not see them. List them by hand here so the shipped attribution stays
+          # complete across regenerations.
+          echo "## Bundled Models" >> frontend/static/LICENSES.md
+          echo "" >> frontend/static/LICENSES.md
+          echo "### snakers4/silero-vad" >> frontend/static/LICENSES.md
+          echo "" >> frontend/static/LICENSES.md
+          echo "Silero VAD model (silero_vad.onnx), embedded in the binary and used by the" >> frontend/static/LICENSES.md
+          echo "privacy-filter speech gate. Unmodified, byte-identical to upstream." >> frontend/static/LICENSES.md
+          echo "" >> frontend/static/LICENSES.md
+          echo "License: https://github.com/snakers4/silero-vad/blob/master/LICENSE" >> frontend/static/LICENSES.md
+          echo "Source: MIT" >> frontend/static/LICENSES.md
+          echo "" >> frontend/static/LICENSES.md
+
+          # internal/spectrogram/soxchrome is derived from SoX (LGPL) and the Go fonts
+          # carry their own grant, and go-licenses skips internal packages, so list
+          # both by hand here.
+          echo "## Derived Code" >> frontend/static/LICENSES.md
+          echo "" >> frontend/static/LICENSES.md
+          echo "### SoX spectrogram effect" >> frontend/static/LICENSES.md
+          echo "" >> frontend/static/LICENSES.md
+          echo "Palette, colour mapping and axis layout in internal/spectrogram/soxchrome are derived from" >> frontend/static/LICENSES.md
+          echo "SoX src/spectrogram.c, (c) 2008-9 robs@users.sourceforge.net. That package is licensed under" >> frontend/static/LICENSES.md
+          echo "the GNU LGPL 2.1 or later (internal/spectrogram/soxchrome/LICENSE)." >> frontend/static/LICENSES.md
+          echo "" >> frontend/static/LICENSES.md
+          echo "License: https://sourceforge.net/p/sox/code/ci/master/tree/LICENSE.LGPL" >> frontend/static/LICENSES.md
+          echo "Source: LGPL-2.1-or-later" >> frontend/static/LICENSES.md
+          echo "" >> frontend/static/LICENSES.md
+          echo "### Go fonts" >> frontend/static/LICENSES.md
+          echo "" >> frontend/static/LICENSES.md
+          echo "Go Mono from golang.org/x/image/font/gofont, (c) 2016 Bigelow & Holmes Inc., draws" >> frontend/static/LICENSES.md
+          echo "spectrogram axis text." >> frontend/static/LICENSES.md
+          echo "" >> frontend/static/LICENSES.md
+          echo "License: https://cs.opensource.google/go/x/image/+/v0.47.0:font/gofont/ttfs/README" >> frontend/static/LICENSES.md
+          echo "Source: BSD-3-Clause" >> frontend/static/LICENSES.md
+          echo "" >> frontend/static/LICENSES.md
+
+          echo "## Dependencies" >> frontend/static/LICENSES.md
+          echo "" >> frontend/static/LICENSES.md
+
+          # Get licenses excluding internal packages unless they have a LICENSE file
+          go-licenses csv github.com/tphakala/birdnet-go/... | while IFS=, read -r package license source; do
+            # Skip internal packages and cmd packages unless they contain a LICENSE file
+            if [[ $package == *"/internal/"* || $package == *"/cmd/"* ]] && ! [[ -f "${source}/LICENSE" ]]; then
+              continue
+            fi
+
+            # Skip the main module
+            if [[ $package == "github.com/tphakala/birdnet-go" ]]; then
+              continue
+            fi
+
+            echo "### $package" >> frontend/static/LICENSES.md
+            echo "" >> frontend/static/LICENSES.md
+            echo "License: $license" >> frontend/static/LICENSES.md
+            echo "Source: $source" >> frontend/static/LICENSES.md
+            echo "" >> frontend/static/LICENSES.md
+          done
+
+          # Create a symbolic link in root directory
+          ln -sf frontend/static/LICENSES.md LICENSES.md
+
+      - name: Format LICENSES.md
+        working-directory: frontend
+        run: npx prettier --write static/LICENSES.md
+
+      - name: Create Pull Request
+        id: create-pr
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'docs: update dependency licenses'
+          title: 'Update dependency licenses'
+          body: |
+            Automatically updated LICENSES.md with current dependency licenses.
+
+            This PR was created automatically by the update-licenses workflow.
+
+            Changes:
+            - Excluded internal packages without LICENSE files
+            - Updated dependency licenses based on go.mod changes
+          branch: update-licenses
+          delete-branch: true
+
+      - name: Merge PR
+        if: steps.create-pr.outputs.pull-request-number && steps.create-pr.outputs.pull-request-operation != 'closed'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge "${{ steps.create-pr.outputs.pull-request-number }}" --repo "${{ github.repository }}" --squash --delete-branch

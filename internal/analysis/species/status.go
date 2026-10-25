@@ -9,9 +9,43 @@ import (
 	"github.com/tphakala/birdnet-go/internal/logger"
 )
 
+// warmingSpeciesStatus is the suppressed status returned while the background
+// historical load is in flight. Every "new" flag is false so the warm-up window
+// never produces a spurious new-species result; the periods are reported as
+// unknown (sentinel -1 / empty season) until the load completes.
+//
+// FirstSeenTime is deliberately left as the zero value, not currentTime: some
+// consumers (the SSE feed and the detections REST handler) derive "is new
+// species" as `!FirstSeenTime.IsZero() && note.Date == FirstSeenTime`, so a
+// today-dated FirstSeenTime here would flag every live detection as new during
+// warm-up, exactly the spurious result this suppression exists to prevent.
+func warmingSpeciesStatus(currentTime time.Time) SpeciesStatus {
+	return SpeciesStatus{
+		FirstSeenTime:     time.Time{},
+		IsNew:             false,
+		DaysSinceFirst:    -1,
+		LastUpdatedTime:   currentTime,
+		DaysSinceLastSeen: -1,
+		IsNewThisYear:     false,
+		IsNewThisSeason:   false,
+		DaysThisYear:      -1,
+		DaysThisSeason:    -1,
+	}
+}
+
 // GetSpeciesStatus returns the tracking status for a species with caching for performance
 // This method implements cache-first lookup with TTL validation to minimize expensive computations
 func (t *SpeciesTracker) GetSpeciesStatus(scientificName string, currentTime time.Time) SpeciesStatus {
+	// Suppress new-species status while the background load populates the maps.
+	// Checked before t.mu so it never blocks on the lock the loader holds.
+	if t.warming.Load() {
+		return warmingSpeciesStatus(currentTime)
+	}
+
+	// Collapse taxonomic aliases so the status (and its cache entry) keys this taxon
+	// identically to its loaded history regardless of which name the caller passed.
+	scientificName = canonicalSpeciesName(scientificName)
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -125,15 +159,19 @@ func (t *SpeciesTracker) applyYearlyStatus(status *SpeciesStatus, firstThisYear 
 }
 
 // applySeasonalStatus sets seasonal tracking fields on status.
-func (t *SpeciesTracker) applySeasonalStatus(status *SpeciesStatus, firstThisSeason *time.Time, currentTime time.Time) {
+//
+// A species carried over from the end of the previous season is never "new
+// this season"; otherwise every species heard on a season's first day,
+// residents included, would be flagged for the whole window.
+func (t *SpeciesTracker) applySeasonalStatus(status *SpeciesStatus, firstThisSeason *time.Time, carriedOver bool, currentTime time.Time) {
 	if !t.seasonalEnabled {
 		return
 	}
 	if firstThisSeason != nil {
 		status.DaysThisSeason = calculateDaysSince(currentTime, *firstThisSeason)
-		status.IsNewThisSeason = status.DaysThisSeason <= t.seasonalWindowDays
+		status.IsNewThisSeason = !carriedOver && status.DaysThisSeason <= t.seasonalWindowDays
 	} else {
-		status.IsNewThisSeason = true
+		status.IsNewThisSeason = !carriedOver
 		status.DaysThisSeason = 0
 	}
 }
@@ -160,7 +198,7 @@ func (t *SpeciesTracker) buildSpeciesStatusWithBuffer(scientificName string, cur
 
 	t.applyLifetimeStatus(status, firstSeen, exists, currentTime)
 	t.applyYearlyStatus(status, firstThisYear, currentTime)
-	t.applySeasonalStatus(status, firstThisSeason, currentTime)
+	t.applySeasonalStatus(status, firstThisSeason, t.isSeasonCarryoverLocked(scientificName, currentSeason, currentTime), currentTime)
 	t.applyNoveltyStatus(status, scientificName)
 
 	return *status
@@ -253,6 +291,15 @@ func (t *SpeciesTracker) GetBatchSpeciesStatus(scientificNames []string, current
 		return make(map[string]SpeciesStatus)
 	}
 
+	// Suppress new-species status while the background load populates the maps.
+	if t.warming.Load() {
+		results := make(map[string]SpeciesStatus, len(scientificNames))
+		for _, scientificName := range scientificNames {
+			results[scientificName] = warmingSpeciesStatus(currentTime)
+		}
+		return results
+	}
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -263,9 +310,11 @@ func (t *SpeciesTracker) GetBatchSpeciesStatus(scientificNames []string, current
 	// Pre-allocate result map with exact capacity
 	results := make(map[string]SpeciesStatus, len(scientificNames))
 
-	// Process each species using the cached season information
+	// Process each species using the cached season information. The result map is
+	// keyed by the caller's input name; only the internal lookup is canonicalized so
+	// an alias and its canonical name resolve to the same tracked history.
 	for _, scientificName := range scientificNames {
-		status := t.buildSpeciesStatusLocked(scientificName, currentTime, currentSeason)
+		status := t.buildSpeciesStatusLocked(canonicalSpeciesName(scientificName), currentTime, currentSeason)
 		results[scientificName] = status
 	}
 
@@ -294,7 +343,7 @@ func (t *SpeciesTracker) buildSpeciesStatusLocked(scientificName string, current
 
 	t.applyLifetimeStatus(&status, firstSeen, exists, currentTime)
 	t.applyYearlyStatus(&status, firstThisYear, currentTime)
-	t.applySeasonalStatus(&status, firstThisSeason, currentTime)
+	t.applySeasonalStatus(&status, firstThisSeason, t.isSeasonCarryoverLocked(scientificName, currentSeason, currentTime), currentTime)
 	t.applyNoveltyStatus(&status, scientificName)
 
 	return status

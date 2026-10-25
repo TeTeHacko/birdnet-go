@@ -101,7 +101,7 @@ func (s *ScriptProvider) Send(ctx context.Context, n *Notification) error {
 			"type":      string(n.Type),
 			"priority":  string(n.Priority),
 			"title":     n.Title,
-			"message":   n.Message,
+			"message":   n.Message, //nolint:goconst // script data map key, not the function-local keyMessage
 			"component": n.Component,
 			"timestamp": n.Timestamp.UTC().Format(time.RFC3339),
 			"metadata":  n.Metadata,
@@ -112,11 +112,6 @@ func (s *ScriptProvider) Send(ctx context.Context, n *Notification) error {
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		// Determine retryability from exit code
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			_ = exitErr // caller decides retry policy; we just return the error
-		}
 		return errors.New(err).Component("notification").Category(errors.CategoryIntegration).Context("operation", "execute_script").Context("script", s.name).Context("output", truncate(string(out), DefaultScriptOutputTruncateLength)).Build()
 	}
 	return nil

@@ -32,8 +32,16 @@
   import { loggers } from '$lib/utils/logger';
   import { cn } from '$lib/utils/cn';
   import { useDetectionActions } from '$lib/desktop/features/detections/composables/useDetectionActions.svelte';
+  import {
+    isExcluded as isSpeciesExcluded,
+    setExcluded,
+    hydrateExcludedSpecies,
+  } from '$lib/stores/excludedSpecies.svelte';
 
   const logger = loggers.ui;
+
+  // Each DetectionCard renders its compact (media-free) form on its own when its
+  // detection has no clip, so no card-level audio flag is threaded through here.
 
   interface Props {
     data: Detection[];
@@ -67,25 +75,12 @@
   // svelte-ignore state_referenced_locally
   let selectedLimit = $state(limit);
 
-  // Track excluded species by common name (session-local tracking)
-  let excludedSpecies = $state(new Set<string>());
-
-  function isSpeciesExcluded(commonName: string): boolean {
-    return excludedSpecies.has(commonName);
-  }
-
-  // Shared action handlers (review, delete, lock, ignore species)
+  // Shared action handlers (review, delete, lock, ignore species). Exclusion
+  // state is the shared, server-hydrated excludedSpecies store.
   const actions = useDetectionActions({
     onRefresh: () => onRefresh(),
     isSpeciesExcluded,
-    onToggleExclusion: (name, exclude) => {
-      if (exclude) {
-        excludedSpecies.add(name);
-      } else {
-        excludedSpecies.delete(name);
-      }
-      excludedSpecies = new Set(excludedSpecies);
-    },
+    onToggleExclusion: setExcluded,
   });
 
   // Custom dropdown state
@@ -93,6 +88,22 @@
   let dropdownRef = $state<HTMLDivElement | undefined>(undefined);
   let dropdownButtonRef = $state<HTMLButtonElement | undefined>(undefined);
   const limitOptions = [6, 12, 24, 48];
+
+  // Guard against a duplicate detection id in the incoming data: a repeated id in a
+  // keyed {#each} throws each_key_duplicate and, with no error boundary, white-screens
+  // the whole dashboard. De-duplicate by id (first occurrence wins) so the id key stays
+  // stable (no re-render churn, unlike appending the index) while a collision can never
+  // crash the page.
+  const uniqueData = $derived.by(() => {
+    const seen = new Set<Detection['id']>();
+    const out: Detection[] = [];
+    for (const d of data) {
+      if (seen.has(d.id)) continue;
+      seen.add(d.id);
+      out.push(d);
+    }
+    return out;
+  });
 
   // Toggle dropdown
   function toggleLimitDropdown() {
@@ -151,6 +162,7 @@
   }
 
   onMount(() => {
+    void hydrateExcludedSpecies();
     document.addEventListener('click', handleDropdownClickOutside);
     return () => {
       document.removeEventListener('click', handleDropdownClickOutside);
@@ -275,7 +287,7 @@
 
         <!-- Detection Cards Grid -->
         <div class="detection-cards-grid gap-4">
-          {#each data.slice(0, selectedLimit) as detection (detection.id)}
+          {#each uniqueData.slice(0, selectedLimit) as detection (detection.id)}
             <DetectionCard
               {detection}
               isNew={newDetectionIds.has(detection.id)}
@@ -347,6 +359,12 @@
 
   .limit-dropdown-trigger:focus {
     outline: none;
+  }
+
+  /* Keep a visible focus ring for keyboard users (outline is only removed for mouse focus). */
+  .limit-dropdown-trigger:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
   }
 
   .limit-dropdown-value {

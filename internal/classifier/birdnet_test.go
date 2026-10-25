@@ -4,21 +4,24 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tphakala/birdnet-go/internal/conf"
+	"github.com/tphakala/birdnet-go/internal/conf/conftest"
 	"github.com/tphakala/birdnet-go/internal/datastore"
 )
 
 // fakeModelInstance is a minimal ModelInstance for testing orchestrator logic
 // without loading real models.
 type fakeModelInstance struct {
-	id     string
-	name   string
-	labels []string
+	id           string
+	name         string
+	labels       []string
+	resolvedPath string
 }
 
 func (f *fakeModelInstance) Predict(_ context.Context, _ [][]float32) ([]datastore.Results, error) {
@@ -31,7 +34,10 @@ func (f *fakeModelInstance) ModelVersion() string { return "" }
 func (f *fakeModelInstance) NumSpecies() int      { return len(f.labels) }
 func (f *fakeModelInstance) Labels() []string     { return f.labels }
 func (f *fakeModelInstance) Close() error         { return nil }
-func (f *fakeModelInstance) Device() string       { return deviceCPU }
+func (f *fakeModelInstance) RuntimeInfo() (device, backend, precision string) {
+	return deviceCPU, BackendONNX, ""
+}
+func (f *fakeModelInstance) ResolvedModelPath() string { return f.resolvedPath }
 
 func TestShouldAutoSelectV3Geomodel(t *testing.T) {
 	t.Parallel()
@@ -106,6 +112,49 @@ func TestShouldAutoSelectV3Geomodel(t *testing.T) {
 	}
 }
 
+// TestShouldAutoSelectV3GeomodelForConfig covers the config-level gate that drives
+// the v3 geomodel auto-selection in initializeMetaModel: the model must be
+// auto-select ("" or the "latest" default), no explicit rangefilter.modelpath may be
+// set (an explicit user path is never overridden), and the classifier + stock files
+// must qualify. The explicit-modelpath rows are the #3932-followup regression guard:
+// extending auto-select to the default "latest" must not clobber a user-provided
+// range-filter path (mirrors shouldSelectDefaultONNXRangeFilter's ModelPath guard).
+func TestShouldAutoSelectV3GeomodelForConfig(t *testing.T) {
+	t.Parallel()
+
+	modelsDir := t.TempDir()
+	sharedDir := filepath.Join(modelsDir, "shared")
+	require.NoError(t, os.MkdirAll(sharedDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sharedDir, conf.GeomodelONNXLocalName), []byte("fake-onnx"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(sharedDir, conf.GeomodelLabelsLocalName), []byte("fake-labels"), 0o644))
+
+	tests := []struct {
+		name      string
+		model     string
+		modelPath string
+		modelID   string
+		modelsDir string
+		want      bool
+	}{
+		{"latest + no path + PerchV2 + files -> auto-select", conf.RangeFilterModelLatest, "", RegistryIDPerchV2, modelsDir, true},
+		{"empty model + no path + BirdNET V3.0 + files -> auto-select", "", "", RegistryIDBirdNETV3, modelsDir, true},
+		{"latest + explicit modelpath suppresses (custom path honored)", conf.RangeFilterModelLatest, "/data/custom_geomodel.onnx", RegistryIDPerchV2, modelsDir, false},
+		{"empty model + explicit modelpath suppresses", "", "/data/custom_geomodel.onnx", RegistryIDPerchV2, modelsDir, false},
+		{"explicit v3 is not auto-select", "v3", "", RegistryIDPerchV2, modelsDir, false},
+		{"legacy is not auto-select", "legacy", "", RegistryIDPerchV2, modelsDir, false},
+		{"v2.4 family classifier not eligible", conf.RangeFilterModelLatest, "", "BirdNET_V2.4", modelsDir, false},
+		{"empty modelsDir -> false", conf.RangeFilterModelLatest, "", RegistryIDPerchV2, "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := shouldAutoSelectV3GeomodelForConfig(tt.model, tt.modelPath, tt.modelID, tt.modelsDir)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestApplyAutoSelectedGeomodelPaths(t *testing.T) {
 	t.Parallel()
 
@@ -172,19 +221,25 @@ func TestApplyAutoSelectedGeomodelPaths(t *testing.T) {
 	})
 }
 
-func TestBirdNET_SetModelsDir(t *testing.T) {
+func TestOrchestrator_SetModelsDir(t *testing.T) {
 	t.Parallel()
 
-	bn := &BirdNET{}
-	assert.Empty(t, bn.modelsDir)
+	o := &Orchestrator{}
+	o.mu.RLock()
+	assert.Empty(t, o.modelsDir)
+	o.mu.RUnlock()
 
-	bn.SetModelsDir("/some/path")
-	assert.Equal(t, "/some/path", bn.modelsDir)
+	o.SetModelsDir("/some/path")
+	o.mu.RLock()
+	assert.Equal(t, "/some/path", o.modelsDir)
+	o.mu.RUnlock()
 }
 
 func TestPrimaryRangeFilterCoverage_NoFilter(t *testing.T) {
-	t.Parallel()
-
+	// Not parallel: RangeFilterStatus reads the globally published settings snapshot
+	// via primary.currentSettings() (Phase 2b moved coverage assembly onto the
+	// orchestrator), so this publishes settings globally rather than relying on a
+	// struct field a concurrent test could shadow.
 	settings := &conf.Settings{}
 	settings.BirdNET.Labels = []string{
 		"Turdus merula_Common Blackbird",
@@ -192,28 +247,34 @@ func TestPrimaryRangeFilterCoverage_NoFilter(t *testing.T) {
 	}
 	settings.BirdNET.RangeFilter.Model = ""
 	settings.BirdNET.RangeFilter.Threshold = 0.05
+	conftest.SetTestSettings(settings)
+	t.Cleanup(func() { conftest.SetTestSettings(nil) })
 
 	bn := &BirdNET{
-		Settings:     settings,
-		speciesCache: make(map[string]*speciesCacheEntry),
-		ModelInfo:    ModelInfo{ID: "BirdNET_V2.4", Name: "BirdNET v2.4"},
+		Settings:  settings,
+		ModelInfo: ModelInfo{ID: "BirdNET_V2.4", Name: "BirdNET v2.4"},
 	}
+	bn.settingsAtomic.Store(settings)
+	o := &Orchestrator{Settings: settings,
+		models: map[string]*modelEntry{RegistryIDBirdNETV24: {instance: bn}}}
+	o.settingsAtomic.Store(settings)
+	o.rangeFilter = newTestRangeFilterService(nil)
 
-	geomodel, primary, geoLabels, autoSelected := bn.PrimaryRangeFilterCoverage()
+	resp := o.RangeFilterStatus()
 
-	assert.Nil(t, geomodel, "geomodel should be nil when no mapped filter is active")
+	assert.Nil(t, resp.Geomodel, "geomodel should be nil when no mapped filter is active")
+	require.NotEmpty(t, resp.Classifiers)
+	primary := resp.Classifiers[0]
 	assert.Equal(t, "BirdNET_V2.4", primary.ID)
 	assert.Equal(t, "BirdNET v2.4", primary.Name)
 	assert.Equal(t, 2, primary.TotalSpecies)
 	assert.Zero(t, primary.WithRangeData)
 	assert.Zero(t, primary.WithoutRangeData)
-	assert.Empty(t, geoLabels)
-	assert.False(t, autoSelected)
 }
 
 func TestPrimaryRangeFilterCoverage_WithMappedFilter(t *testing.T) {
-	t.Parallel()
-
+	// Not parallel: see TestPrimaryRangeFilterCoverage_NoFilter; RangeFilterStatus
+	// reads the globally published settings snapshot.
 	modelsDir := t.TempDir()
 	sharedDir := filepath.Join(modelsDir, "shared")
 	require.NoError(t, os.MkdirAll(sharedDir, 0o755))
@@ -243,6 +304,8 @@ func TestPrimaryRangeFilterCoverage_WithMappedFilter(t *testing.T) {
 
 	// NumSpecies() reads from settings.BirdNET.Labels, so populate it.
 	settings.BirdNET.Labels = classifierLabels
+	conftest.SetTestSettings(settings)
+	t.Cleanup(func() { conftest.SetTestSettings(nil) })
 
 	inner := &fakeRangeFilter{
 		scores: make([]float32, len(geomodelLabels)),
@@ -250,27 +313,33 @@ func TestPrimaryRangeFilterCoverage_WithMappedFilter(t *testing.T) {
 	mapped := newMappedRangeFilter(inner, classifierLabels, geomodelLabels, 1.0)
 
 	bn := &BirdNET{
-		Settings:     settings,
-		speciesCache: make(map[string]*speciesCacheEntry),
-		ModelInfo:    ModelInfo{ID: RegistryIDBirdNETV3, Name: ModelNameBirdNETv30},
-		modelsDir:    modelsDir,
-		rangeFilter:  mapped,
+		Settings:  settings,
+		ModelInfo: ModelInfo{ID: RegistryIDBirdNETV3, Name: ModelNameBirdNETv30},
 	}
+	bn.settingsAtomic.Store(settings)
+	o := &Orchestrator{Settings: settings, modelsDir: modelsDir,
+		models: map[string]*modelEntry{RegistryIDBirdNETV3: {instance: bn}}}
+	o.settingsAtomic.Store(settings)
+	o.rangeFilter = newTestRangeFilterService(mapped)
 
-	geomodel, primary, geoLabels, autoSelected := bn.PrimaryRangeFilterCoverage()
+	resp := o.RangeFilterStatus()
 
-	require.NotNil(t, geomodel)
-	assert.Equal(t, "v3.0", geomodel.Version)
-	assert.Equal(t, len(geomodelLabels), geomodel.TotalSpecies)
-	assert.True(t, geomodel.AutoSelected)
-	assert.True(t, autoSelected)
+	require.NotNil(t, resp.Geomodel)
+	assert.Equal(t, "v3.0", resp.Geomodel.Version)
+	assert.Equal(t, len(geomodelLabels), resp.Geomodel.TotalSpecies)
+	assert.True(t, resp.Geomodel.AutoSelected)
 
+	require.NotEmpty(t, resp.Classifiers)
+	primary := resp.Classifiers[0]
 	assert.Equal(t, RegistryIDBirdNETV3, primary.ID)
 	assert.Equal(t, len(classifierLabels), primary.TotalSpecies)
 	assert.Equal(t, 3, primary.WithRangeData)
 	assert.Equal(t, 1, primary.WithoutRangeData)
 
-	assert.Equal(t, geomodelLabels, geoLabels)
+	// geoLabels are internal to the service now; assert them via the mapped view.
+	mrf, ok := o.rangeFilter.mappedView()
+	require.True(t, ok)
+	assert.Equal(t, geomodelLabels, mrf.geomodelLabels)
 }
 
 func TestRangeFilterStatus_PerClassifierCoverage(t *testing.T) {
@@ -313,11 +382,8 @@ func TestRangeFilterStatus_PerClassifierCoverage(t *testing.T) {
 	mapped := newMappedRangeFilter(inner, primaryLabels, geomodelLabels, 0.0)
 
 	primary := &BirdNET{
-		Settings:     settings,
-		speciesCache: make(map[string]*speciesCacheEntry),
-		ModelInfo:    ModelInfo{ID: "BirdNET_V2.4", Name: "BirdNET v2.4"},
-		modelsDir:    modelsDir,
-		rangeFilter:  mapped,
+		Settings:  settings,
+		ModelInfo: ModelInfo{ID: "BirdNET_V2.4", Name: "BirdNET v2.4"},
 	}
 
 	perchLabels := []string{
@@ -332,17 +398,31 @@ func TestRangeFilterStatus_PerClassifierCoverage(t *testing.T) {
 	}
 
 	orch := &Orchestrator{
-		Settings:  settings,
-		ModelInfo: primary.ModelInfo,
-		primary:   primary,
+		Settings: settings,
 		models: map[string]*modelEntry{
 			"BirdNET_V2.4":    {instance: primary},
 			RegistryIDPerchV2: {instance: perchInstance},
 		},
 		modelsDir: modelsDir,
 	}
+	// Publish the state a real geomodel reload would: kind geomodel_v3, coveredLabels the
+	// v2.4 label set (v2.4 is loaded), and the participant snapshot the reload builds from
+	// the loaded models. Per-participant coverage is decided by the built-over participant
+	// set and the backend kind (state.hasParticipant + kind), not by the live model map.
+	orch.rangeFilter = newRangeFilterService(nil)
+	orch.rangeFilter.state.Store(&rangeFilterState{
+		backend:       mapped,
+		kind:          rfKindGeomodelV3,
+		coveredLabels: primaryLabels,
+		participants:  []participantLabels{{id: "BirdNET_V2.4", labels: primaryLabels}, {id: RegistryIDPerchV2, labels: perchLabels}},
+		anchoredOnV24: true,
+		generation:    1,
+	})
 
 	resp := orch.RangeFilterStatus()
+
+	// Backend must report a valid kind, never the empty string (JSON contract).
+	assert.Equal(t, string(rfKindGeomodelV3), resp.Backend)
 
 	require.NotNil(t, resp.Geomodel)
 	assert.Equal(t, "v3.0", resp.Geomodel.Version)
@@ -365,12 +445,20 @@ func TestRangeFilterStatus_PerClassifierCoverage(t *testing.T) {
 	assert.Equal(t, 4, birdnet.TotalSpecies)
 	assert.Equal(t, 3, birdnet.WithRangeData)
 	assert.Equal(t, 1, birdnet.WithoutRangeData)
+	// v2.4 is loaded, so coveredLabels is the v2.4 label space and the geomodel scores it:
+	// v2.4 is honestly covered.
+	assert.True(t, birdnet.CoveredByBackend, "v2.4's label space is what the geomodel maps onto when v2.4 is loaded")
 
 	perch := classifierByID[RegistryIDPerchV2]
 	assert.Equal(t, ModelNamePerchV2, perch.Name)
 	assert.Equal(t, 3, perch.TotalSpecies)
 	assert.Equal(t, 2, perch.WithRangeData)
 	assert.Equal(t, 1, perch.WithoutRangeData)
+	// Perch is covered: the universal geomodel scores every loaded participant by canonical
+	// scientific name, and Perch's geomodel-unknown species are reconciled into both the gate
+	// list and the Settings preview (governed by the "allow species without range data"
+	// toggle), so the status honestly reports coverage for every participant under a geomodel.
+	assert.True(t, perch.CoveredByBackend, "the geomodel maps every loaded participant by canonical name")
 }
 
 func TestRangeFilterStatus_BatExcluded(t *testing.T) {
@@ -387,10 +475,8 @@ func TestRangeFilterStatus_BatExcluded(t *testing.T) {
 	mapped := newMappedRangeFilter(inner, primaryLabels, geomodelLabels, 0.0)
 
 	primary := &BirdNET{
-		Settings:     settings,
-		speciesCache: make(map[string]*speciesCacheEntry),
-		ModelInfo:    ModelInfo{ID: "BirdNET_V2.4", Name: "BirdNET v2.4"},
-		rangeFilter:  mapped,
+		Settings:  settings,
+		ModelInfo: ModelInfo{ID: "BirdNET_V2.4", Name: "BirdNET v2.4"},
 	}
 
 	batInstance := &fakeModelInstance{
@@ -400,14 +486,13 @@ func TestRangeFilterStatus_BatExcluded(t *testing.T) {
 	}
 
 	orch := &Orchestrator{
-		Settings:  settings,
-		ModelInfo: primary.ModelInfo,
-		primary:   primary,
+		Settings: settings,
 		models: map[string]*modelEntry{
 			"BirdNET_V2.4": {instance: primary},
 			RegistryIDBat:  {instance: batInstance},
 		},
 	}
+	orch.rangeFilter = newTestRangeFilterService(mapped)
 
 	resp := orch.RangeFilterStatus()
 
@@ -427,19 +512,17 @@ func TestRangeFilterStatus_NoGeomodel(t *testing.T) {
 	settings.BirdNET.RangeFilter.Threshold = 0.05
 
 	primary := &BirdNET{
-		Settings:     settings,
-		speciesCache: make(map[string]*speciesCacheEntry),
-		ModelInfo:    ModelInfo{ID: "BirdNET_V2.4", Name: "BirdNET v2.4"},
+		Settings:  settings,
+		ModelInfo: ModelInfo{ID: "BirdNET_V2.4", Name: "BirdNET v2.4"},
 	}
 
 	orch := &Orchestrator{
-		Settings:  settings,
-		ModelInfo: primary.ModelInfo,
-		primary:   primary,
+		Settings: settings,
 		models: map[string]*modelEntry{
 			"BirdNET_V2.4": {instance: primary},
 		},
 	}
+	orch.rangeFilter = newTestRangeFilterService(nil)
 
 	resp := orch.RangeFilterStatus()
 
@@ -450,4 +533,85 @@ func TestRangeFilterStatus_NoGeomodel(t *testing.T) {
 	assert.Zero(t, resp.Classifiers[0].WithRangeData)
 	assert.Zero(t, resp.Classifiers[0].WithoutRangeData)
 	assert.InDelta(t, 0.05, resp.Threshold, 0.001)
+}
+
+// testV24TFLiteModelPath is the committed FP32 v2.4 model, relative to this
+// package directory. Setting it as birdnet.modelpath keeps construction on the
+// TFLite backend (a non-empty CustomPath suppresses the arm64 ONNX remap) and
+// works under the CI `noembed` tag, where the embedded model is compiled out.
+const testV24TFLiteModelPath = "data/BirdNET_GLOBAL_6K_V2.4_Model_FP32.tflite"
+
+// TestNewBirdNET_LocaleNormalization covers locales that NormalizeLocale has to
+// rewrite. An unsupported locale falls back rather than aborting construction:
+// treating the fallback as fatal stopped `serve` and `benchmark` from starting at
+// all on a config carrying e.g. `birdnet.locale: en`. A locale given by full name
+// is rewritten to its code, and labels must be loaded for the rewritten locale,
+// not the raw input.
+func TestNewBirdNET_LocaleNormalization(t *testing.T) {
+	t.Parallel()
+
+	// This test constructs a TFLite v2.4 model to exercise locale normalization.
+	// A notflite build has no TFLite backend, so construction errors instead of
+	// running; skip so those builds stay green. See the notflite build-skip rationale.
+	if !tfliteBackendAvailable {
+		t.Skip("TFLite backend not linked (notflite build); locale normalization uses a TFLite v2.4 model")
+	}
+
+	tests := []struct {
+		name       string
+		input      string
+		wantLocale string
+	}{
+		{
+			name:       "unsupported locale falls back",
+			input:      "en",
+			wantLocale: conf.DefaultFallbackLocale,
+		},
+		{
+			name:       "full name normalizes to code",
+			input:      "German",
+			wantLocale: "de",
+		},
+		{
+			name:       "supported code passes through",
+			input:      "fi",
+			wantLocale: "fi",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			settings := &conf.Settings{}
+			settings.BirdNET.Locale = tt.input
+			settings.BirdNET.Version = "2.4"
+			settings.BirdNET.ModelPath = testV24TFLiteModelPath
+
+			// nil resolver: no orchestrator here, so the configured path is used
+			// verbatim, which is exactly the pre-recovery behaviour this test asserts.
+			bn, err := NewBirdNET(settings, nil, nil)
+			if bn != nil {
+				t.Cleanup(bn.Delete)
+			}
+			require.NoError(t, err, "locale %q must not fail construction", tt.input)
+			require.NotNil(t, bn)
+
+			assert.Equal(t, tt.wantLocale, settings.BirdNET.Locale,
+				"locale %q should normalize to %q", tt.input, tt.wantLocale)
+
+			// Labels must come from the normalized locale's label file. Comparing
+			// against that file directly catches normalization running after the
+			// labels are loaded, which would silently pair e.g. English labels with
+			// a settings locale of "de".
+			require.NotEmpty(t, settings.BirdNET.Labels, "labels should be loaded")
+			want := GetLabelFileDataWithResult(bn.ModelInfo.ID, tt.wantLocale, nil)
+			require.NoError(t, want.Error)
+			require.False(t, want.FallbackOccurred,
+				"test locale %q must have its own label file", tt.wantLocale)
+			wantFirstLabel, _, _ := strings.Cut(string(want.Data), "\n")
+			assert.Equal(t, strings.TrimSpace(wantFirstLabel), settings.BirdNET.Labels[0],
+				"labels should be loaded from the %q label file", tt.wantLocale)
+		})
+	}
 }

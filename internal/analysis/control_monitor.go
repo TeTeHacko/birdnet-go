@@ -19,7 +19,6 @@ import (
 	"github.com/tphakala/birdnet-go/internal/birdweather"
 	"github.com/tphakala/birdnet-go/internal/classifier"
 	"github.com/tphakala/birdnet-go/internal/conf"
-	"github.com/tphakala/birdnet-go/internal/datastore"
 	"github.com/tphakala/birdnet-go/internal/errors"
 	"github.com/tphakala/birdnet-go/internal/events"
 	"github.com/tphakala/birdnet-go/internal/logger"
@@ -33,6 +32,11 @@ const (
 	signalReconfigureRTSPHealth       = "reconfigure_rtsp_health"
 	signalReconfigureMonitoring       = "reconfigure_monitoring"
 	signalReconfigureLivestream       = "reconfigure_livestream"
+
+	// mqttReconfigureConnectTimeout bounds the initial connect attempt made when
+	// MQTT settings are saved. Exceeding it is not fatal: the client keeps
+	// retrying in the background via its reconnect loop.
+	mqttReconfigureConnectTimeout = 30 * time.Second
 )
 
 // ControlMonitor handles control signals for realtime analysis mode
@@ -53,6 +57,15 @@ type ControlMonitor struct {
 	// from current settings. It is provided by AudioPipelineService to avoid
 	// duplicating source setup logic.
 	reconfigureSourcesFn func()
+
+	// updateSourceGainsFn applies the configured gain of every running source to
+	// its live routes without a reconfigure or a stream probe. Set by
+	// AudioPipelineService after construction; nil skips it.
+	updateSourceGainsFn func()
+
+	// replanCadenceFn re-plans the analysis cadence without probing or diffing
+	// sources. Set by AudioPipelineService after construction; nil skips it.
+	replanCadenceFn func()
 
 	// reconfigureSoundLevelFn reconciles the sound level DSP pipeline (router
 	// routes, per-source Processor, bridge goroutines) with the current
@@ -128,57 +141,14 @@ func NewControlMonitor(wg *sync.WaitGroup, controlChan chan string, quitChan, re
 		reconfigureMonitoringFn: reconfigureMonitoringFn,
 	}
 
-	// Share the orchestrator's authoritative OpenFauna name resolver with the
-	// display surfaces, then re-localize the cached name maps now that the resolver
-	// has been built (startup BuildRangeFilter already ran). Forward display reads
-	// the live resolver regardless of map state; only the reverse (search) maps
-	// depend on this re-localize. Locale changes later re-localize via
-	// handleReloadBirdnet (BuildRangeFilter runs before UpdateNameMaps there).
-	if cm.bn != nil {
-		var ds datastore.Interface
-		if cm.proc != nil && cm.proc.Ds != nil {
-			ds = cm.proc.Ds
-		}
-		var api commonNameController
-		if cm.apiController != nil {
-			api = cm.apiController
-		}
-		installNameResolver(cm.bn.OpenFaunaResolver(), cm.bn.AllLabels(), ds, api)
-	}
+	// The species-name index is orchestrator-owned since Phase 2a: the datastore is
+	// handed it in APIServerService.Start and the api/v2 facade via WithSpeciesIndex,
+	// both before this monitor is constructed, and the orchestrator rebuilds it on
+	// every model/locale change. There is nothing to install here.
 
 	// Initialize the sound level manager but don't start it yet
 	// It will be started by handleReconfigureSoundLevel based on settings
 	return cm
-}
-
-// commonNameController is the minimal api-controller surface installNameResolver
-// needs to share the resolver and refresh the cached name maps. *apiv2.Controller
-// satisfies it; tests substitute a spy.
-type commonNameController interface {
-	SetNameResolver(resolver datastore.SpeciesNameResolver)
-	UpdateCommonNameMap(labels []string)
-}
-
-// installNameResolver shares the orchestrator's authoritative OpenFauna resolver
-// with the display surfaces, then re-localizes their cached name maps. Order is
-// load-bearing: SetNameResolver must precede the map rebuild so the reverse
-// (search) maps pick up localized names; forward display reads the live resolver
-// regardless.
-//
-// There is intentionally no nil-resolver short-circuit: the maps must be rebuilt
-// from labels even when no resolver is available, otherwise search and insights
-// would start with empty maps. SetNameResolver already no-ops on a nil/typed-nil
-// resolver (datastore.IsNilResolver guard inside it), so a missing resolver simply
-// leaves the live forward path on the label maps.
-func installNameResolver(resolver datastore.SpeciesNameResolver, labels []string, ds datastore.Interface, api commonNameController) {
-	if ds != nil {
-		ds.SetNameResolver(resolver)
-		ds.UpdateNameMaps(labels)
-	}
-	if api != nil {
-		api.SetNameResolver(resolver)
-		api.UpdateCommonNameMap(labels)
-	}
 }
 
 // Start begins monitoring control signals.
@@ -316,12 +286,16 @@ func (cm *ControlMonitor) handleControlSignal(signal string) {
 		cm.handleRebuildRangeFilter()
 	case "reload_birdnet":
 		cm.handleReloadBirdnet()
+	case "reconcile_models":
+		cm.handleReconcileModels()
 	case "reconfigure_mqtt":
 		cm.handleReconfigureMQTT()
 	case "reconfigure_rtsp_sources":
 		cm.handleReconfigureStreams()
 	case "reconfigure_birdweather":
 		cm.handleReconfigureBirdWeather()
+	case "reconfigure_ebird":
+		cm.handleReconfigureEBird()
 	case "update_detection_intervals":
 		cm.handleUpdateDetectionIntervals()
 	case "reconfigure_sound_level":
@@ -336,8 +310,10 @@ func (cm *ControlMonitor) handleControlSignal(signal string) {
 		cm.handleRebuildExtendedCapture()
 	case "reconfigure_audio_sources":
 		cm.handleReconfigureAudioSources()
-	case "recalculate_dynamic_thresholds":
-		cm.handleRecalculateDynamicThresholds()
+	case "update_source_gains":
+		cm.handleUpdateSourceGains()
+	case "restart_audio_capture":
+		cm.handleRestartAudioCapture()
 	case "reconfigure_dynamic_thresholds":
 		cm.handleReconfigureDynamicThresholds()
 	case schedule.SignalReconfigureQuietHours:
@@ -358,6 +334,19 @@ func (cm *ControlMonitor) handleControlSignal(signal string) {
 	default:
 		GetLogger().Warn("Received unknown control signal", logger.String("signal", signal))
 	}
+}
+
+// handleUpdateSourceGains applies changed sound card and stream gains to the
+// running sources' live routes. Unlike handleReconfigureAudioSources it does not
+// diff or probe sources, restart anything, or rebuild the routes of a healthy
+// source; it only re-wires a source whose analysis route failed on the previous
+// pass, as every reconfigure does.
+func (cm *ControlMonitor) handleUpdateSourceGains() {
+	if cm.updateSourceGainsFn == nil {
+		return
+	}
+	cm.updateSourceGainsFn()
+	emitHotReload("source_gain")
 }
 
 // handleReconfigureLogDeduplication reinitializes the log deduplicator from current settings.
@@ -425,14 +414,22 @@ func (cm *ControlMonitor) handleReloadBirdnet() {
 		GetLogger().Warn("Cannot reload BirdNET model: orchestrator not initialized")
 		return
 	}
-	if err := cm.bn.ReloadModel(); err != nil {
-		GetLogger().Error("Failed to reload BirdNET model", logger.Error(err))
-		cm.notifyError("Failed to reload BirdNET model", err)
-		return
+	// Since Phase 4, BirdNET v2.4 may not be loaded (a Perch-only or N=0 runtime). ReloadModel
+	// reloads the v2.4 primary and errors when it is absent, so only reload it when it is
+	// actually loaded. The range-filter rebuild and secondary reload below still run, so a
+	// BirdNET-section settings change (e.g. locale, threads) still takes effect on such an
+	// instance instead of failing with a "model not loaded" toast.
+	if cm.bn.IsModelLoaded(classifier.RegistryIDBirdNETV24) {
+		if err := cm.bn.ReloadModel(); err != nil {
+			GetLogger().Error("Failed to reload BirdNET model", logger.Error(err))
+			cm.notifyError("Failed to reload BirdNET model", err)
+			return
+		}
+		GetLogger().Info("BirdNET model reloaded successfully")
+		cm.notifySuccess("BirdNET model reloaded successfully")
+	} else {
+		GetLogger().Info("BirdNET v2.4 not loaded; skipping primary model reload")
 	}
-
-	GetLogger().Info("BirdNET model reloaded successfully")
-	cm.notifySuccess("BirdNET model reloaded successfully")
 
 	// Rebuild range filter after model reload
 	if err := classifier.BuildRangeFilter(cm.bn); err != nil {
@@ -443,22 +440,10 @@ func (cm *ControlMonitor) handleReloadBirdnet() {
 		cm.notifySuccess("Range filter rebuilt successfully")
 	}
 
-	// Rebuild name maps with new locale labels (use fresh settings, not stale pointer).
-	// Order matters: BuildRangeFilter above already rebuilt the OpenFauna resolver for
-	// the new locale, and the resolver was installed on Ds/apiController at startup
-	// (NewControlMonitor), so these calls re-localize the cached maps via the
-	// now-current resolver.
-	// Use the full multi-model label set so secondary-model species (bats,
-	// Perch-unique) stay searchable after a locale/model reload, not just the primary.
-	labels := cm.bn.AllLabels()
-	if cm.proc != nil && cm.proc.Ds != nil {
-		cm.proc.Ds.UpdateNameMaps(labels)
-		GetLogger().Info("Datastore name maps updated with new labels")
-	}
-	if cm.apiController != nil {
-		cm.apiController.UpdateCommonNameMap(labels)
-		GetLogger().Info("API controller common name map updated with new labels")
-	}
+	// The species-name index is orchestrator-owned since Phase 2a: ReloadModel above
+	// already republished it, and BuildRangeFilter re-localized the OpenFauna resolver
+	// for the new locale and republished it again. The datastore and the api/v2 facade
+	// read that same shared snapshot, so there is nothing to re-localize here.
 
 	// Reload OV-capable secondary models (e.g. Perch) so a backend/OpenVINO-device
 	// change moves them onto the new device without a restart. No-ops when the
@@ -469,12 +454,57 @@ func (cm *ControlMonitor) handleReloadBirdnet() {
 		cm.notifyError("Failed to reload secondary models", err)
 	}
 
+	// A thread or backend change reloads the models and re-probes their latency,
+	// so re-plan the analysis cadence (restarts capture only if the step changes).
+	// The sources did not change, so no stream is probed or reconfigured.
+	if cm.replanCadenceFn != nil {
+		cm.replanCadenceFn()
+	}
+
 	emitHotReload("birdnet_model")
 	// Signal the metrics SSE stream that the inference topology changed so the
 	// AI Models page re-fetches its snapshot.
 	if cm.apiController != nil {
 		cm.apiController.BroadcastInferenceTopologyChanged()
 	}
+}
+
+// handleReconcileModels loads or unloads acoustic models to match models.enabled after a
+// runtime edit of the enabled set (Phase 4, where models.enabled is authoritative and N=0 is
+// valid). LoadModel/UnloadModel each rebuild the range filter and sync the acoustic-model
+// notice, so on any actual topology change this only needs to run the same SSE broadcast and
+// debounced audio-source reconfigure a gallery install does, so the newly loaded models start
+// receiving audio without a restart.
+func (cm *ControlMonitor) handleReconcileModels() {
+	if cm.bn == nil {
+		GetLogger().Warn("Cannot reconcile enabled models: orchestrator not initialized")
+		return
+	}
+	loaded, unloaded, err := cm.bn.ReconcileEnabledModels()
+	if err != nil {
+		GetLogger().Error("Failed to reconcile some enabled models", logger.Error(err))
+		cm.notifyError("Failed to apply some enabled model changes", err)
+		// Fall through: models that did load/unload still need the topology reconcile below.
+	}
+	if len(loaded) == 0 && len(unloaded) == 0 {
+		if err == nil {
+			GetLogger().Info("Enabled models already match the loaded set; nothing to reconcile")
+		}
+		return
+	}
+	GetLogger().Info("Reconciled enabled models",
+		logger.Int("loaded", len(loaded)),
+		logger.Int("unloaded", len(unloaded)))
+	if err == nil {
+		cm.notifySuccess("Applied enabled model changes")
+	}
+	// A load or unload changed the model topology: refresh the AI Models page and reconcile
+	// per-source model registration so the new set starts (or stops) receiving audio, exactly
+	// as a gallery install does.
+	if cm.apiController != nil {
+		cm.apiController.OnModelTopologyChanged()
+	}
+	emitHotReload("models")
 }
 
 // handleReconfigureMQTT reconfigures the MQTT connection
@@ -491,6 +521,13 @@ func (cm *ControlMonitor) handleReconfigureMQTT() {
 			Build())
 		return
 	}
+
+	// If HA discovery was just turned off, remove its entities through the old
+	// client while it is still connected. If that is not possible, the retire
+	// handler registered on the new client retries on its first connect.
+	retireCtx, retireCancel := context.WithTimeout(context.Background(), mqttReconfigureConnectTimeout)
+	cm.proc.RetireHomeAssistantDiscovery(retireCtx, cm.proc.GetMQTTClient(), settings)
+	retireCancel()
 
 	// First, safely disconnect any existing client
 	cm.proc.DisconnectMQTTClient()
@@ -509,20 +546,27 @@ func (cm *ControlMonitor) handleReconfigureMQTT() {
 		// so the OnConnect handler fires on the initial connection
 		cm.proc.RegisterHomeAssistantDiscovery(newClient, settings)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := newClient.Connect(ctx); err != nil {
-			cancel()
-			GetLogger().Error("Failed to connect to MQTT broker", logger.Error(err))
-			cm.notifyError("Failed to connect to MQTT broker", err)
-			return
-		}
+		ctx, cancel := context.WithTimeout(context.Background(), mqttReconfigureConnectTimeout)
+		connectErr := newClient.Connect(ctx)
 		cancel()
+
+		// A failed connect does not invalidate the new configuration: retain the
+		// client and let its reconnect loop keep trying, so saving settings while
+		// the broker happens to be down does not leave MQTT dead until restart.
+		if connectErr != nil {
+			GetLogger().Warn("Failed to connect to MQTT broker, retrying in background",
+				logger.Error(connectErr))
+			newClient.StartReconnectLoop()
+		}
 
 		// Safely set the new client
 		cm.proc.SetMQTTClient(newClient)
 
-		GetLogger().Info("MQTT connection configured successfully")
-		cm.notifySuccess("MQTT connection configured successfully")
+		if connectErr != nil {
+			cm.notifySuccess("MQTT reconfigured, broker unreachable: retrying in background")
+		} else {
+			cm.notifySuccess("MQTT connection configured successfully")
+		}
 	} else {
 		GetLogger().Info("MQTT connection disabled")
 		cm.notifySuccess("MQTT connection disabled")
@@ -592,6 +636,40 @@ func (cm *ControlMonitor) handleReconfigureBirdWeather() {
 	}
 
 	emitHotReload("birdweather")
+}
+
+// handleReconfigureEBird rebuilds the eBird API client from the current settings.
+// The client lives on the API controller (apicore.Core), not the processor, so
+// this delegates to the controller's thread-safe ReconfigureEBird, which reads
+// settings live and atomically swaps the client that request handlers read.
+func (cm *ControlMonitor) handleReconfigureEBird() {
+	GetLogger().Info("Reconfiguring eBird integration")
+
+	if cm.apiController == nil {
+		GetLogger().Error("API controller not available for eBird reconfiguration")
+		cm.notifyError("Failed to reconfigure eBird", errors.Newf("API controller not available").
+			Component("analysis").
+			Category(errors.CategoryConfiguration).
+			Context("operation", "reconfigure_ebird").
+			Build())
+		return
+	}
+
+	// Report the actual outcome, mirroring handleReconfigureBirdWeather, rather
+	// than reporting success unconditionally. ReconfigureEBird returns nil when
+	// eBird is disabled or misconfigured (e.g. enabled with no API key), in which
+	// case buildEBirdClient has already surfaced the specific reason.
+	if cm.apiController.ReconfigureEBird() != nil {
+		GetLogger().Info("eBird integration configured successfully")
+		cm.notifySuccess("eBird integration configured successfully")
+	} else if s := conf.Setting(); s != nil && s.Realtime.EBird.Enabled {
+		GetLogger().Warn("eBird enabled but not configured; see prior notification")
+	} else {
+		GetLogger().Info("eBird integration disabled")
+		cm.notifySuccess("eBird integration disabled")
+	}
+
+	emitHotReload("ebird")
 }
 
 // handleUpdateDetectionIntervals updates event tracking intervals for species
@@ -692,6 +770,12 @@ func (cm *ControlMonitor) handleReconfigureSoundLevel() {
 		GetLogger().Error("Failed to reconfigure sound level monitoring", logger.Error(err))
 		cm.notifyError("Failed to reconfigure sound level monitoring", err)
 		return
+	}
+
+	// The Sound Level sensor exists in HA discovery only while monitoring is on,
+	// so refresh discovery to add or remove it without an MQTT reconnect.
+	if cm.proc != nil {
+		cm.proc.RefreshHomeAssistantDiscovery()
 	}
 
 	settings := conf.Setting()
@@ -975,16 +1059,6 @@ func (cm *ControlMonitor) handleReconfigureAudioSources() {
 	}
 }
 
-// handleRecalculateDynamicThresholds recalculates all dynamic threshold CurrentValue entries
-// when the global BirdNET.Threshold changes. The stored absolute values are recomputed
-// from each species' current level/tier and the new base threshold.
-func (cm *ControlMonitor) handleRecalculateDynamicThresholds() {
-	if cm.proc != nil {
-		cm.proc.RecalculateDynamicThresholds()
-		emitHotReload("dynamic_thresholds")
-	}
-}
-
 // handleReconfigureDynamicThresholds starts or stops the dynamic threshold persistence
 // and cleanup goroutines when the DynamicThreshold.Enabled flag is toggled via the settings UI.
 func (cm *ControlMonitor) handleReconfigureDynamicThresholds() {
@@ -1028,16 +1102,30 @@ func (cm *ControlMonitor) handleReconfigureQuietHours() {
 	}
 }
 
+// handleRestartAudioCapture signals a full audio-capture restart. Used for a
+// setting that changes the analysis-buffer dimensions but is not a per-source
+// audio property (e.g. birdnet.overlap): the diff-based reconfigure cannot see
+// it, so the capture is torn down and rebuilt, which re-applies the primary
+// model dimensions and reallocates every analysis buffer with the new values.
+func (cm *ControlMonitor) handleRestartAudioCapture() {
+	GetLogger().Info("Restarting audio capture to apply analysis buffer changes")
+	ResetOverrunTrackers()
+	if trySignalCaptureRestart(cm.restartChan) {
+		GetLogger().Info("audio capture restart signal sent")
+	} else {
+		GetLogger().Warn("restart channel full, could not signal audio capture restart")
+	}
+}
+
 // handleQuietHoursStopSoundCard handles the signal to stop sound card capture for quiet hours.
 func (cm *ControlMonitor) handleQuietHoursStopSoundCard() {
 	GetLogger().Info("Quiet hours: stopping sound card capture")
 
 	// Signal the audio capture goroutine to restart - when it restarts,
 	// CaptureAudio will check IsSoundCardInQuietHours() and skip the sound card.
-	select {
-	case cm.restartChan <- struct{}{}:
+	if trySignalCaptureRestart(cm.restartChan) {
 		GetLogger().Info("Quiet hours: sound card stop signal sent")
-	default:
+	} else {
 		GetLogger().Warn("Quiet hours: restart channel full, could not signal sound card stop")
 	}
 }
@@ -1048,10 +1136,9 @@ func (cm *ControlMonitor) handleQuietHoursStartSoundCard() {
 
 	// Signal the audio capture goroutine to restart - when it restarts,
 	// CaptureAudio will check IsSoundCardInQuietHours() and start the sound card normally.
-	select {
-	case cm.restartChan <- struct{}{}:
+	if trySignalCaptureRestart(cm.restartChan) {
 		GetLogger().Info("Quiet hours: sound card restart signal sent")
-	default:
+	} else {
 		GetLogger().Warn("Quiet hours: restart channel full, could not signal sound card restart")
 	}
 }

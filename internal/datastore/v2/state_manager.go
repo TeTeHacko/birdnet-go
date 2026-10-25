@@ -8,6 +8,7 @@ import (
 
 	"github.com/getsentry/sentry-go"
 	"github.com/tphakala/birdnet-go/internal/datastore/v2/entities"
+	"github.com/tphakala/birdnet-go/internal/diagnostics"
 	"github.com/tphakala/birdnet-go/internal/events"
 	"github.com/tphakala/birdnet-go/internal/privacy"
 	"github.com/tphakala/birdnet-go/internal/telemetry"
@@ -523,11 +524,31 @@ func (m *StateManager) transitionState(from, to entities.MigrationStatus) error 
 		return transitionErr
 	}
 
+	// Journal the transition (best-effort, DB-independent trail).
+	diagnostics.RecordMigration(diagnostics.Default(),
+		migrationPhaseForTransition(to), string(from), string(to), 0)
+
 	return nil
 }
 
-// IsInDualWriteMode returns true if dual-write is active.
-// Dual-write is active during DUAL_WRITE, MIGRATING, VALIDATING, and CUTOVER states.
+// migrationPhaseForTransition maps a target migration state to the journal
+// phase label: started / completed / failed / transition.
+func migrationPhaseForTransition(to entities.MigrationStatus) string {
+	switch to {
+	case entities.MigrationStatusDualWrite:
+		return "started"
+	case entities.MigrationStatusCompleted:
+		return "completed"
+	case entities.MigrationStatusFailed:
+		return "failed"
+	default:
+		return "transition"
+	}
+}
+
+// IsInDualWriteMode returns true if the migration state is DUAL_WRITE, MIGRATING,
+// VALIDATING, or CUTOVER. It only reports the persisted state: live saves go to the
+// legacy store and the migration worker copies them to V2.
 func (m *StateManager) IsInDualWriteMode() (bool, error) {
 	state, err := m.GetState()
 	if err != nil {
@@ -573,11 +594,11 @@ func (m *StateManager) GetProgress() (migratedRecords, totalRecords int64, lastM
 // ============================================================================
 // Dirty ID Tracking
 // ============================================================================
-// These methods track detection IDs that failed to write to V2 during dual-write.
+// These methods track detection IDs the migration worker failed to write to V2.
 // Unlike in-memory tracking, these persist across restarts.
 
 // AddDirtyID records a detection ID that failed to write to V2.
-// This is called when saveToV2 fails during dual-write.
+// The migration worker calls it when copying a record to V2 fails.
 func (m *StateManager) AddDirtyID(detectionID uint) error {
 	dirty := entities.MigrationDirtyID{DetectionID: detectionID}
 	// Use ON CONFLICT IGNORE semantics - if already dirty, that's fine

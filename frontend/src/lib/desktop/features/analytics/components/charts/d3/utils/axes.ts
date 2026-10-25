@@ -1,6 +1,6 @@
 // D3 axis utilities for analytics charts
 import { axisBottom, axisLeft, axisRight, axisTop } from 'd3-axis';
-import { timeFormat } from 'd3-time-format';
+import { getLocale } from '$lib/i18n';
 import type { Axis, AxisDomain, AxisScale } from 'd3-axis';
 import type { ScaleLinear, ScaleTime } from 'd3-scale';
 import type { Selection } from 'd3-selection';
@@ -149,6 +149,29 @@ export function createHourAxisFormatter(use24Hour = true): (d: number) => string
   };
 }
 
+// Default spacing between hour-of-day ticks. Three hours keeps ~8 labels across a full-width chart
+// without crowding the forced final-hour tick.
+const HOUR_TICK_STEP = 3;
+
+/**
+ * Tick values for a 0..lastHour hour-of-day axis, always including the final hour.
+ *
+ * d3's own ticks stop at the last "nice" multiple (22:00 for a 0..23 axis), leaving the final hour
+ * unlabeled at the plot edge. Forcing `lastHour` puts a correctly positioned label there. A regular
+ * tick no more than half a step from the final hour is dropped so the two labels cannot collide
+ * (with a 2-hour step that removes 22:00, which would otherwise sit right on top of 23:00).
+ */
+export function hourAxisTickValues(lastHour = 23, step = HOUR_TICK_STEP): number[] {
+  const ticks: number[] = [];
+  for (let hour = 0; hour < lastHour; hour += step) {
+    if (lastHour - hour > step / 2) {
+      ticks.push(hour);
+    }
+  }
+  ticks.push(lastHour);
+  return ticks;
+}
+
 // Constants for date-range bucketing.
 const MS_PER_DAY = 86400000;
 const WEEK_THRESHOLD = 7;
@@ -158,8 +181,8 @@ const YEAR_THRESHOLD = 365;
  * Pick the appropriate date-axis bucket for a daily-granularity time domain.
  *
  * NOTE: This intentionally NEVER returns 'day'. The 'day' bucket maps to a
- * clock-time format (%H:%M) via createDateAxisFormatter, which is only correct
- * for intra-day (hourly) data. The analytics charts that use this helper plot
+ * clock-time (hour:minute) format via createDateAxisFormatter, which is only
+ * correct for intra-day (hourly) data. The analytics charts that use this helper plot
  * one point per calendar day, so a short (<= 7 day) span must still show date
  * labels, not "00:00 00:00 ...". A 7-day or shorter span therefore uses 'week'
  * (weekday + day), longer spans use 'month', and spans over a year use 'year'.
@@ -171,27 +194,86 @@ export function pickDateRangeBucket(domain: [Date, Date]): 'day' | 'week' | 'mon
   return 'year';
 }
 
+// Two-digit zero-padded day-of-month, matching the previous D3 '%d' token.
+function padDay(d: Date): string {
+  return d.getDate().toString().padStart(2, '0');
+}
+
 /**
- * Create date axis formatter for different time ranges
+ * Create date axis formatter for different time ranges.
+ *
+ * Weekday and month names are localized to the active app locale via
+ * Intl.DateTimeFormat (e.g. "Sun 24" -> "Dom 24" in Portuguese). The
+ * weekday-/month-first ordering and zero-padded day of the original D3
+ * '%a %d' / '%b %d' / '%b %Y' formats are preserved by composing the parts
+ * manually, so only the translated names change, not the layout.
  */
 export function createDateAxisFormatter(
   range: 'day' | 'week' | 'month' | 'year',
   opts: { use24Hour?: boolean } = {}
 ): (d: Date) => string {
   const use24Hour = opts.use24Hour ?? true;
+  const locale = getLocale();
 
   switch (range) {
-    case 'day':
-      return (d: Date) => timeFormat(use24Hour ? '%H:%M' : '%I:%M %p')(d);
-    case 'week':
-      return (d: Date) => timeFormat('%a %d')(d);
+    case 'day': {
+      // Clock time (e.g. "14:30" or "02:30 PM"), locale-aware. An explicit
+      // hourCycle keeps parity with the previous D3 '%H:%M' / '%I:%M %p' tokens:
+      // h23 renders midnight as "00:00" (never "24:00"), h12 renders 12-hour
+      // with the AM/PM marker. This avoids depending on each locale's default
+      // 24-hour cycle, which can be h24 for some locales.
+      const time = new Intl.DateTimeFormat(locale, {
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: use24Hour ? 'h23' : 'h12',
+      });
+      return (d: Date) => time.format(d);
+    }
+    case 'week': {
+      // Localized weekday abbreviation + day (e.g. "Sun 24" / "Dom 24").
+      const weekday = new Intl.DateTimeFormat(locale, { weekday: 'short' });
+      return (d: Date) => `${weekday.format(d)} ${padDay(d)}`;
+    }
+    case 'year': {
+      // Localized month abbreviation + year (e.g. "Oct 2025").
+      const month = new Intl.DateTimeFormat(locale, { month: 'short' });
+      return (d: Date) => `${month.format(d)} ${d.getFullYear()}`;
+    }
     case 'month':
-      return (d: Date) => timeFormat('%b %d')(d);
-    case 'year':
-      return (d: Date) => timeFormat('%b %Y')(d);
-    default:
-      return (d: Date) => timeFormat('%b %d')(d);
+    default: {
+      // Localized month abbreviation + day (e.g. "Oct 01").
+      const month = new Intl.DateTimeFormat(locale, { month: 'short' });
+      return (d: Date) => `${month.format(d)} ${padDay(d)}`;
+    }
   }
+}
+
+/**
+ * Tick values for a time axis that always include the domain endpoints.
+ *
+ * d3's "nice" time ticks land on calendar boundaries, and any boundary outside
+ * the domain is dropped — so the most recent day (the domain max) is often left
+ * unlabeled at the right edge, and a boundary that falls just inside the edge
+ * renders a label that clips against the plot's narrow side margin. This returns
+ * d3's nice ticks with the exact domain start/end appended, dropping any nice
+ * tick within `minEdgeGapPx` of an endpoint so the forced boundary labels don't
+ * overlap their neighbour.
+ */
+export function boundaryDateTicks(
+  scale: ScaleTime<number, number>,
+  tickCount: number,
+  minEdgeGapPx = 48
+): Date[] {
+  const [start, end] = scale.domain();
+  if (start.getTime() === end.getTime()) return [start];
+
+  const xStart = scale(start);
+  const xEnd = scale(end);
+  const inner = scale.ticks(tickCount).filter(t => {
+    const x = scale(t);
+    return x - xStart >= minEdgeGapPx && xEnd - x >= minEdgeGapPx;
+  });
+  return [start, ...inner, end];
 }
 
 /**

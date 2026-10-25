@@ -122,30 +122,49 @@ func buildTimeoutError(action Action, timeout time.Duration, step, total int) er
 		Build()
 }
 
-// getBirdImageFromCache retrieves a bird image from cache with proper error handling and logging.
-// This helper consolidates duplicate image retrieval logic used by MqttAction and SSEAction.
-// Returns an empty BirdImage if the cache is nil or if retrieval fails.
-func getBirdImageFromCache(cache *imageprovider.BirdImageCache, scientificName, commonName, correlationID string) imageprovider.BirdImage {
+// getBirdImageFromCache retrieves already-cached bird image metadata for the
+// detection-pipeline actions. Returns an empty BirdImage if the cache is nil or
+// nothing is cached yet, in which case a background fetch is scheduled for the
+// next detection.
+//
+// This deliberately does NOT fetch on the caller's goroutine. Both callers run inside
+// the CompositeAction that chains Database -> enqueue MQTT -> SSE (10s per step), and a
+// cold species can take minutes to resolve through the provider chain. Audio export
+// was moved out of this CompositeAction for exactly this reason (see the note in
+// actions_database.go; Sentry BIRDNET-GO-WD); the image lookup was the same hazard
+// left behind. Attribution metadata is best-effort here: the URL the consumers
+// publish is the media-proxy URL, which does not depend on this lookup succeeding.
+// It also resolves at most once per detection: the result is published to the
+// shared DetectionContext so the Database, SSE and MQTT actions of one
+// detection share a single lookup instead of each making their own.
+func getBirdImageFromCache(detectionCtx *DetectionContext, cache *imageprovider.BirdImageCache, scientificName, commonName, correlationID string) imageprovider.BirdImage {
+	if img, resolved := detectionCtx.LoadBirdImage(); resolved {
+		return img
+	}
+
 	if cache == nil {
 		GetLogger().Warn("BirdImageCache is nil, cannot fetch image",
 			logger.String("detection_id", correlationID),
 			logger.String("species", commonName),
 			logger.String("scientific_name", scientificName),
 			logger.String("operation", "check_bird_image_cache"))
+		// Published like any other verdict, so the later actions of this
+		// detection do not each repeat the same warning.
+		detectionCtx.StoreBirdImage(&imageprovider.BirdImage{})
 		return imageprovider.BirdImage{}
 	}
 
-	birdImage, err := cache.Get(scientificName)
-	if err != nil {
-		GetLogger().Warn("Error getting bird image from cache",
-			logger.String("detection_id", correlationID),
-			logger.Error(err),
-			logger.String("species", commonName),
-			logger.String("scientific_name", scientificName),
-			logger.String("operation", "get_bird_image"))
-		return imageprovider.BirdImage{}
+	birdImage, found, negative := cache.GetCached(scientificName)
+	if !found {
+		birdImage = imageprovider.BirdImage{}
+		if !negative {
+			cache.PrefetchAsync(scientificName)
+		}
 	}
 
+	// Published even when empty: that is the verdict the later actions need, and
+	// it also keeps them from re-queueing the prefetch this call just scheduled.
+	detectionCtx.StoreBirdImage(&birdImage)
 	return birdImage
 }
 
@@ -257,4 +276,36 @@ func (a *CompositeAction) logAndReturnTimeoutError(action Action, timeout time.D
 		logger.Float64("timeout_seconds", timeout.Seconds()),
 		logger.String("operation", "composite_action_timeout"))
 	return buildTimeoutError(action, timeout, step, total)
+}
+
+// enqueueAction is a CompositeAction step that hands another action to the job
+// queue as its own job instead of running it inline. It lets an action that
+// depends on an earlier composite step (for example MQTT, which needs the
+// database ID) still get its own retry policy from the queue, which a step
+// inside the composite cannot have because the composite itself is never
+// retried (a retry would run the database save again).
+//
+// Like every composite step it runs only when all earlier steps returned nil.
+type enqueueAction struct {
+	action Action
+	// detection is the task payload. It carries no PCM data, so a job that is
+	// retrying does not hold on to the audio.
+	detection Detections
+	enqueue   func(ctx context.Context, task *Task) error
+}
+
+// Execute enqueues the wrapped action. An enqueue failure is not returned:
+// EnqueueTaskCtx logs a full or stopped queue with the species; a context that
+// is already done returns without a log, and then the composite is being
+// abandoned. Returning the error would stop the composite and skip the later
+// steps for a detection that is already saved.
+func (a *enqueueAction) Execute(ctx context.Context, _ any) error {
+	task := &Task{Type: TaskTypeAction, Detection: a.detection, Action: a.action}
+	_ = a.enqueue(ctx, task)
+	return nil
+}
+
+// GetDescription returns a human-readable description of the step.
+func (a *enqueueAction) GetDescription() string {
+	return "Enqueue " + a.action.GetDescription()
 }

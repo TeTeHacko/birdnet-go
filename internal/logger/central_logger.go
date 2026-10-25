@@ -2,11 +2,13 @@ package logger
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -52,7 +54,8 @@ func SetGlobal(cl *CentralLogger) {
 }
 
 // Global returns the global CentralLogger instance.
-// If no logger has been set via SetGlobal, it returns a fallback console logger.
+// If no logger has been set via SetGlobal, it returns a fallback console logger
+// whose output goes through the shared non-blocking stdout writer.
 func Global() *CentralLogger {
 	globalLoggerMu.Lock()
 	defer globalLoggerMu.Unlock()
@@ -64,19 +67,20 @@ func Global() *CentralLogger {
 	// Create a minimal console-only logger as fallback
 	globalLogger = &CentralLogger{
 		config: &LoggingConfig{
-			DefaultLevel: "info",
+			DefaultLevel: DefaultLogLevel,
 			Timezone:     "Local",
 			Console: &ConsoleOutput{
 				Enabled: true,
-				Level:   "info",
+				Level:   DefaultLogLevel,
 			},
 		},
 		timezone:      time.Local,
 		moduleWriters: make(map[string]*BufferedFileWriter),
 		moduleLevels:  make(map[string]slog.Level),
+		console:       stdoutConsole,
 	}
 	// Create console-only base handler
-	globalLogger.baseHandler = newTextHandler(os.Stdout, slog.LevelInfo, time.Local)
+	globalLogger.baseHandler = newTextHandler(stdoutConsole, slog.LevelInfo, time.Local)
 
 	return globalLogger
 }
@@ -128,13 +132,22 @@ type CentralLogger struct {
 	moduleWriters map[string]*BufferedFileWriter // Per-module buffered writers
 	moduleLevels  map[string]slog.Level          // Per-module log levels
 	extraHandlers []slog.Handler                 // Additional handlers injected at construction
+	console       *nonBlockingWriter             // Shared console sink, set at construction and read-only afterwards so Module() needs no extra locking
 	mu            sync.RWMutex                   // Protects concurrent access
 }
 
 // NewCentralLogger creates a centralized logger with module routing.
 // Optional extraHandlers are appended to the base handler chain so they
 // receive every log record (e.g. a health-check error buffer handler).
+// Console output goes through the shared non-blocking stdout writer, so a
+// stalled stdout reader never blocks a log call.
 func NewCentralLogger(cfg *LoggingConfig, extraHandlers ...slog.Handler) (*CentralLogger, error) {
+	return newCentralLogger(cfg, stdoutConsole, extraHandlers...)
+}
+
+// newCentralLogger is NewCentralLogger with an injectable console sink, so
+// tests can substitute their own writer for the process-wide stdout one.
+func newCentralLogger(cfg *LoggingConfig, console *nonBlockingWriter, extraHandlers ...slog.Handler) (*CentralLogger, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("logging config cannot be nil")
 	}
@@ -165,6 +178,7 @@ func NewCentralLogger(cfg *LoggingConfig, extraHandlers ...slog.Handler) (*Centr
 		moduleWriters: make(map[string]*BufferedFileWriter),
 		moduleLevels:  make(map[string]slog.Level),
 		extraHandlers: extraHandlers,
+		console:       console,
 	}
 
 	// Parse module levels
@@ -217,7 +231,7 @@ func (cl *CentralLogger) createBaseHandler() error {
 	// Console handler - USE TEXT FORMAT for human-readable output
 	if cl.config.Console != nil && cl.config.Console.Enabled {
 		consoleLevel := parseLogLevel(cl.config.Console.Level)
-		handlers = append(handlers, newTextHandler(os.Stdout, consoleLevel, cl.timezone))
+		handlers = append(handlers, newTextHandler(cl.console, consoleLevel, cl.timezone))
 	}
 
 	// Main file handler - USE JSON FORMAT for machine parsing
@@ -245,14 +259,15 @@ func (cl *CentralLogger) createBaseHandler() error {
 
 		fileLevel := parseLogLevel(cl.config.FileOutput.Level)
 		opts := &slog.HandlerOptions{
-			Level: fileLevel,
+			Level:       fileLevel,
+			ReplaceAttr: timeZoneReplaceAttr(cl.timezone),
 		}
 		handlers = append(handlers, slog.NewJSONHandler(writer, opts))
 	}
 
 	if len(handlers) == 0 {
 		// Fallback to stdout text handler if nothing is configured
-		handlers = append(handlers, newTextHandler(os.Stdout, parseLogLevel(cl.config.DefaultLevel), cl.timezone))
+		handlers = append(handlers, newTextHandler(cl.console, parseLogLevel(cl.config.DefaultLevel), cl.timezone))
 	}
 
 	// Append any extra handlers injected at construction (e.g. health error buffer)
@@ -307,7 +322,7 @@ func (cl *CentralLogger) Module(name string) Logger {
 		// modules with debug-level file output don't flood stdout.
 		if moduleConfig.ConsoleAlso && cl.config.Console != nil && cl.config.Console.Enabled {
 			consoleLevel := parseLogLevel(cl.config.Console.Level)
-			handlers = append(handlers, newTextHandler(os.Stdout, consoleLevel, cl.timezone))
+			handlers = append(handlers, newTextHandler(cl.console, consoleLevel, cl.timezone))
 		}
 
 		// Include extra handlers (e.g. health error buffer) so modules with
@@ -395,10 +410,20 @@ func (cl *CentralLogger) GetDefaultOutputPath() string {
 	return ""
 }
 
-// Close closes all buffered writers and their underlying files
+// Close closes all buffered writers and their underlying files. It first waits
+// up to consoleFlushTimeout for queued console output to be written, then
+// records any console drop count that is still pending in the main log file.
 func (cl *CentralLogger) Close() error {
 	if cl == nil {
 		return nil
+	}
+
+	// Outside cl.mu: the drainer's report path takes cl.mu.RLock. Report into
+	// this logger's own file rather than the global one, which may be another
+	// logger.
+	if cl.console != nil {
+		cl.console.flush(consoleFlushTimeout)
+		cl.console.reportDrops(cl.writeConsoleDropSummary)
 	}
 
 	cl.mu.Lock()
@@ -439,6 +464,7 @@ func (cl *CentralLogger) closeAllWritersLocked() error {
 // Flush ensures all buffered logs are written to OS buffers.
 // Note: This flushes to OS buffers but does not fsync to disk.
 // For critical sync to disk, Close() will perform full sync.
+// Console output is flushed by Close and FlushConsole, not here.
 func (cl *CentralLogger) Flush() error {
 	if cl == nil {
 		return nil
@@ -674,6 +700,31 @@ func roundFloat(val float64) float64 {
 	return math.Round(val*floatPrecisionRatio) / floatPrecisionRatio
 }
 
+// floatAttr renders a float value as a slog attribute. slog's JSON handler
+// cannot encode a non-finite float (+Inf, -Inf, NaN); it substitutes an
+// "!ERROR:json: unsupported value" string that corrupts the whole log line. A
+// non-finite value is therefore rendered as its symbolic string form (matching
+// Go's %v: "+Inf"/"-Inf"/"NaN"), while a finite value keeps the rounded numeric
+// form. The non-finite branch is cold, so the common path stays allocation-free.
+func floatAttr(key string, v float64) slog.Attr {
+	switch {
+	case math.IsNaN(v):
+		return slog.String(key, "NaN")
+	case math.IsInf(v, 1):
+		return slog.String(key, "+Inf")
+	case math.IsInf(v, -1):
+		return slog.String(key, "-Inf")
+	default:
+		// roundFloat multiplies by floatPrecisionRatio, which can overflow a very
+		// large finite magnitude to ±Inf; fall back to the raw (still finite)
+		// value in that rare case so it stays an encodable JSON number.
+		if r := roundFloat(v); !math.IsInf(r, 0) {
+			return slog.Float64(key, r)
+		}
+		return slog.Float64(key, v)
+	}
+}
+
 // fieldToAttr converts Field to slog.Attr
 func fieldToAttr(f Field) slog.Attr {
 	switch v := f.Value.(type) {
@@ -684,11 +735,11 @@ func fieldToAttr(f Field) slog.Attr {
 	case int64:
 		return slog.Int64(f.Key, v)
 	case float32:
-		// Round for cleaner output
-		return slog.Float64(f.Key, roundFloat(float64(v)))
+		// Round for cleaner output; guard non-finite values (see floatAttr).
+		return floatAttr(f.Key, float64(v))
 	case float64:
-		// Round for cleaner output
-		return slog.Float64(f.Key, roundFloat(v))
+		// Round for cleaner output; guard non-finite values (see floatAttr).
+		return floatAttr(f.Key, v)
 	case bool:
 		return slog.Bool(f.Key, v)
 	case time.Time:
@@ -698,7 +749,259 @@ func fieldToAttr(f Field) slog.Attr {
 		// slog.Duration outputs nanoseconds in JSON which is not human-friendly
 		return slog.String(f.Key, v.Round(time.Millisecond).String())
 	default:
-		return slog.Any(f.Key, v)
+		return slog.Any(f.Key, sanitizeAny(v))
+	}
+}
+
+// sanitizeAny recursively sanitizes a value passed to logger.Any to ensure it contains
+// no non-finite floats (NaN, +Inf, -Inf) which would corrupt the JSON log output.
+func sanitizeAny(v any) any {
+	if v == nil {
+		return nil
+	}
+
+	// Fast path for common basic types to avoid reflection overhead
+	switch val := v.(type) {
+	case float64:
+		if math.IsNaN(val) || math.IsInf(val, 0) {
+			return logSafeFloat(val)
+		}
+		return val
+	case float32:
+		if math.IsNaN(float64(val)) || math.IsInf(float64(val), 0) {
+			return logSafeFloat(float64(val))
+		}
+		return val
+	case int, int64, string, bool:
+		return val
+	}
+
+	// If the value already marshals cleanly it holds no non-finite floats (and
+	// no reference cycles), so return it unchanged: slog then serializes it with
+	// real encoding/json semantics and the reflective walk is skipped entirely.
+	// Only values encoding/json cannot encode fall through to the sanitizer.
+	if _, err := json.Marshal(v); err == nil {
+		return v
+	}
+
+	// Best effort: recursively replace non-finite floats and break reference
+	// cycles so the value becomes encodable while preserving structure where
+	// possible.
+	san := v
+	if s, mod := sanitizeReflect(reflect.ValueOf(v), make(map[uintptr]bool)); mod {
+		san = s
+	}
+
+	// Safety net: the reflective walk cannot reach a non-finite float hidden
+	// behind a fmt.Stringer/error/json.Marshaler, or one promoted from an
+	// unexported embedded struct. If such a value still fails to encode because
+	// of a non-finite float, fall back to a string so the logger emits readable
+	// data instead of a corrupt "!ERROR: json: unsupported value" placeholder.
+	// Stringify the partially-sanitized san (not v): it preserves the float
+	// replacements already made and has any reference cycles broken, so it is
+	// both more informative and safe to format. Unsupported *types* (chan/func)
+	// are left untouched and render as before.
+	if _, err := json.Marshal(san); err != nil {
+		if _, ok := errors.AsType[*json.UnsupportedValueError](err); ok {
+			return fmt.Sprintf("%+v", san)
+		}
+	}
+	return san
+}
+
+// logSafeFloat renders a non-finite float as a JSON-safe string. It mirrors the
+// spelling used by floatAttr ("NaN"/"+Inf"/"-Inf", matching Go's %v) so the same
+// value renders identically whether it arrives as a typed float field or nested
+// inside an Any value.
+func logSafeFloat(f float64) string {
+	switch {
+	case math.IsNaN(f):
+		return "NaN"
+	case math.IsInf(f, 1):
+		return "+Inf"
+	case math.IsInf(f, -1):
+		return "-Inf"
+	default:
+		// Should not be reached, but fallback safely
+		return "unknown"
+	}
+}
+
+// sanitizeReflect recursively traverses the reflect.Value and returns a sanitized any.
+// It tracks visited pointers to avoid stack overflows on cyclic data.
+// If no non-finite floats are found, it returns (nil, false) to avoid heap allocations.
+//
+//nolint:gocognit,cyclop,gocyclo // Recursive reflection is inherently complex
+func sanitizeReflect(rv reflect.Value, visited map[uintptr]bool) (any, bool) {
+	if !rv.IsValid() || !rv.CanInterface() {
+		return nil, false
+	}
+
+	// Trust custom serialization for types that implement it natively.
+	// encoding/json relies on json.Marshaler, slog relies on slog.LogValuer
+	iface := rv.Interface()
+	if _, ok := iface.(slog.LogValuer); ok {
+		return nil, false
+	}
+	if _, ok := iface.(fmt.Stringer); ok {
+		return nil, false
+	}
+	if _, ok := iface.(error); ok {
+		return nil, false
+	}
+
+	// Avoid descending into json.Marshaler (we do this via reflection to avoid
+	// unnecessarily importing encoding/json here if not needed, though the package might).
+	if rv.Type().Implements(reflect.TypeFor[interface{ MarshalJSON() ([]byte, error) }]()) {
+		return nil, false
+	}
+
+	// Also check if the pointer to the value implements these interfaces (if addressable)
+	if rv.CanAddr() {
+		addr := rv.Addr()
+		ifaceAddr := addr.Interface()
+		if _, ok := ifaceAddr.(slog.LogValuer); ok {
+			return nil, false
+		}
+		if _, ok := ifaceAddr.(fmt.Stringer); ok {
+			return nil, false
+		}
+		if _, ok := ifaceAddr.(error); ok {
+			return nil, false
+		}
+		if addr.Type().Implements(reflect.TypeFor[interface{ MarshalJSON() ([]byte, error) }]()) {
+			return nil, false
+		}
+	}
+
+	switch rv.Kind() {
+	case reflect.Float32, reflect.Float64:
+		f := rv.Float()
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return logSafeFloat(f), true
+		}
+		return nil, false
+
+	case reflect.Slice, reflect.Array:
+		if rv.Len() == 0 || (rv.Kind() == reflect.Slice && rv.IsNil()) {
+			return nil, false
+		}
+		if rv.Kind() == reflect.Slice {
+			ptr := rv.Pointer()
+			if visited[ptr] {
+				return "[Circular]", true
+			}
+			visited[ptr] = true
+			defer delete(visited, ptr)
+		}
+
+		// Single lazy pass: sanitize each element once, tracking whether any
+		// changed. Recursing twice (detect then copy) is O(2^depth) on nested
+		// dirty values.
+		cp := make([]any, rv.Len())
+		needsCopy := false
+		for i := range rv.Len() {
+			elem := rv.Index(i)
+			san, mod := sanitizeReflect(elem, visited)
+			switch {
+			case mod:
+				needsCopy = true
+				cp[i] = san
+			case elem.CanInterface():
+				cp[i] = elem.Interface()
+			}
+		}
+		if !needsCopy {
+			return nil, false
+		}
+		return cp, true
+
+	case reflect.Map:
+		if rv.Len() == 0 || rv.IsNil() {
+			return nil, false
+		}
+		ptr := rv.Pointer()
+		if visited[ptr] {
+			return "[Circular]", true
+		}
+		visited[ptr] = true
+		defer delete(visited, ptr)
+
+		// Single lazy pass: sanitize each key/value once, tracking whether any
+		// changed, then discard the copy if nothing did.
+		cp := make(map[string]any, rv.Len())
+		needsCopy := false
+		iter := rv.MapRange()
+		for iter.Next() {
+			k := iter.Key()
+			v := iter.Value()
+			kSan, kMod := sanitizeReflect(k, visited)
+			vSan, vMod := sanitizeReflect(v, visited)
+			if kMod || vMod {
+				needsCopy = true
+			}
+
+			kStr := ""
+			switch {
+			case k.Kind() == reflect.String:
+				kStr = k.String()
+			case kMod:
+				kStr = fmt.Sprint(kSan)
+			case k.CanInterface():
+				kStr = fmt.Sprint(k.Interface())
+			}
+
+			// Prevent key collisions for distinct keys that stringify to the same value
+			origKStr := kStr
+			counter := 1
+			for {
+				if _, exists := cp[kStr]; !exists {
+					break
+				}
+				kStr = fmt.Sprintf("%s_%d", origKStr, counter)
+				counter++
+			}
+
+			switch {
+			case vMod:
+				cp[kStr] = vSan
+			case v.CanInterface():
+				cp[kStr] = v.Interface()
+			}
+		}
+		if !needsCopy {
+			return nil, false
+		}
+		return cp, true
+
+	case reflect.Struct:
+		cp := make(map[string]any)
+		if !flattenStruct(rv, cp, visited) {
+			return nil, false
+		}
+		return cp, true
+
+	case reflect.Pointer, reflect.Interface:
+		if rv.IsNil() {
+			return nil, false
+		}
+		if rv.Kind() == reflect.Pointer {
+			ptr := rv.Pointer()
+			if visited[ptr] {
+				return "[Circular]", true
+			}
+			visited[ptr] = true
+			defer delete(visited, ptr)
+		}
+
+		san, mod := sanitizeReflect(rv.Elem(), visited)
+		if mod {
+			return san, true
+		}
+		return nil, false
+
+	default:
+		return nil, false
 	}
 }
 
@@ -712,4 +1015,148 @@ func getTraceIDFromContext(ctx context.Context) string {
 		return traceID
 	}
 	return ""
+}
+
+// flattenStruct writes rv's exported fields into cp, mirroring encoding/json's
+// promotion of anonymous fields and its json tag / omitempty / omitzero
+// handling, with non-finite floats sanitized. It reports whether any value was
+// modified so the caller can discard cp (and fall back to the original struct)
+// when nothing needed changing. Doing detection and copying in one pass avoids
+// the O(2^depth) re-walk of a separate needs-copy probe.
+//
+//nolint:gocognit // Recursive struct flattening naturally has higher complexity
+func flattenStruct(rv reflect.Value, cp map[string]any, visited map[uintptr]bool) bool {
+	if rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return false
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return false
+	}
+	modified := false
+	//nolint:gocritic // rv.NumField() is appropriate for iterating over fields in a struct.
+	for i := 0; i < rv.NumField(); i++ {
+		field := rv.Type().Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		fv := rv.Field(i)
+		if field.Anonymous {
+			fvElem := fv
+			var ptr uintptr
+			var isPtr bool
+			if fvElem.Kind() == reflect.Pointer || fvElem.Kind() == reflect.Interface {
+				if !fvElem.IsNil() {
+					if fvElem.Kind() == reflect.Pointer {
+						ptr = fvElem.Pointer()
+						isPtr = true
+					}
+					fvElem = fvElem.Elem()
+				}
+			}
+			if fvElem.Kind() == reflect.Struct {
+				if isPtr {
+					if visited[ptr] {
+						continue
+					}
+					visited[ptr] = true
+				}
+				if flattenStruct(fvElem, cp, visited) {
+					modified = true
+				}
+				if isPtr {
+					delete(visited, ptr)
+				}
+				continue
+			}
+		}
+
+		key := field.Name
+		tag := field.Tag.Get("json")
+		if tag == "-" {
+			continue
+		}
+
+		omitempty := false
+		omitzero := false
+		if tag != "" {
+			parts := strings.Split(tag, ",")
+			if parts[0] != "" {
+				key = parts[0]
+			}
+			for _, part := range parts[1:] {
+				switch part {
+				case "omitempty":
+					omitempty = true
+				case "omitzero":
+					omitzero = true
+				}
+			}
+		}
+
+		san, mod := sanitizeReflect(fv, visited)
+		if mod {
+			modified = true
+		}
+		var val any
+		if mod {
+			val = san
+		} else if fv.CanInterface() {
+			val = fv.Interface()
+		}
+
+		if omitempty && isEmptyValue(fv, val) {
+			continue
+		}
+		if omitzero && isZeroValue(fv) {
+			continue
+		}
+		cp[key] = val
+	}
+	return modified
+}
+
+func isEmptyValue(v reflect.Value, val any) bool {
+	if val == nil {
+		return true
+	}
+	//nolint:exhaustive // Intentionally handling only types that can be empty values
+	switch v.Kind() {
+	case reflect.Array, reflect.Map, reflect.Slice, reflect.String:
+		return v.Len() == 0
+	case reflect.Bool:
+		return !v.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return v.Int() == 0
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return v.Uint() == 0
+	case reflect.Float32, reflect.Float64:
+		return v.Float() == 0
+	case reflect.Interface, reflect.Pointer:
+		return v.IsNil()
+	}
+	return false
+}
+
+func isZeroValue(v reflect.Value) bool {
+	if !v.IsValid() {
+		return true
+	}
+	return v.IsZero()
+}
+
+func timeZoneReplaceAttr(tz *time.Location) func(groups []string, a slog.Attr) slog.Attr {
+	if tz == nil || tz == time.UTC {
+		return nil
+	}
+	return func(groups []string, a slog.Attr) slog.Attr {
+		if a.Key == slog.TimeKey && len(groups) == 0 {
+			if t, ok := a.Value.Any().(time.Time); ok {
+				return slog.Time(a.Key, t.In(tz))
+			}
+		}
+		return a
+	}
 }

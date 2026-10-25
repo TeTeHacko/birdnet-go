@@ -49,9 +49,11 @@ var ResourceSnapshotFunc func() map[string]any
 // future RTSP code paths reaching Sentry when they shouldn't be suppressed.
 const rtspSilenceTimeoutSignature = "stream stopped producing data for 90 seconds"
 
+// diskFullCooldown is the minimum time between disk-full reports.
+const diskFullCooldown = 5 * time.Minute
+
 var (
-	lastDiskFullReport atomic.Int64                           // Unix timestamp of last disk-full report
-	diskFullCooldown   = int64(5 * time.Minute / time.Second) // 5 minutes between disk-full reports
+	diskFullLimiter = reportCooldown{window: diskFullCooldown} // disk-full reports
 
 	// networkNoisePatterns are environmental network errors that indicate
 	// user infrastructure issues, not code bugs.
@@ -123,22 +125,22 @@ var categoryOriginMap = map[ErrorCategory]string{
 	CategoryPolicyConfig:     "code",
 	CategoryConflict:         "code",
 	CategoryBroadcast:        "code",
-	CategoryImageFetch:       "environment",
-	CategoryNetwork:          "environment",
-	CategoryDatabase:         "environment",
-	CategoryFileIO:           "environment",
-	CategoryConfiguration:    "environment",
-	CategoryRTSP:             "environment",
-	CategoryMQTTConnection:   "environment",
-	CategoryMQTTPublish:      "environment",
-	CategoryMQTTAuth:         "environment",
-	CategoryHTTP:             "environment",
-	CategoryDiskUsage:        "environment",
-	CategoryDiskCleanup:      "environment",
-	CategoryAudioSource:      "environment",
-	CategoryResource:         "environment",
-	CategorySystem:           "environment",
-	CategoryCommandExecution: "environment",
+	CategoryImageFetch:       errorOriginEnvironment,
+	CategoryNetwork:          errorOriginEnvironment,
+	CategoryDatabase:         errorOriginEnvironment,
+	CategoryFileIO:           errorOriginEnvironment,
+	CategoryConfiguration:    errorOriginEnvironment,
+	CategoryRTSP:             errorOriginEnvironment,
+	CategoryMQTTConnection:   errorOriginEnvironment,
+	CategoryMQTTPublish:      errorOriginEnvironment,
+	CategoryMQTTAuth:         errorOriginEnvironment,
+	CategoryHTTP:             errorOriginEnvironment,
+	CategoryDiskUsage:        errorOriginEnvironment,
+	CategoryDiskCleanup:      errorOriginEnvironment,
+	CategoryAudioSource:      errorOriginEnvironment,
+	CategoryResource:         errorOriginEnvironment,
+	CategorySystem:           errorOriginEnvironment,
+	CategoryCommandExecution: errorOriginEnvironment,
 	CategoryIntegration:      "external",
 }
 
@@ -187,21 +189,29 @@ func isContextCancellation(err error) bool {
 	return Is(err, context.Canceled) || Is(err, context.DeadlineExceeded)
 }
 
+// IsContextCancellation reports whether err (or any wrapped error in its chain)
+// is context.Canceled or context.DeadlineExceeded. It is exported so callers
+// outside this package (e.g. the datastore GORM logger) classify these expected
+// interruptions using the same two-sentinel definition the suppression
+// predicates use, instead of re-checking a single sentinel inline and drifting.
+func IsContextCancellation(err error) bool {
+	return isContextCancellation(err)
+}
+
 // isSuppressibleOperationalError reports whether ee is an expected operational
 // interruption that should not be forwarded to Sentry. Such interruptions arise
 // routinely during graceful shutdown, client disconnects, and request timeouts
-// (e.g. an HTTP client disconnects mid-query, or Sox/FFmpeg is killed when the
-// requesting client navigates away).
+// (e.g. an HTTP client disconnects mid-query, or a spectrogram render is canceled
+// when the requesting client navigates away).
 //
 // Two signals qualify:
 //   - A context sentinel (context.Canceled / context.DeadlineExceeded) anywhere in
 //     the chain, for either CategoryDatabase or CategorySystem. Database and system
 //     operations observe these directly when interrupted.
-//   - PriorityLow, but ONLY for CategorySystem. An external OS process killed by a
-//     cancelled context does not surface a context sentinel (on Windows it exits with
-//     status 1, on Linux a mid-run kill surfaces as "signal: killed"), so the producer
-//     (the spectrogram generator) tags the CategorySystem error PriorityLow using the
-//     governing context, which is the only platform-independent signal. PriorityLow is
+//   - PriorityLow, but ONLY for CategorySystem. A context-driven interruption need not
+//     surface a context sentinel in its error chain, so a producer (the spectrogram
+//     renderer) tags the CategorySystem error PriorityLow when its governing context is
+//     done, which is the only platform-independent signal. PriorityLow is
 //     deliberately NOT honored for CategoryDatabase: the datastore tags genuine
 //     query/scan/cleanup failures PriorityLow to control user-notification routing, not
 //     to mark them expected, and a real DB fault (corruption, lock contention) during
@@ -213,9 +223,32 @@ func isSuppressibleOperationalError(ee *EnhancedError) bool {
 	return ee.Category == CategorySystem && ee.GetPriority() == PriorityLow
 }
 
+// IsSuppressibleOperationalError reports whether ee is an expected operational
+// interruption (a context cancellation/deadline on a database or system
+// operation, or a PriorityLow system error) that should not be surfaced to the
+// user as a critical notification. It exposes the same predicate that
+// shouldReportToSentry uses internally so the notification path and the Sentry
+// path share a single definition of "expected interruption". Without it, a
+// normal client disconnect or graceful shutdown still produced a false-positive
+// "Critical database error" notification even though Sentry already suppressed
+// the identical event.
+func IsSuppressibleOperationalError(ee *EnhancedError) bool {
+	if ee == nil {
+		return false
+	}
+	return isSuppressibleOperationalError(ee)
+}
+
 // shouldReportToSentry determines if an error should be sent to Sentry
-// It filters out operational/configuration errors that aren't code bugs
+// It filters out operational/configuration errors that aren't code bugs and
+// rate limits connectivity failures to one event per cooldown window.
 func shouldReportToSentry(ee *EnhancedError) bool {
+	return shouldReport(ee, isGatedConnectivity(ee))
+}
+
+// shouldReport is shouldReportToSentry with the connectivity verdict of ee
+// already computed, so one report evaluates it once.
+func shouldReport(ee *EnhancedError, connectivity bool) bool {
 	if ee.Err == nil {
 		return true
 	}
@@ -224,8 +257,9 @@ func shouldReportToSentry(ee *EnhancedError) bool {
 	// (graceful shutdown, client disconnect, request timeout). These are not code
 	// bugs; suppressing prevents hundreds of duplicate events per day from drowning
 	// legitimate errors. See isSuppressibleOperationalError for why PriorityLow is
-	// honored alongside the context sentinels.
-	if isSuppressibleOperationalError(ee) {
+	// honored alongside the context sentinels. A dial timeout is also a context
+	// deadline but is an unreachable host, so it goes on to the connectivity window.
+	if isSuppressibleOperationalError(ee) && !isDialDeadlineConnectivity(ee, connectivity) {
 		return false
 	}
 
@@ -337,19 +371,19 @@ func shouldReportToSentry(ee *EnhancedError) bool {
 		return false
 	}
 
+	// Connectivity failures (database host unreachable, dropped connections)
+	// are environment problems, not code defects. Let one through per cooldown
+	// window so an outage stays visible without one event per failed statement.
+	if connectivity {
+		return allowConnectivityReport()
+	}
+
 	// Rate-limit disk-full errors: a single root cause creates cascading
 	// errors across many subsystems (database, FFmpeg, alerting, etc.)
 	if strings.Contains(errorMsg, "disk is full") ||
 		strings.Contains(errorMsg, "no space left on device") {
-		now := time.Now().Unix()
-		last := lastDiskFullReport.Load()
-		if now-last < diskFullCooldown {
-			return false // Suppress during cooldown
-		}
-		// Use CompareAndSwap to prevent concurrent errors from
-		// bypassing the cooldown (TOCTOU race)
-		if !lastDiskFullReport.CompareAndSwap(last, now) {
-			return false // Another goroutine won the race
+		if !diskFullLimiter.Allow(time.Now()) {
+			return false // Suppress during cooldown, or another goroutine won the race
 		}
 		// Allow this one through
 	}
@@ -363,8 +397,10 @@ func (sr *SentryReporter) ReportError(ee *EnhancedError) {
 		return
 	}
 
+	connectivity := isGatedConnectivity(ee)
+
 	// Skip operational/configuration errors that aren't code bugs
-	if !shouldReportToSentry(ee) {
+	if !shouldReport(ee, connectivity) {
 		ee.MarkReported() // Mark as reported to prevent retry
 		return
 	}
@@ -387,7 +423,11 @@ func (sr *SentryReporter) ReportError(ee *EnhancedError) {
 		scope.SetTag("error_title", errorTitle)
 		scope.SetTag("component", ee.GetComponent())
 		scope.SetTag("category", string(ee.Category))
-		scope.SetTag("error_origin", GetErrorOrigin(ee.Category))
+		errorOrigin := GetErrorOrigin(ee.Category)
+		if connectivity {
+			errorOrigin = errorOriginEnvironment
+		}
+		scope.SetTag("error_origin", errorOrigin)
 		scope.SetTag("error_type", fmt.Sprintf("%T", ee.Err))
 
 		// Add context data with privacy scrubbing
@@ -407,10 +447,13 @@ func (sr *SentryReporter) ReportError(ee *EnhancedError) {
 
 		// Set error level based on category
 		level := getErrorLevel(ee.Category)
+		if connectivity {
+			level = sentry.LevelWarning
+		}
 		scope.SetLevel(level)
 
 		// Set custom fingerprint for better grouping using structured fields
-		scope.SetFingerprint(buildFingerprint(ee))
+		scope.SetFingerprint(buildFingerprint(ee, connectivity))
 
 		// Use the error title as the exception type by creating a custom exception
 		event := sentry.NewEvent()
@@ -434,7 +477,8 @@ func (sr *SentryReporter) ReportError(ee *EnhancedError) {
 }
 
 // buildFingerprint creates a structured fingerprint for Sentry issue grouping.
-func buildFingerprint(ee *EnhancedError) []string {
+// connectivity is the isGatedConnectivity verdict for ee.
+func buildFingerprint(ee *EnhancedError, connectivity bool) []string {
 	component := ee.GetComponent()
 	category := string(ee.Category)
 	operation, _ := ee.Context["operation"].(string)
@@ -443,6 +487,12 @@ func buildFingerprint(ee *EnhancedError) []string {
 		errMsg = ee.Err.Error()
 	}
 	normalizedType := NormalizeErrorType(errMsg)
+
+	// Connectivity failures group by category and type only: with one event per
+	// window the operation that happens to go first is arbitrary.
+	if connectivity {
+		return []string{connectivityFingerprintPrefix, category, normalizedType}
+	}
 
 	fp := make([]string, 0, 5)
 	if component != "" && component != ComponentUnknown {
@@ -489,16 +539,25 @@ func NormalizeErrorType(errMsg string) string {
 		{"permission denied", "permission_denied"},
 		{"dns resolution", "dns_error"},
 		{"no such host", "dns_error"},
+		{"dial tcp: lookup", "dns_error"}, // the lookup may end in "i/o timeout"
+		{"server misbehaving", "dns_error"},
+		{"no route to host", "host_unreachable"},
+		{"network is unreachable", "network_unreachable"},
+		{"invalid connection", "invalid_connection"},
+		{"bad connection", "bad_connection"},
+		{"lock wait timeout", "lock_wait_timeout"},
+		{"deadlock found", "deadlock"},
+		{"unknown database", "unknown_database"},
 		{"signal: killed", "signal_killed"},
 		{"ringbuffer is full", "buffer_full"},
 		{"not initialized", "not_initialized"},
 		{"scientific name cannot be empty", "empty_scientific_name"},
 		{"not found", "not_found"},
 		{"is locked", "resource_locked"},
-		{"timed out", "timeout"},
+		{"i/o timeout", "io_timeout"},
+		{"timed out", "timeout"}, //nolint:goconst // normalized error token, not the CategoryTimeout enum value
 		{"timeout", "timeout"},
 		{"disk is full", "disk_full"},
-		{"i/o timeout", "io_timeout"},
 		{"broken pipe", "broken_pipe"},
 		{"exit status", "process_exit"},
 	}

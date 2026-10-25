@@ -17,7 +17,7 @@ import (
 // cannot be matched to a known registry entry.
 const modelIDCustom = "Custom"
 
-// Model display names — single source of truth for user-facing model names.
+// Model display names: single source of truth for user-facing model names.
 const (
 	ModelNameBirdNETv24 = "BirdNET v2.4"
 	ModelNameBirdNETv30 = "BirdNET v3.0"
@@ -25,9 +25,16 @@ const (
 )
 
 // Inference backend identifiers.
+//
+// BackendTFLite and BackendONNX double as the model file-type stored in
+// ModelInfo.Backend (the static metadata). BackendOpenVINO is an execution
+// provider, not a file type: OpenVINO executes an ONNX model file through the OV
+// runtime, so it only ever appears as a live, per-instance backend reported by
+// ModelInstance.RuntimeInfo(), never as a ModelInfo.Backend file-type value.
 const (
-	BackendTFLite = "TFLite"
-	BackendONNX   = "ONNX"
+	BackendTFLite   = "TFLite"
+	BackendONNX     = "ONNX"
+	BackendOpenVINO = "OpenVINO"
 )
 
 // Model file extensions (lowercase, including the leading dot).
@@ -95,21 +102,47 @@ func detectQuantization(name string) Quantization {
 // matching the DetectionName field in the ModelRegistry.
 const DetectionNamePerch = "Perch"
 
+// rangeFilterCompat names which range-filter backend family a classifier's label
+// space fits. The zero value is None so an unknown or Custom ID never qualifies for
+// any auto-selection.
+type rangeFilterCompat uint8
+
+const (
+	rangeFilterCompatNone     rangeFilterCompat = iota // Bat, BSG, Custom, unknown
+	rangeFilterCompatMDataV24                          // v2.4 MData filter (TFLite or strict ONNX) over the v2.4 label set
+	rangeFilterCompatGeomodel                          // mapped geomodel v3 remaps onto the classifier's labels
+)
+
+// rangeFilterCompatFor looks the capability up by registry ID; a missing entry
+// yields rangeFilterCompatNone (the zero value).
+func rangeFilterCompatFor(registryID string) rangeFilterCompat {
+	return ModelRegistry[registryID].rangeFilterCompat
+}
+
 // ModelInfo represents metadata about a classifier model.
 type ModelInfo struct {
-	ID               string       // Unique registry identifier (e.g., "BirdNET_V2.4")
-	Name             string       // User-friendly name (e.g., "BirdNET v2.4")
-	Backend          string       // Inference backend: "TFLite" or "ONNX"
-	DetectionName    string       // Database model name (e.g., "BirdNET", "Perch")
-	DetectionVersion string       // Database model version (e.g., "2.4", "V2")
-	Description      string       // Description of the model
-	Spec             ModelSpec    // Audio requirements (sample rate, clip length)
-	ConfigAliases    []string     // User-facing config IDs (e.g., ["birdnet"])
-	SupportedLocales []string     // List of supported locale codes
-	DefaultLocale    string       // Default locale if none is specified
-	NumSpecies       int          // Number of species in the model
-	CustomPath       string       // Path to custom model file, if any
-	Quantization     Quantization // Precision of the loaded weights. Orthogonal to Backend.
+	ID               string        // Unique registry identifier (e.g., "BirdNET_V2.4")
+	Name             string        // User-friendly name (e.g., "BirdNET v2.4")
+	Backend          string        // Inference backend: "TFLite" or "ONNX"
+	DetectionName    string        // Database model name (e.g., "BirdNET", "Perch")
+	DetectionVersion string        // Database model version (e.g., "2.4", "V2")
+	Description      string        // Description of the model
+	Spec             ModelSpec     // Audio requirements (sample rate, clip length)
+	Overlap          time.Duration // Resolved analysis-window overlap for this model under the effective base overlap (published cadence plan, else configured). Stamped by the Orchestrator via ResolveModelOverlap; zero on the static registry template. Pass to Spec.BufferDimensions/BufferInterval.
+	ConfigAliases    []string      // User-facing config IDs (e.g., ["birdnet"])
+	SupportedLocales []string      // List of supported locale codes
+	DefaultLocale    string        // Default locale if none is specified
+	NumSpecies       int           // Number of species in the model
+	CustomPath       string        // Path to custom model file, if any
+	Quantization     Quantization  // Precision of the loaded weights. Orthogonal to Backend.
+	// rangeFilterCompat is this classifier's range-filter capability (see the type).
+	// The zero value means it participates in no range-filter auto-selection.
+	rangeFilterCompat rangeFilterCompat
+	// scheduleGated marks a model that runs only inside a schedule (today the bat
+	// model's nighttime scheduler). Such a model is never a default analysis target
+	// (DefaultTargets) and is inactive outside its schedule (IsModelActive,
+	// ModelScheduleStatus), all read through isScheduleGated. Zero value: not gated.
+	scheduleGated bool
 	// IsStock marks the auto-resolved built-in default model. It is NOT set for
 	// user-supplied models (birdnet.modelpath) or gallery models, so detection
 	// attribution can treat the shipped default as "default" even when it loads
@@ -128,21 +161,26 @@ func (m *ModelInfo) DisplayName() string {
 // ModelRegistry is the single source of truth for all supported models.
 // All model identity lookups, config validation, and spec queries derive from this.
 var ModelRegistry = map[string]ModelInfo{
-	"BirdNET_V2.4": {
+	"BirdNET_V2.4": { //nolint:goconst // registry data-table key; canonical model ID also named by DefaultModelVersion/BirdNET_V2_4/RegistryIDBirdNETV24
 		ID:               "BirdNET_V2.4",
 		Name:             ModelNameBirdNETv24,
 		Backend:          BackendTFLite,
 		DetectionName:    "BirdNET",
 		DetectionVersion: "2.4",
-		Description:      "Global model with 6523 species",
+		Description:      "Global model with 6522 species",
 		Spec:             ModelSpec{SampleRate: 48000, ClipLength: 3 * time.Second},
-		ConfigAliases:    []string{conf.ModelIDBirdNET},
+		// The primary alias (index 0) is the canonical form ConfigAliasForRegistry
+		// writes back; the hyphenated catalog form (conf.ModelID*Catalog) mirrors the
+		// model catalog entry ID so a config that carries the catalog-style ID still
+		// validates and resolves. conf.MigrateModelIDAliases canonicalizes it on load.
+		ConfigAliases: []string{conf.ModelIDBirdNET, conf.ModelIDBirdNETCatalog},
 		SupportedLocales: []string{"af", "ar", "bg", "ca", "cs", "da", "de", "el", "en-uk", "en-us", "es",
 			"et", "fi", "fr", "he", "hr", "hu", "id", "is", "it", "ja", "ko", "lt", "lv", "ml", "nl",
 			"no", "pl", "pt", "pt-br", "pt-pt", "ro", "ru", "sk", "sl", "sr", "sv", "th", "tr", "uk", "zh"},
-		DefaultLocale: "en-uk",
-		NumSpecies:    6523,
-		Quantization:  QuantizationFP32,
+		DefaultLocale:     "en-uk",
+		NumSpecies:        6522,
+		Quantization:      QuantizationFP32,
+		rangeFilterCompat: rangeFilterCompatMDataV24,
 	},
 	RegistryIDBirdNETV3: {
 		ID:               RegistryIDBirdNETV3,
@@ -152,11 +190,14 @@ var ModelRegistry = map[string]ModelInfo{
 		DetectionVersion: "3.0",
 		Description:      "BirdNET v3.0 model (32kHz, 5s clips, embeddings)", // NumSpecies omitted: determined at runtime from label file
 		Spec:             ModelSpec{SampleRate: 32000, ClipLength: 5 * time.Second},
-		ConfigAliases:    []string{"birdnet_v3.0"},
+		// Catalog form mirrors the catalog entry ID; the underscore primary stays
+		// canonical for write-back. See BirdNET v2.4 entry above.
+		ConfigAliases: []string{conf.ModelIDBirdNETV3, conf.ModelIDBirdNETV3Catalog},
 		SupportedLocales: []string{"af", "ar", "bg", "ca", "cs", "da", "de", "el", "en-uk", "en-us", "es",
 			"et", "fi", "fr", "he", "hr", "hu", "id", "is", "it", "ja", "ko", "lt", "lv", "ml", "nl",
 			"no", "pl", "pt", "pt-br", "pt-pt", "ro", "ru", "sk", "sl", "sr", "sv", "th", "tr", "uk", "zh"},
-		DefaultLocale: "en-uk",
+		DefaultLocale:     "en-uk",
+		rangeFilterCompat: rangeFilterCompatGeomodel,
 	},
 	RegistryIDPerchV2: {
 		ID:               RegistryIDPerchV2,
@@ -166,8 +207,12 @@ var ModelRegistry = map[string]ModelInfo{
 		DetectionVersion: "V2",
 		Description:      "Perch v2 multi-taxa model with ~14,795 species including birds, insects, amphibians, and mammals (scientific names only)",
 		Spec:             ModelSpec{SampleRate: 32000, ClipLength: 5 * time.Second},
-		ConfigAliases:    []string{conf.ModelIDPerchV2},
-		NumSpecies:       14795,
+		// Catalog form mirrors the catalog entry ID; the underscore primary stays
+		// canonical for write-back. Reported via Sentry (BIRDNET-GO-2FZ), where a
+		// config carried "perch-v2" and was rejected as an unknown model ID.
+		ConfigAliases:     []string{conf.ModelIDPerchV2, conf.ModelIDPerchV2Catalog},
+		NumSpecies:        14795,
+		rangeFilterCompat: rangeFilterCompatGeomodel,
 	},
 	RegistryIDBat: {
 		ID:               RegistryIDBat,
@@ -178,6 +223,13 @@ var ModelRegistry = map[string]ModelInfo{
 		Description:      "Bat species detection using BirdNET v2.4 embeddings",
 		Spec:             ModelSpec{SampleRate: 48000, ClipLength: 3 * time.Second, RawSampleRate: 256000, MinRawSampleRate: 96000, RecommendedSampleRate: 192000},
 		ConfigAliases:    []string{conf.ModelIDBat},
+		// Bat classifies its own label space; it never participates in range-filter
+		// auto-selection. Explicit (not omitted) so the table documents the decision.
+		rangeFilterCompat: rangeFilterCompatNone,
+		// Bat runs only inside the nighttime scheduler, so it is never a default
+		// analysis target and is paused outside its schedule. Read by isScheduleGated
+		// (IsModelActive, ModelScheduleStatus, DefaultTargets).
+		scheduleGated: true,
 	},
 	RegistryIDBSG: {
 		ID:               RegistryIDBSG,
@@ -187,30 +239,36 @@ var ModelRegistry = map[string]ModelInfo{
 		DetectionVersion: "4.4",
 		Description:      "Regional bird classifier optimized for Finnish bird species",
 		Spec:             ModelSpec{SampleRate: 48000, ClipLength: 3 * time.Second},
-		ConfigAliases:    []string{conf.ModelIDBSG},
+		// Catalog form "bsg-finland" mirrors the catalog entry ID; "bsg" stays
+		// canonical for write-back. See BirdNET v2.4 entry above.
+		ConfigAliases: []string{conf.ModelIDBSG, conf.ModelIDBSGCatalog},
+		// BSG classifies its own regional label space; no range-filter auto-selection.
+		// Explicit (not omitted) so the table documents the decision.
+		rangeFilterCompat: rangeFilterCompatNone,
 	},
 }
 
-// isBirdNETV24Family reports whether id is the BirdNET v2.4 classifier.
-// Quantization (TFLite FP32 or ONNX INT8) is an orthogonal attribute on the
-// unified entry; callers that special-case v2.4 behavior (the native range-filter
-// fallback, the MData range-filter default) check the ID only.
-func isBirdNETV24Family(id string) bool {
-	return id == DefaultModelVersion
-}
-
-// remapV24ForONNXOnly remaps a registry-resolved BirdNET v2.4 TFLite model to the
-// INT8-ARM ONNX entry when this build has no TFLite backend (notflite, i.e. the
-// ONNX-only arm64 image) and the ONNX model is present in the standard paths.
-// This keeps arm64 configs that select v2.4 via `version: "2.4"` or the default
-// working on ONNX-only images instead of failing to start on the missing TFLite
-// backend. An explicit model path (CustomPath set) is left untouched so a
-// user-supplied model is never silently swapped.
-func remapV24ForONNXOnly(info *ModelInfo, tfliteAvailable bool, find func(name string) (path string, ok bool)) ModelInfo {
-	if tfliteAvailable || info.CustomPath != "" {
+// remapV24ToONNXOnARM64 remaps a registry-resolved BirdNET v2.4 TFLite model to the
+// INT8-ARM ONNX entry when ONNX is the appropriate stock backend and the ONNX model
+// is present in the standard paths. That holds in two cases: on arm64 (where INT8-ARM
+// ONNX is the reduced-memory stock default; arm64 container images also link
+// libtensorflowlite_c so custom `.tflite` models still load), and on any build with
+// no TFLite backend (the notflite tag), whose stub classifier cannot run TFLite and
+// would otherwise fail to start. A normal non-arm64 build keeps its FP32 TFLite v2.4
+// default even when the ONNX file happens to be present, so a stray copy never
+// silently switches backends. An explicit model path (CustomPath set) is left
+// untouched so a user-supplied model is never swapped.
+func remapV24ToONNXOnARM64(info *ModelInfo, goarch string, tfliteAvailable bool, find func(name string) (path string, ok bool)) ModelInfo {
+	if info.CustomPath != "" {
 		return *info
 	}
 	if info.Backend != BackendTFLite || info.ID != DefaultModelVersion {
+		return *info
+	}
+	// Remap to ONNX on arm64 (its stock default) or on a build with no TFLite
+	// backend (notflite), where TFLite cannot run. A normal non-arm64 build keeps
+	// FP32 TFLite even when the ONNX file is present, so nothing silently switches.
+	if goarch != defaultBirdNETClassifierARM64Arch && tfliteAvailable {
 		return *info
 	}
 	if path, ok := find(DefaultBirdNETINT8ONNXModelName); ok {
@@ -295,6 +353,32 @@ func defaultRangeFilterONNXPath(goarch string, find func(name string) (path stri
 	return find(DefaultRangeFilterV2ONNXModelName)
 }
 
+// isAutoSelectRangeFilterModel reports whether the configured range-filter model
+// requests automatic backend selection. Both "" and the "latest" sentinel (the
+// config default in defaults.go) mean "pick the best available range filter": the
+// v3 geomodel when its files are present, then the shipped ONNX MData model, then
+// the classifier's embedded/shipped TFLite MData model.
+//
+// Without treating "latest" as auto-select, the default config dead-ends at the
+// TFLite backend, which has no model file on ONNX-only (arm64) container images,
+// leaving the instance with no range filter and every species unfiltered (#3932).
+func isAutoSelectRangeFilterModel(model string) bool {
+	return model == "" || model == conf.RangeFilterModelLatest
+}
+
+// shouldSelectDefaultONNXRangeFilter reports the ONNX MData range-filter model path
+// to use as the arm64 default. It returns ("", false) unless the config requests
+// auto-selection (isAutoSelectRangeFilterModel), no explicit range-filter ModelPath
+// is set, the classifier is the BirdNET v2.4 family (whose labels match the MData V2
+// output dimension), and defaultRangeFilterONNXPath locates the ONNX MData model
+// (arm64 only). find resolves a model filename within the standard search paths.
+func shouldSelectDefaultONNXRangeFilter(model, modelPath, classifierID, goarch string, find func(name string) (path string, ok bool)) (string, bool) {
+	if !isAutoSelectRangeFilterModel(model) || modelPath != "" || rangeFilterCompatFor(classifierID) != rangeFilterCompatMDataV24 {
+		return "", false
+	}
+	return defaultRangeFilterONNXPath(goarch, find)
+}
+
 // birdnetVersionToRegistryID maps user-facing BirdNET version strings to registry IDs.
 var birdnetVersionToRegistryID = map[string]string{
 	"2.4": "BirdNET_V2.4",
@@ -365,7 +449,7 @@ var filenamePatterns = map[string]string{
 }
 
 // DetermineModelInfo identifies the model type from a file path or model identifier.
-// This is the fallback path — prefer passing ModelInfo directly from the orchestrator
+// This is the fallback path; prefer passing ModelInfo directly from the orchestrator
 // or resolving via config version field.
 func DetermineModelInfo(modelPathOrID string) (ModelInfo, error) {
 	// Check if it's a known registry ID
@@ -417,7 +501,7 @@ func DetermineModelInfo(modelPathOrID string) (ModelInfo, error) {
 			return info, nil
 		}
 
-		// Unrecognized model file — return Custom, let runtime figure it out
+		// Unrecognized model file: return Custom, let runtime figure it out
 		return ModelInfo{
 			ID:               modelIDCustom,
 			Name:             "Custom Model",
@@ -476,6 +560,30 @@ func DetectionModelInfoForID(modelID string) detection.ModelInfo {
 		return info.ToDetectionModelInfo()
 	}
 	return detection.DefaultModelInfo()
+}
+
+// ParticipatesInRangeFilter reports whether detections from the model with the
+// given registry ID should be gated by the geographic range filter. Registry
+// models participate when their label space is range-filter compatible
+// (rangeFilterCompat != rangeFilterCompatNone): BirdNET v2.4 (MData), BirdNET v3.0
+// and Perch (mapped geomodel). Bat and BSG classify their own label spaces and do
+// not participate.
+//
+// An ID absent from the registry (a custom or otherwise unknown classifier) does
+// NOT participate: its label space is arbitrary, so gating it against an inclusion
+// list built for a known label space would silently drop labels the geomodel never
+// scored, and the registry reports rangeFilterCompatNone for anything unknown. This
+// intentionally diverges from the historical display-name gate, which resolved
+// unknown IDs to the default BirdNET name and filtered them. The branch is
+// unreachable in production (LoadModel rejects unregistered IDs, so every detection
+// carries a known registry ID), so pinning the decision here is behavior-preserving
+// in practice while fixing the semantics for any future path that can reach it.
+func ParticipatesInRangeFilter(registryID string) bool {
+	info, known := ModelRegistry[registryID]
+	if !known {
+		return false
+	}
+	return info.rangeFilterCompat != rangeFilterCompatNone
 }
 
 // IsLocaleSupported checks if a locale is supported by the given model.

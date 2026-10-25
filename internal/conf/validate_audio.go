@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/tphakala/birdnet-go/internal/errors"
 	"github.com/tphakala/birdnet-go/internal/logger"
@@ -39,6 +38,84 @@ const (
 	AudioExportTypeOPUS = "opus" // Lossy compressed audio
 )
 
+// isLossyExportFormat reports whether an export format is a lossy codec that needs
+// a bitrate. AAC, Opus and MP3 are lossy; WAV and FLAC are lossless and ignore the
+// bitrate. Callers gate bitrate defaulting and validation on this instead of
+// repeating the AAC/OPUS/MP3 set.
+func isLossyExportFormat(format string) bool {
+	switch format {
+	case AudioExportTypeAAC, AudioExportTypeOPUS, AudioExportTypeMP3:
+		return true
+	default:
+		return false
+	}
+}
+
+// isLosslessExportFormat reports whether format is one of the lossless containers
+// (WAV or FLAC) that carry every capture sample rate natively without FFmpeg (FLAC
+// tops out at 655350 Hz, above the highest capture rate). It is the
+// permitted set for Export.UltrasonicType, which stores bat/ultrasonic captures
+// above the analysis rate at full source rate.
+func isLosslessExportFormat(format string) bool {
+	switch format {
+	case AudioExportTypeWAV, AudioExportTypeFLAC:
+		return true
+	default:
+		return false
+	}
+}
+
+// normalizeAndValidateExportType heals an empty export type to WAV and rejects
+// unknown formats, so a garbage value surfaces as a validation error instead of
+// being carried into clip export, where it would fail every save. An empty Type previously produced extension-less clip_name
+// rows in the DB, causing audio download and spectrogram generation to 404
+// (GitHub #2810, #2814). Kept separate from validateAudioSettings to hold that
+// function's cyclomatic complexity down.
+func normalizeAndValidateExportType(export *ExportSettings) error {
+	if strings.TrimSpace(export.Type) == "" {
+		GetLogger().Warn("audio export type is empty, normalizing to wav",
+			logger.String("previous_type", export.Type),
+			logger.String("action", "normalize_to_wav"))
+		export.Type = AudioExportTypeWAV
+	}
+	switch export.Type {
+	case AudioExportTypeWAV, AudioExportTypeFLAC,
+		AudioExportTypeAAC, AudioExportTypeOPUS, AudioExportTypeMP3:
+		// known format
+	default:
+		return errors.Newf("unsupported audio export type: %s", export.Type).
+			Category(errors.CategoryValidation).
+			Context("validation_type", "audio-export-type").
+			Context("export_type", export.Type).
+			Build()
+	}
+	return nil
+}
+
+// normalizeAndValidateUltrasonicExportType heals an empty ultrasonic export
+// format to FLAC and rejects anything outside the lossless set (WAV/FLAC). This
+// dedicated setting is used only for bat/ultrasonic captures above the analysis
+// rate, which are stored losslessly at full source rate; it is deliberately NOT
+// the 5-format Export.Type switch, because a lossy value here would silently
+// strand ultrasonic recordings. Kept separate from validateAudioSettings to hold
+// that function's cyclomatic complexity down.
+func normalizeAndValidateUltrasonicExportType(export *ExportSettings) error {
+	if strings.TrimSpace(export.UltrasonicType) == "" {
+		GetLogger().Warn("ultrasonic audio export type is empty, normalizing to flac",
+			logger.String("previous_type", export.UltrasonicType),
+			logger.String("action", "normalize_to_flac"))
+		export.UltrasonicType = AudioExportTypeFLAC
+	}
+	if !isLosslessExportFormat(export.UltrasonicType) {
+		return errors.Newf("unsupported ultrasonic audio export type: %s (must be wav or flac)", export.UltrasonicType).
+			Category(errors.CategoryValidation).
+			Context("validation_type", "audio-export-ultrasonic-type").
+			Context("ultrasonic_type", export.UltrasonicType).
+			Build()
+	}
+	return nil
+}
+
 // EBU R128 normalization limits
 const (
 	MinTargetLUFS    = -40.0 // Minimum target loudness in LUFS
@@ -51,8 +128,15 @@ const (
 
 // Equalizer filter validation limits
 const (
-	MaxEQFrequency = 24000.0 // Maximum EQ frequency in Hz (Nyquist for 48 kHz)
-	MaxEQQ         = 100.0   // Maximum Q factor for EQ filters
+	// MaxEQFrequency is a sanity ceiling for equalizer filter frequencies in Hz:
+	// the Nyquist frequency of the highest supported capture rate. It does not
+	// depend on any source's rate, since the global and stream equalizers have no
+	// single rate. A filter at or above the Nyquist frequency of the rate its
+	// route runs at passes validation and is skipped with a warning when the
+	// chain is built (internal/audiocore/equalizer), and the settings save
+	// reports it in its toast.
+	MaxEQFrequency = MaxValidSampleRate / 2.0
+	MaxEQQ         = 100.0 // Maximum Q factor for EQ filters
 )
 
 // Stream validation constants
@@ -65,6 +149,12 @@ const (
 const (
 	MaxQuietHoursOffset = 180  // Maximum offset in minutes from sun event
 	MinQuietHoursOffset = -180 // Minimum offset in minutes from sun event
+
+	// quietHoursTimeLayout is the clock format accepted for fixed-mode start and
+	// end times. The scheduler that consumes these values must parse them with the
+	// same layout; internal/audiocore/schedule.parseHHMM does, and widening one
+	// side without the other would accept times the runtime then rejects.
+	quietHoursTimeLayout = "15:04"
 )
 
 // Quiet hours mode constants
@@ -100,8 +190,22 @@ var ValidStreamTypes = map[string]bool{
 	StreamTypeUDP:  true,
 }
 
+// MaxValidSampleRate is the highest supported capture sample rate in Hz, the
+// last entry of validSampleRates.
+const MaxValidSampleRate = 384000
+
 // validSampleRates is the canonical list of supported capture sample rates (sorted ascending).
-var validSampleRates = []int{48000, 96000, 192000, 256000, 384000}
+var validSampleRates = []int{48000, 96000, 192000, 256000, MaxValidSampleRate}
+
+// EffectiveSampleRate returns the rate in Hz at which a source delivers frames
+// to the router: rate when positive, else the default capture rate SampleRate
+// (a configured or registered rate of 0 means the default).
+func EffectiveSampleRate(rate int) int {
+	if rate > 0 {
+		return rate
+	}
+	return SampleRate
+}
 
 // ValidSampleRates returns a copy of the canonical sample rate list.
 // Returning a clone prevents callers from mutating the shared source of truth.
@@ -136,7 +240,7 @@ func (s *StreamConfig) Validate() error {
 	}
 
 	// Validate transport (only tcp/udp allowed, empty defaults to tcp)
-	if s.Transport != "" && s.Transport != "tcp" && s.Transport != "udp" {
+	if s.Transport != "" && s.Transport != TransportTCP && s.Transport != TransportUDP {
 		return fmt.Errorf("invalid transport '%s' for '%s': must be tcp or udp", s.Transport, s.Name)
 	}
 
@@ -145,13 +249,28 @@ func (s *StreamConfig) Validate() error {
 		return fmt.Errorf("invalid channel mode '%s' for '%s': must be downmix, left, or right", s.ChannelMode, s.Name)
 	}
 
+	// Validate media mode (empty defaults to full-stream, explicit values must be
+	// valid). Accepted on any stream type but only applied at runtime for RTSP.
+	if s.MediaMode != "" && !ValidMediaModes[s.MediaMode] {
+		return fmt.Errorf("invalid media mode '%s' for '%s': must be auto, audio-only, or full-stream", s.MediaMode, s.Name)
+	}
+
+	// Validate gain range (NaN/Inf bypass < and > comparisons). Mirrors the
+	// AudioSourceConfig.Validate check so a hand-edited config.yaml or a non-UI
+	// API client cannot push an out-of-range gain past the frontend clamp.
+	if math.IsNaN(s.Gain) || math.IsInf(s.Gain, 0) || s.Gain < MinAudioGain || s.Gain > MaxAudioGain {
+		return fmt.Errorf("stream '%s': gain %.1f dB out of range [%.0f, +%.0f]", s.Name, s.Gain, MinAudioGain, MaxAudioGain)
+	}
+
 	// Validate URL scheme matches type
 	if err := s.validateURLScheme(); err != nil {
 		return err
 	}
 
-	// Validate per-stream EQ if set
-	if s.Equalizer != nil {
+	// Validate per-stream EQ when it is switched on. Filters belonging to a
+	// disabled equalizer never reach the audio path (BuildFilterChain returns nil
+	// for it), so an unfinished one is not a reason to reject the whole config.
+	if s.Equalizer != nil && s.Equalizer.Enabled {
 		if err := validateEQFilters(s.Equalizer.Filters, fmt.Sprintf("stream '%s'", s.Name)); err != nil {
 			return err
 		}
@@ -178,12 +297,12 @@ func ValidateQuietHours(qh *QuietHoursConfig, context string) error {
 
 	switch qh.Mode {
 	case QuietHoursModeFixed:
-		// Validate start time format
-		if _, err := time.Parse("15:04", qh.StartTime); err != nil {
+		// Both sides use isValidClockTime so this rule and the normalization pass
+		// that disables an unusable block cannot disagree about what parses.
+		if !isValidClockTime(qh.StartTime) {
 			return fmt.Errorf("%s: quiet hours start time must be in HH:MM format, got '%s'", context, qh.StartTime)
 		}
-		// Validate end time format
-		if _, err := time.Parse("15:04", qh.EndTime); err != nil {
+		if !isValidClockTime(qh.EndTime) {
 			return fmt.Errorf("%s: quiet hours end time must be in HH:MM format, got '%s'", context, qh.EndTime)
 		}
 
@@ -238,15 +357,31 @@ func (s *StreamConfig) validateURLScheme() error {
 	return nil
 }
 
+// ResolveTransport returns the concrete RTSP transport to use for a stream given
+// its per-stream value: the per-stream value when set, otherwise the global
+// RTSPSettings.Transport, otherwise DefaultTransport. This is the single owner of
+// the "per-stream else global else default" rule, so the migration, the startup
+// engine default, and the audio pipeline all resolve transport the same way and
+// never disagree about what an unset value means.
+func (r *RTSPSettings) ResolveTransport(perStreamTransport string) string {
+	if perStreamTransport != "" {
+		return perStreamTransport
+	}
+	if r.Transport != "" {
+		return r.Transport
+	}
+	return DefaultTransport
+}
+
 // ApplyStreamDefaults sets default transport for RTSP/RTMP streams that have an empty
 // transport field. This handles the case where users write the new streams: YAML format
-// directly without specifying per-stream transport — the global RTSPSettings.Transport
+// directly without specifying per-stream transport; the global RTSPSettings.Transport
 // (defaulting to "tcp") is propagated to each applicable stream.
 func (r *RTSPSettings) ApplyStreamDefaults() {
-	globalTransport := r.Transport
-	if globalTransport == "" {
-		globalTransport = DefaultTransport
-	}
+	// ResolveTransport("") yields the global transport when set, else the default.
+	// Resolve once (it is loop-invariant) and propagate to each per-stream empty,
+	// matching MigrateRTSPConfig and the single owner of the rule.
+	globalTransport := r.ResolveTransport("")
 	for _, stream := range r.AllStreams() {
 		if stream.Transport == "" && (stream.Type == StreamTypeRTSP || stream.Type == StreamTypeRTMP) {
 			stream.Transport = globalTransport
@@ -334,8 +469,9 @@ func (a *AudioSourceConfig) Validate() error {
 		return fmt.Errorf("audio source '%s': unknown model '%s'", a.Name, a.Model)
 	}
 
-	// Validate per-source EQ if set
-	if a.Equalizer != nil {
+	// Validate per-source EQ when it is switched on, matching the global
+	// equalizer: a disabled filter set is never built into the audio path.
+	if a.Equalizer != nil && a.Equalizer.Enabled {
 		if err := validateEQFilters(a.Equalizer.Filters, fmt.Sprintf("audio source '%s'", a.Name)); err != nil {
 			return err
 		}
@@ -387,16 +523,6 @@ func (s *AudioSettings) clearFfmpegMetadata() {
 	s.FfprobePath = ""
 }
 
-// applyFfmpegFormatFallback forces WAV export when FFmpeg is unavailable and
-// export is enabled. Does nothing when export is disabled.
-func (s *AudioSettings) applyFfmpegFormatFallback() {
-	if s.Export.Enabled && s.FfmpegPath == "" && s.Export.Type != AudioExportTypeWAV {
-		GetLogger().Warn("FFmpeg not available, forcing WAV format for audio export",
-			logger.String("previous_type", s.Export.Type))
-		s.Export.Type = AudioExportTypeWAV
-	}
-}
-
 // ffmpegVersionDetector resolves the version of the ffmpeg binary at a validated
 // path by executing it. It is a package variable so unit tests can replace it
 // with a stub. validateAudioSettings runs across many parallel test cases that
@@ -404,9 +530,9 @@ func (s *AudioSettings) applyFfmpegFormatFallback() {
 // concurrently exec'ing such a non-executable stub crashes the Windows race
 // detector with STATUS_STACK_BUFFER_OVERRUN. Production always uses the real
 // detector; only tests override it (see validate_audio_export_test.go).
-var ffmpegVersionDetector = GetFfmpegVersionFrom
+var ffmpegVersionDetector = boundedFfmpegVersion
 
-// validateAudioSettings validates the audio settings and sets ffmpeg and sox paths
+// validateAudioSettings validates the audio settings and sets the ffmpeg path
 func validateAudioSettings(settings *AudioSettings) error {
 	// Validate and determine the effective FFmpeg path
 	validatedFfmpegPath, ffmpegErr := ValidateToolPath(settings.FfmpegPath, GetFfmpegBinaryName())
@@ -443,21 +569,9 @@ func validateAudioSettings(settings *AudioSettings) error {
 				settings.FfprobePath = ""
 				GetLogger().Warn("FFprobe not found alongside FFmpeg or in PATH",
 					logger.String("expected_path", ffprobePath),
-					logger.String("impact", "Audio validation via FFprobe will be disabled"))
+					logger.String("impact", "Network stream probing (sample rate and channel detection) via FFprobe will be disabled"))
 			}
 		}
-	}
-
-	// Validate and determine the effective SoX path, using the same
-	// ValidateToolPath pattern as FFmpeg (configured path first, then PATH).
-	validatedSoxPath, soxErr := ValidateToolPath(settings.SoxPath, GetSoxBinaryName())
-	if soxErr != nil {
-		settings.SoxPath = ""
-		settings.SoxAudioTypes = nil
-		GetLogger().Warn("SoX not available", logger.Error(soxErr), logger.String("impact", "Spectrogram generation via SoX will be disabled"))
-	} else {
-		settings.SoxPath = validatedSoxPath
-		settings.SoxAudioTypes = GetSoxFormats(validatedSoxPath)
 	}
 
 	// Validate audio sources
@@ -476,45 +590,22 @@ func validateAudioSettings(settings *AudioSettings) error {
 			Build()
 	}
 
-	// Validate audio export settings.
-	//
-	// Normalize first, validate second. Type must be normalized even when
-	// Export.Enabled is false, because the Enabled flag can be flipped back on
-	// without triggering validation of the already-persisted Type value.
-	// An empty Type previously produced extension-less clip_name rows in the
-	// DB, causing audio download and spectrogram generation to 404
-	// (GitHub #2810, #2814).
-	if strings.TrimSpace(settings.Export.Type) == "" {
-		GetLogger().Warn("audio export type is empty, normalizing to wav",
-			logger.String("previous_type", settings.Export.Type),
-			logger.String("action", "normalize_to_wav"))
-		settings.Export.Type = AudioExportTypeWAV
+	// Validate audio export settings. Both the configured Export.Type and the
+	// dedicated ultrasonic format are normalized then validated (empty healed to a
+	// default, unknown rejected) even when Export.Enabled is false, because the
+	// Enabled flag can be flipped back on without re-triggering validation.
+	if err := normalizeAndValidateExportType(&settings.Export); err != nil {
+		return err
 	}
 
-	// Reject unknown Type before any fallback runs. Doing this first means a
-	// garbage value cannot be silently rewritten to WAV by the ffmpeg-missing
-	// fallback below, which would hide the misconfiguration.
-	switch settings.Export.Type {
-	case AudioExportTypeWAV, AudioExportTypeFLAC,
-		AudioExportTypeAAC, AudioExportTypeOPUS, AudioExportTypeMP3:
-		// known format
-	default:
-		return errors.Newf("unsupported audio export type: %s", settings.Export.Type).
-			Category(errors.CategoryValidation).
-			Context("validation_type", "audio-export-type").
-			Context("export_type", settings.Export.Type).
-			Build()
+	if err := normalizeAndValidateUltrasonicExportType(&settings.Export); err != nil {
+		return err
 	}
-
-	settings.applyFfmpegFormatFallback()
 
 	// Bitrate only matters for lossy formats and only when export is enabled.
-	switch settings.Export.Type {
-	case AudioExportTypeAAC, AudioExportTypeOPUS, AudioExportTypeMP3:
-		if settings.Export.Enabled {
-			if err := validateExportBitrate(settings.Export.Type, settings.Export.Bitrate); err != nil {
-				return err
-			}
+	if settings.Export.Enabled && isLossyExportFormat(settings.Export.Type) {
+		if err := validateExportBitrate(settings.Export.Type, settings.Export.Bitrate); err != nil {
+			return err
 		}
 	}
 
@@ -604,7 +695,7 @@ func validateExportBitrate(exportType, bitrate string) error {
 	}
 	bitrateValue, err := strconv.Atoi(strings.TrimSuffix(bitrate, audioExportBitrateSuffix))
 	if err != nil {
-		return errors.Newf("invalid bitrate value for %s: %s", exportType, bitrate).
+		return errors.Newf("invalid bitrate value for %s: %s: %w", exportType, bitrate, err).
 			Category(errors.CategoryValidation).
 			Context("validation_type", "audio-export-bitrate-value").
 			Context("export_type", exportType).
@@ -635,14 +726,29 @@ func validateNormalizationSettings(norm *NormalizationSettings, gain float64) er
 			Context("max_target_lufs", MaxTargetLUFS).
 			Build()
 	}
-	if math.IsNaN(norm.LoudnessRange) || math.IsInf(norm.LoudnessRange, 0) || norm.LoudnessRange < MinLoudnessRange || norm.LoudnessRange > MaxLoudnessRange {
-		return errors.Newf("normalization loudness range must be between %.0f and %.0f LU, got %.1f", MinLoudnessRange, MaxLoudnessRange, norm.LoudnessRange).
+	// LoudnessRange is deprecated and no longer applied by any export path, so the
+	// two halves of this check now deserve different answers.
+	//
+	// A non-finite value still fails: NaN/Inf anywhere in the settings tree is a
+	// corrupt-config signal this package rejects uniformly, and weakening that for
+	// one field would carve a hole in a deliberate hardening posture for no gain.
+	//
+	// A merely out-of-range finite value now warns instead. It cannot affect a
+	// single exported clip any more, so refusing to start over it would block an
+	// upgrade on a setting that does nothing.
+	switch {
+	case math.IsNaN(norm.LoudnessRange) || math.IsInf(norm.LoudnessRange, 0):
+		return errors.Newf("normalization loudness range must be a finite number, got %v", norm.LoudnessRange).
 			Category(errors.CategoryValidation).
 			Context("validation_type", "audio-normalization-range").
 			Context("loudness_range", norm.LoudnessRange).
-			Context("min_loudness_range", MinLoudnessRange).
-			Context("max_loudness_range", MaxLoudnessRange).
 			Build()
+	case norm.LoudnessRange < MinLoudnessRange || norm.LoudnessRange > MaxLoudnessRange:
+		GetLogger().Warn("Ignoring out-of-range normalization loudness range; the setting is deprecated and no longer applied",
+			logger.Float64("loudness_range", norm.LoudnessRange),
+			logger.Float64("min_loudness_range", MinLoudnessRange),
+			logger.Float64("max_loudness_range", MaxLoudnessRange),
+			logger.String("validation_type", "audio-normalization-range"))
 	}
 	if math.IsNaN(norm.TruePeak) || math.IsInf(norm.TruePeak, 0) || norm.TruePeak < MinTruePeak || norm.TruePeak > MaxTruePeak {
 		return errors.Newf("normalization true peak must be between %.0f and %.0f dBTP, got %.1f", MinTruePeak, MaxTruePeak, norm.TruePeak).
@@ -659,8 +765,8 @@ func validateNormalizationSettings(norm *NormalizationSettings, gain float64) er
 	return nil
 }
 
-// validateExportPath rejects export paths that contain path traversal sequences
-// or null bytes. Both relative and absolute paths are accepted: Docker
+// validateExportPath rejects export paths that contain a ".." path segment
+// (with either separator) or null bytes. Both relative and absolute paths are accepted: Docker
 // containers and install.sh legitimately use absolute paths like /data/clips/.
 func validateExportPath(path string) error {
 	if path == "" {
@@ -675,8 +781,10 @@ func validateExportPath(path string) error {
 			Build()
 	}
 
-	//nolint:gocritic // ruleguard suggests IsLocal alone, but IsLocal cleans "../x" to "x" (valid!); explicit ".." check is required for untrusted input per internal/CLAUDE.md
-	if strings.Contains(path, "..") {
+	// IsLocal alone would reject the absolute paths this function must accept,
+	// so a ".." path segment is the traversal guard for them. Only whole
+	// segments count: a name such as "clips..old" is a valid directory.
+	if hasParentDirSegment(path) {
 		return errors.Newf("audio export path must not contain path traversal (..): %q", path).
 			Category(errors.CategoryValidation).
 			Context("validation_type", "audio-export-path").
@@ -698,6 +806,26 @@ func validateExportPath(path string) error {
 	}
 
 	return nil
+}
+
+// parentDirSegment is the path segment that refers to the parent directory.
+const parentDirSegment = ".."
+
+// hasParentDirSegment reports whether path contains a ".." segment. It splits
+// on both '/' and '\' regardless of the host OS, so a Windows-style traversal
+// such as `a\..\b` is caught on Unix too. The raw path is checked, not a
+// filepath.Clean result, because cleaning would fold "a/../b" into "b" and hide
+// the traversal attempt. It is for file paths; hasDotDotSegment in
+// huggingface.go is the URL-path variant, which splits on '/' only.
+func hasParentDirSegment(path string) bool {
+	for segment := range strings.FieldsFuncSeq(path, func(r rune) bool {
+		return r == '/' || r == '\\'
+	}) {
+		if segment == parentDirSegment {
+			return true
+		}
+	}
+	return false
 }
 
 // validateEQFilters validates a slice of equalizer filters. The context string

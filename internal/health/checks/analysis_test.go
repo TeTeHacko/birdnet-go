@@ -69,8 +69,10 @@ func TestModelsLoadedCheck_NoModels(t *testing.T) {
 
 	results := check.RunMulti(t.Context())
 	require.Len(t, results, 1)
-	assert.Equal(t, health.StatusCritical, results[0].Status)
-	assert.Contains(t, results[0].Message, "No analysis models loaded")
+	// N = 0 is a valid state (model de-privilege epic, Phase 4): this check stands down
+	// to Skipped and the acoustic_models check owns the no-model verdict.
+	assert.Equal(t, health.StatusSkipped, results[0].Status)
+	assert.Contains(t, results[0].Message, "see acoustic_models")
 }
 
 func TestModelsLoadedCheck_NilProvider(t *testing.T) {
@@ -100,8 +102,8 @@ func TestPerModelInferenceLatencyCheck_Healthy(t *testing.T) {
 	t.Parallel()
 	check := NewPerModelInferenceLatencyCheck(func() []ModelInferenceInfo {
 		return []ModelInferenceInfo{
-			{ModelID: "BirdNET_V2.4", ModelName: "BirdNET v2.4", AvgMS: 100, P99MS: 200, WindowMS: 1500},
-			{ModelID: "Perch_V2", ModelName: "Perch V2", AvgMS: 300, P99MS: 600, WindowMS: 2500},
+			{ModelID: "BirdNET_V2.4", ModelName: "BirdNET v2.4", AvgMS: 100, P95MS: 200, WindowMS: 1500},
+			{ModelID: "Perch_V2", ModelName: "Perch V2", AvgMS: 300, P95MS: 600, WindowMS: 2500},
 		}
 	})
 
@@ -116,7 +118,7 @@ func TestPerModelInferenceLatencyCheck_Warning(t *testing.T) {
 	t.Parallel()
 	check := NewPerModelInferenceLatencyCheck(func() []ModelInferenceInfo {
 		return []ModelInferenceInfo{
-			{ModelID: "BirdNET_V2.4", ModelName: "BirdNET v2.4", AvgMS: 100, P99MS: 800, WindowMS: 1500},
+			{ModelID: "BirdNET_V2.4", ModelName: "BirdNET v2.4", AvgMS: 100, P95MS: 800, WindowMS: 1500},
 		}
 	})
 
@@ -130,7 +132,7 @@ func TestPerModelInferenceLatencyCheck_Critical(t *testing.T) {
 	t.Parallel()
 	check := NewPerModelInferenceLatencyCheck(func() []ModelInferenceInfo {
 		return []ModelInferenceInfo{
-			{ModelID: "Perch_V2", ModelName: "Perch V2", AvgMS: 500, P99MS: 2300, WindowMS: 2500},
+			{ModelID: "Perch_V2", ModelName: "Perch V2", AvgMS: 500, P95MS: 2300, WindowMS: 2500},
 		}
 	})
 
@@ -144,8 +146,8 @@ func TestPerModelInferenceLatencyCheck_MixedStatus(t *testing.T) {
 	t.Parallel()
 	check := NewPerModelInferenceLatencyCheck(func() []ModelInferenceInfo {
 		return []ModelInferenceInfo{
-			{ModelID: "BirdNET_V2.4", ModelName: "BirdNET v2.4", AvgMS: 50, P99MS: 100, WindowMS: 1500},
-			{ModelID: "Perch_V2", ModelName: "Perch V2", AvgMS: 500, P99MS: 2300, WindowMS: 2500},
+			{ModelID: "BirdNET_V2.4", ModelName: "BirdNET v2.4", AvgMS: 50, P95MS: 100, WindowMS: 1500},
+			{ModelID: "Perch_V2", ModelName: "Perch V2", AvgMS: 500, P95MS: 2300, WindowMS: 2500},
 		}
 	})
 
@@ -181,7 +183,7 @@ func TestPerModelInferenceLatencyCheck_ZeroWindow(t *testing.T) {
 	t.Parallel()
 	check := NewPerModelInferenceLatencyCheck(func() []ModelInferenceInfo {
 		return []ModelInferenceInfo{
-			{ModelID: "Test", ModelName: "Test Model", AvgMS: 100, P99MS: 200, WindowMS: 0},
+			{ModelID: "Test", ModelName: "Test Model", AvgMS: 100, P95MS: 200, WindowMS: 0},
 		}
 	})
 
@@ -195,11 +197,11 @@ func TestPerModelInferenceLatencyCheck_CorrectWindowPerModel(t *testing.T) {
 	check := NewPerModelInferenceLatencyCheck(func() []ModelInferenceInfo {
 		return []ModelInferenceInfo{
 			// BirdNET v2.4: 3s clips, 50% overlap -> 1500ms window
-			// 800ms p99 / 1500ms = 53% -> Warning
-			{ModelID: "BirdNET_V2.4", ModelName: "BirdNET v2.4", AvgMS: 400, P99MS: 800, WindowMS: 1500},
+			// 800ms p95 / 1500ms = 53% -> Warning
+			{ModelID: "BirdNET_V2.4", ModelName: "BirdNET v2.4", AvgMS: 400, P95MS: 800, WindowMS: 1500},
 			// Perch V2: 5s clips, 50% overlap -> 2500ms window
-			// 800ms p99 / 2500ms = 32% -> Healthy
-			{ModelID: "Perch_V2", ModelName: "Perch V2", AvgMS: 400, P99MS: 800, WindowMS: 2500},
+			// 800ms p95 / 2500ms = 32% -> Healthy
+			{ModelID: "Perch_V2", ModelName: "Perch V2", AvgMS: 400, P95MS: 800, WindowMS: 2500},
 		}
 	})
 

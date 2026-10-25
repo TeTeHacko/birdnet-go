@@ -144,13 +144,13 @@ func (t *RsyncTarget) withRetry(ctx context.Context, op func() error) error {
 		default:
 		}
 
-		if err := op(); err == nil {
+		err := op()
+		if err == nil {
 			return nil
-		} else {
-			lastErr = err
-			if !t.isTransientError(err) {
-				return err
-			}
+		}
+		lastErr = err
+		if !t.isTransientError(err) {
+			return err
 		}
 
 		if t.config.Debug {
@@ -617,17 +617,15 @@ func (t *RsyncTarget) List(ctx context.Context) ([]backup.BackupInfo, error) {
 		}
 
 		backupInfo := backup.BackupInfo{
-			Metadata: backup.Metadata{
-				Version:    metadata.Version,
-				Timestamp:  metadata.Timestamp,
-				Size:       metadata.Size,
-				Type:       metadata.Type,
-				Source:     metadata.Source,
-				IsDaily:    metadata.IsDaily,
-				ConfigHash: metadata.ConfigHash,
-				AppVersion: metadata.AppVersion,
-			},
-			Target: t.Name(),
+			Version:    metadata.Version,
+			Timestamp:  metadata.Timestamp,
+			Size:       metadata.Size,
+			Type:       metadata.Type,
+			Source:     metadata.Source,
+			IsDaily:    metadata.IsDaily,
+			ConfigHash: metadata.ConfigHash,
+			AppVersion: metadata.AppVersion,
+			Target:     t.Name(),
 		}
 		backups = append(backups, backupInfo)
 	}

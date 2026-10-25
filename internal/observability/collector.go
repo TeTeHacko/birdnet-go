@@ -3,10 +3,7 @@ package observability
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
-	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +23,14 @@ type Collector struct {
 	store    MetricsStore
 	interval time.Duration
 	cpuFunc  CPUUsageFunc
+
+	// now is the clock used to timestamp each collection tick. A single tick
+	// timestamp is shared by every delta-based collector (disk I/O, database,
+	// inference, and health counters) so all rates and recorded timestamps in one
+	// collect() reference the same instant. Defaults to time.Now; tests inject a
+	// deterministic clock to avoid depending on wall-clock resolution (which is
+	// coarse on Windows and made TestCollector_InferenceThroughput flaky).
+	now func() time.Time
 
 	// Internal state for disk I/O delta computation
 	prevDiskIO   map[string]disk.IOCountersStat
@@ -60,7 +65,7 @@ type Collector struct {
 	prevAudioSnaps  map[string]AudioRouterSnapshot
 	prevStreamSnaps map[string]StreamHealthSnapshot
 	// Audio Prometheus gauge setters (optional, set via SetAudioGaugeSetters).
-	audioQueueDepthGauge   func(source string, depth float64)
+	audioQueueDepthGauge    func(source string, depth float64)
 	audioDroppedChunksGauge func(source string, total float64)
 
 	// Track which metrics have had logged errors to avoid log spam
@@ -82,6 +87,7 @@ func NewCollector(store MetricsStore, interval time.Duration, cpuFunc CPUUsageFu
 		store:        store,
 		interval:     interval,
 		cpuFunc:      cpuFunc,
+		now:          time.Now,
 		prevDiskIO:   make(map[string]disk.IOCountersStat),
 		loggedErrors: make(map[string]bool),
 	}
@@ -124,10 +130,6 @@ const (
 	metricDBReadLatencyMax  = "db.read_latency_max_ms"
 	metricDBWriteLatencyMax = "db.write_latency_max_ms"
 	metricDBQueriesPerSec   = "db.queries_per_sec"
-
-	// maxValidCelsius is the upper bound for valid CPU temperature readings.
-	// 120°C captures overheating events before thermal shutdown while filtering bogus values.
-	maxValidCelsius = 120.0
 )
 
 func inferenceMetricKey(modelID string) string {
@@ -138,12 +140,19 @@ func inferenceMetricKey(modelID string) string {
 func (c *Collector) collect() {
 	points := make(map[string]float64, expectedMetricCount)
 
+	// Single authoritative timestamp for this tick. Every delta-based collector
+	// computes its delta against this instant and the previous tick's instant
+	// (a rate for disk I/O/database/inference, a recorded count for health
+	// counters), so they stay mutually consistent and the timing is fully
+	// controllable in tests.
+	tick := c.now()
+
 	c.collectCPU(points)
 	c.collectMemory(points)
 	c.collectTemperature(points)
-	c.collectDisk(points)
-	c.collectDatabase(points)
-	c.collectInference(points)
+	c.collectDisk(points, tick)
+	c.collectDatabase(points, tick)
+	c.collectInference(points, tick)
 	c.collectAudio(points)
 
 	if len(points) > 0 {
@@ -152,7 +161,7 @@ func (c *Collector) collect() {
 
 	c.collectModelRSS()
 	c.pruneInferenceGauges()
-	c.collectHealthCounters()
+	c.collectHealthCounters(tick)
 }
 
 // collectCPU reads CPU usage from the injected function.
@@ -172,19 +181,20 @@ func (c *Collector) collectMemory(points map[string]float64) {
 	points[metricMemoryUsedPercent] = memInfo.UsedPercent
 }
 
-// collectTemperature reads CPU temperature from Linux thermal zones.
-// Gracefully skipped on non-Linux or if no suitable sensor is found.
+// collectTemperature reads CPU temperature from Linux thermal zones via the
+// shared ReadCPUTemperature reader. Gracefully skipped on non-Linux or if no
+// suitable sensor is found.
 func (c *Collector) collectTemperature(points map[string]float64) {
-	temp, ok := readCPUTemperature()
-	if ok {
-		points[metricCPUTemperature] = temp
+	celsius, _, err := ReadCPUTemperature(DefaultThermalBasePath)
+	if err == nil {
+		points[metricCPUTemperature] = celsius
 	}
 }
 
 // collectDisk reads disk usage and I/O statistics via gopsutil.
-func (c *Collector) collectDisk(points map[string]float64) {
+func (c *Collector) collectDisk(points map[string]float64, tick time.Time) {
 	c.collectDiskUsage(points)
-	c.collectDiskIO(points)
+	c.collectDiskIO(points, tick)
 }
 
 // collectDiskUsage reads disk usage percentages for each partition.
@@ -211,16 +221,15 @@ func (c *Collector) collectDiskUsage(points map[string]float64) {
 }
 
 // collectDiskIO computes disk I/O rates (bytes/sec) as deltas between ticks.
-func (c *Collector) collectDiskIO(points map[string]float64) {
+func (c *Collector) collectDiskIO(points map[string]float64, tick time.Time) {
 	counters, err := disk.IOCounters()
 	if err != nil {
 		c.logOnce("disk_io", "failed to read disk I/O counters: %v", err)
 		return
 	}
 
-	now := time.Now()
 	if !c.prevDiskTime.IsZero() {
-		elapsed := now.Sub(c.prevDiskTime).Seconds()
+		elapsed := tick.Sub(c.prevDiskTime).Seconds()
 		if elapsed > 0 {
 			for device := range counters {
 				counter := counters[device]
@@ -244,7 +253,7 @@ func (c *Collector) collectDiskIO(points map[string]float64) {
 	}
 
 	c.prevDiskIO = counters
-	c.prevDiskTime = now
+	c.prevDiskTime = tick
 }
 
 // SetDBCounters sets the database atomic counters for latency tracking.
@@ -261,12 +270,15 @@ const usPerSecond = 1_000_000.0
 
 // collectDatabase computes database latency and throughput metrics from
 // atomic counter snapshots. Requires two consecutive snapshots for deltas.
-func (c *Collector) collectDatabase(points map[string]float64) {
+func (c *Collector) collectDatabase(points map[string]float64, tick time.Time) {
 	if c.dbCounters == nil {
 		return
 	}
 
 	snap := c.dbCounters.Snapshot()
+	// Use the shared tick timestamp for delta math and as the stored reference
+	// for the next tick, rather than the snapshot's own time.Now().
+	snap.CollectedAt = tick
 
 	// Max values are reset-on-read from Snapshot(), always record them
 	// (even on the first tick when prevDBSnap is nil)
@@ -371,7 +383,7 @@ func (c *Collector) SetHealthEvents(buf *HealthEventBuffer) {
 	c.healthEvents = buf
 }
 
-func (c *Collector) collectInference(points map[string]float64) {
+func (c *Collector) collectInference(points map[string]float64, tick time.Time) {
 	if c.inferenceCounters == nil {
 		return
 	}
@@ -382,6 +394,14 @@ func (c *Collector) collectInference(points map[string]float64) {
 	}
 
 	snaps := c.inferenceCounters.SnapshotAll()
+	// Stamp every snapshot with the shared tick timestamp so throughput deltas
+	// (and the previous-snapshot references stored below) use one consistent,
+	// test-controllable clock instead of each Snapshot's own time.Now().
+	for modelID := range snaps {
+		s := snaps[modelID]
+		s.CollectedAt = tick
+		snaps[modelID] = s
+	}
 
 	if c.prevInferenceSnaps == nil {
 		c.prevInferenceSnaps = make(map[string]*inferencestats.Snapshot, len(snaps))
@@ -566,13 +586,12 @@ func (c *Collector) collectAudio(points map[string]float64) {
 // collectHealthCounters samples cumulative audio and stream counters,
 // computes deltas from the previous snapshot, and records them into the
 // dedicated HealthMetricsStore. Follows the same delta pattern as collectDiskIO.
-func (c *Collector) collectHealthCounters() {
+func (c *Collector) collectHealthCounters(tick time.Time) {
 	if c.healthStore == nil {
 		return
 	}
-	now := time.Now()
-	c.collectAudioHealthCounters(now)
-	c.collectStreamHealthCounters(now)
+	c.collectAudioHealthCounters(tick)
+	c.collectStreamHealthCounters(tick)
 }
 
 // collectAudioHealthCounters computes deltas for audio drops and overruns and
@@ -672,68 +691,5 @@ func (c *Collector) recordHealthDelta(key string, current, previous int64, sourc
 	}
 }
 
-// --- CPU Temperature reading (Linux-specific) ---
-
-// thermalBasePath is the base directory for thermal zones on Linux.
-const collectorThermalBasePath = "/sys/class/thermal/"
-
-// cpuThermalSensorTypes contains sensor type names that indicate CPU temperature.
-var cpuThermalSensorTypes = map[string]bool{
-	"cpu-thermal":     true,
-	"x86_pkg_temp":    true,
-	"soc_thermal":     true,
-	"cpu_thermal":     true,
-	"thermal-fan-est": true,
-}
-
-// readCPUTemperature scans Linux thermal zones for a CPU temperature sensor.
-// Returns the temperature in Celsius and true if found, or 0 and false otherwise.
-func readCPUTemperature() (float64, bool) {
-	zones, err := filepath.Glob(filepath.Join(collectorThermalBasePath, "thermal_zone*"))
-	if err != nil || len(zones) == 0 {
-		return 0, false
-	}
-
-	// Sort for deterministic sensor selection on systems with multiple thermal zones.
-	slices.Sort(zones)
-
-	for _, zone := range zones {
-		temp, ok := readThermalZone(zone)
-		if ok {
-			return temp, true
-		}
-	}
-	return 0, false
-}
-
-// readThermalZone reads a single thermal zone and returns its temperature
-// if it matches a CPU thermal sensor type and has a valid reading.
-func readThermalZone(zonePath string) (float64, bool) {
-	// Read sensor type — paths are from filepath.Glob on /sys/class/thermal/, not user input.
-	typeData, err := os.ReadFile(filepath.Join(zonePath, "type")) //nolint:gosec // system path from Glob
-	if err != nil {
-		return 0, false
-	}
-	sensorType := strings.ToLower(strings.TrimSpace(string(typeData)))
-	if !cpuThermalSensorTypes[sensorType] {
-		return 0, false
-	}
-
-	// Read temperature (in millidegrees Celsius)
-	tempData, err := os.ReadFile(filepath.Join(zonePath, "temp")) //nolint:gosec // system path from Glob
-	if err != nil {
-		return 0, false
-	}
-	milliCelsius, err := strconv.Atoi(strings.TrimSpace(string(tempData)))
-	if err != nil {
-		return 0, false
-	}
-
-	const milliToUnit = 1000.0
-	celsius := float64(milliCelsius) / milliToUnit
-
-	if celsius < 0 || celsius > maxValidCelsius {
-		return 0, false
-	}
-	return celsius, true
-}
+// CPU temperature reading is provided by the shared ReadCPUTemperature reader
+// in thermal.go, used by collectTemperature above.

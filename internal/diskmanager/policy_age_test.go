@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,8 +16,14 @@ import (
 	"github.com/tphakala/birdnet-go/internal/logger"
 )
 
-// MockDB is a mock implementation of the database interface for testing
-type MockDB struct{}
+// MockDB is a mock implementation of the database interface for testing.
+// It records the names passed to the clear and retain methods.
+type MockDB struct {
+	mu        sync.Mutex
+	cleared   [][]string // one entry per ClearNoteClipPathsByNames call
+	retained  [][]string // one entry per RetainNoteSpectrogramsByClipNames call
+	retainErr error      // returned by RetainNoteSpectrogramsByClipNames
+}
 
 // GetDeletionInfo is a mock implementation that always returns no entries
 func (m *MockDB) GetDeletionInfo() ([]string, error) {
@@ -33,8 +41,22 @@ func (m *MockDB) GetLockedNotesClipPaths() ([]string, error) {
 }
 
 // ClearNoteClipPathsByNames is a mock implementation that does nothing
-func (m *MockDB) ClearNoteClipPathsByNames(_ []string) (int64, error) {
-	return 0, nil
+func (m *MockDB) ClearNoteClipPathsByNames(clipNames []string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleared = append(m.cleared, slices.Clone(clipNames))
+	return int64(len(clipNames)), nil
+}
+
+// RetainNoteSpectrogramsByClipNames records the names and returns retainErr.
+func (m *MockDB) RetainNoteSpectrogramsByClipNames(clipNames []string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.retained = append(m.retained, slices.Clone(clipNames))
+	if m.retainErr != nil {
+		return 0, m.retainErr
+	}
+	return int64(len(clipNames)), nil
 }
 
 // TestAgeBasedCleanupFileTypeEligibility tests if the file type check works correctly
@@ -580,4 +602,178 @@ func simulateAgeBasedCleanup(
 
 	// Return the results with dynamic disk utilization
 	return CleanupResult{Err: nil, ClipsRemoved: deletedCount, DiskUtilization: currentDiskUtilization}
+}
+
+// TestProcessAgeBasedDeletionLoopStats verifies that the per-run cleanupStats
+// summary (added for GitHub #3892 / #4059 diagnosability) correctly tallies
+// every outcome bucket without changing which files get deleted.
+func TestProcessAgeBasedDeletionLoopStats(t *testing.T) {
+	t.Parallel()
+
+	makeAgeTestFile := func(t *testing.T, dir, species string, age time.Duration, locked bool) FileInfo {
+		t.Helper()
+		// The age (in whole seconds) makes the filename unique per call even
+		// for the same species, since these FileInfo values are constructed
+		// directly rather than parsed from disk, so nothing else disambiguates
+		// same-species files sharing a directory.
+		path := filepath.Join(dir, fmt.Sprintf("%s_80p_%d.wav", species, int64(age.Seconds())))
+		require.NoError(t, os.WriteFile(path, []byte("audio"), 0o644)) //nolint:gosec // G306: Test files don't require restrictive permissions
+		return FileInfo{
+			Path:      path,
+			Species:   species,
+			Timestamp: time.Now().Add(-age),
+			Size:      5,
+			Locked:    locked,
+		}
+	}
+
+	t.Run("mixed outcomes tally correctly", func(t *testing.T) {
+		t.Parallel()
+		testDir := t.TempDir()
+		retentionCutoffUnix := time.Now().Add(-168 * time.Hour).Unix() // 7 days
+
+		// Sorted oldest-first, matching the order AgeBasedCleanup produces
+		// before calling this loop. Each skip bucket gets a DISTINCT count
+		// (locked=2, min-clips=1, not-old-enough=3) so that a mislabel swapping
+		// two of the tally arms cannot leave the asserted struct unchanged.
+		lockedA := makeAgeTestFile(t, testDir, "locked_a", 300*time.Hour, true)
+		lockedB := makeAgeTestFile(t, testDir, "locked_b", 280*time.Hour, true)
+		oldestOfA := makeAgeTestFile(t, testDir, "species_a", 200*time.Hour, false)
+		newerOfA := makeAgeTestFile(t, testDir, "species_a", 190*time.Hour, false)
+		tooNew1 := makeAgeTestFile(t, testDir, "species_d", 3*time.Hour, false)
+		tooNew2 := makeAgeTestFile(t, testDir, "species_d", 2*time.Hour, false)
+		tooNew3 := makeAgeTestFile(t, testDir, "species_d", 1*time.Hour, false)
+
+		files := []FileInfo{lockedA, lockedB, oldestOfA, newerOfA, tooNew1, tooNew2, tooNew3}
+		speciesTotalCount := buildSpeciesTotalCountMap(files)
+
+		run, _ := newTestRun(t)
+		const minClipsPerSpecies = 1
+		deletedCount, deletedNames, stats, loopErr := processAgeBasedDeletionLoop(
+			files, speciesTotalCount, minClipsPerSpecies, false, run, retentionCutoffUnix)
+
+		require.NoError(t, loopErr)
+		assert.Equal(t, 1, deletedCount, "only the oldest of species_a should be deleted")
+		assert.Equal(t, []string{oldestOfA.Path}, deletedNames)
+
+		assert.Equal(t, cleanupStats{
+			Scanned:         7,
+			Deleted:         1,
+			LockedSkipped:   2,
+			MinClipsBlocked: 1,
+			NotEligible:     3,
+			Errors:          0,
+			BytesFreed:      5, // one 5-byte file deleted
+			StopReason:      stopExhausted,
+		}, stats)
+
+		assert.NoFileExists(t, oldestOfA.Path, "oldest species_a file should be deleted")
+		assert.FileExists(t, newerOfA.Path, "second species_a file should be kept (min clips)")
+		assert.FileExists(t, lockedA.Path, "locked file A should be kept")
+		assert.FileExists(t, lockedB.Path, "locked file B should be kept")
+		assert.FileExists(t, tooNew1.Path, "too-new file should be kept")
+	})
+
+	t.Run("deletion error is tallied without stopping the loop", func(t *testing.T) {
+		t.Parallel()
+		testDir := t.TempDir()
+		retentionCutoffUnix := time.Now().Add(-168 * time.Hour).Unix()
+
+		// blockedFile is a non-empty directory named like a clip: os.Remove
+		// fails on it (the path exists, so it is a real error, not a vanished
+		// file) inside deleteFileAndOptionalSpectrogram.
+		blockedPath := filepath.Join(testDir, "blocked_species_80p_20200102T150405Z.wav")
+		require.NoError(t, os.MkdirAll(blockedPath, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(blockedPath, "inner"), []byte("x"), 0o644)) //nolint:gosec // G306: test file
+		blockedFile := FileInfo{
+			Path:      blockedPath,
+			Species:   "blocked_species",
+			Timestamp: time.Now().Add(-200 * time.Hour),
+			Size:      5,
+			Locked:    false,
+		}
+		survivingFile := makeAgeTestFile(t, testDir, "surviving_species", 200*time.Hour, false)
+
+		files := []FileInfo{blockedFile, survivingFile}
+		speciesTotalCount := buildSpeciesTotalCountMap(files)
+
+		run, _ := newTestRun(t)
+		const minClipsPerSpecies = 0
+		deletedCount, deletedNames, stats, loopErr := processAgeBasedDeletionLoop(
+			files, speciesTotalCount, minClipsPerSpecies, false, run, retentionCutoffUnix)
+
+		require.NoError(t, loopErr, "a single deletion error stays below the stop threshold")
+		assert.Equal(t, 1, deletedCount)
+		assert.Equal(t, []string{survivingFile.Path}, deletedNames)
+
+		assert.Equal(t, cleanupStats{
+			Scanned:    2,
+			Deleted:    1,
+			Errors:     1,
+			BytesFreed: 5, // the one surviving file (5 bytes) deleted; the blocked one errored
+			StopReason: stopExhausted,
+		}, stats)
+	})
+
+	t.Run("a file already gone is tallied, lowers the species count and is not an error", func(t *testing.T) {
+		t.Parallel()
+		testDir := t.TempDir()
+		retentionCutoffUnix := time.Now().Add(-168 * time.Hour).Unix()
+
+		// ghost references a path that was never created, simulating a clip
+		// removed elsewhere (for example from the UI) after the scan. It counts
+		// toward species_a until the loop reaches it.
+		ghost := FileInfo{
+			Path:      filepath.Join(testDir, "species_a_80p_ghost.wav"),
+			Species:   "species_a",
+			Timestamp: time.Now().Add(-300 * time.Hour),
+			Size:      5,
+		}
+		keepOne := makeAgeTestFile(t, testDir, "species_a", 290*time.Hour, false)
+		files := []FileInfo{ghost, keepOne}
+		speciesTotalCount := buildSpeciesTotalCountMap(files)
+		require.Equal(t, 2, speciesTotalCount["species_a"])
+
+		run, env := newTestRun(t)
+		const minClipsPerSpecies = 1
+		deletedCount, _, stats, loopErr := processAgeBasedDeletionLoop(
+			files, speciesTotalCount, minClipsPerSpecies, false, run, retentionCutoffUnix)
+
+		require.NoError(t, loopErr)
+		assert.Equal(t, 0, deletedCount)
+		assert.Equal(t, 1, stats.AlreadyGone)
+		assert.Equal(t, 0, stats.Errors, "a vanished file is not an error")
+		assert.Equal(t, 1, speciesTotalCount["species_a"], "the vanished clip no longer counts toward the species")
+		assert.Equal(t, 1, stats.MinClipsBlocked, "the surviving clip is now the species minimum")
+		assert.FileExists(t, keepOne.Path)
+		assert.Empty(t, env.sleeps, "nothing was written, so no pacing wait")
+	})
+
+	t.Run("BytesFreed counts audio only, not the deleted spectrogram", func(t *testing.T) {
+		t.Parallel()
+		testDir := t.TempDir()
+		retentionCutoffUnix := time.Now().Add(-168 * time.Hour).Unix()
+
+		// One deletable audio file (5 bytes) with a companion spectrogram PNG
+		// that is much larger. With keepSpectrograms=false the PNG is deleted
+		// too, but BytesFreed intentionally accounts for the audio size only
+		// (the loop never stats the PNG), so the assertion documents that
+		// contract and guards against a future change that assumes byte parity.
+		audio := makeAgeTestFile(t, testDir, "sp_audio", 200*time.Hour, false)
+		pngPath := strings.TrimSuffix(audio.Path, filepath.Ext(audio.Path)) + ".png"
+		require.NoError(t, os.WriteFile(pngPath, make([]byte, 1000), 0o644)) //nolint:gosec // G306: test file
+
+		files := []FileInfo{audio}
+		speciesTotalCount := buildSpeciesTotalCountMap(files)
+		run, _ := newTestRun(t)
+		const minClipsPerSpecies = 0
+		deletedCount, _, stats, loopErr := processAgeBasedDeletionLoop(
+			files, speciesTotalCount, minClipsPerSpecies, false /* keepSpectrograms */, run, retentionCutoffUnix)
+
+		require.NoError(t, loopErr)
+		assert.Equal(t, 1, deletedCount)
+		assert.NoFileExists(t, audio.Path, "audio file should be deleted")
+		assert.NoFileExists(t, pngPath, "spectrogram should also be deleted when keepSpectrograms is false")
+		assert.Equal(t, int64(5), stats.BytesFreed, "BytesFreed counts the 5-byte audio file, not the 1000-byte PNG")
+	})
 }

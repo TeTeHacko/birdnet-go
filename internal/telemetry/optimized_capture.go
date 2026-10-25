@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"sync/atomic"
+	"time"
 
 	"github.com/getsentry/sentry-go"
 	"github.com/tphakala/birdnet-go/internal/conf"
@@ -13,17 +14,12 @@ var telemetryEnabled atomic.Bool
 // UpdateTelemetryEnabled updates the cached telemetry enabled state
 func UpdateTelemetryEnabled() {
 	// In test mode, telemetry is always enabled
-	if atomic.LoadInt32(&testMode) == 1 {
+	if testMode.Load() == testModeEnabled {
 		telemetryEnabled.Store(true)
 		return
 	}
 
-	settings := conf.GetSettings()
-	if settings != nil && settings.Sentry.Enabled {
-		telemetryEnabled.Store(true)
-	} else {
-		telemetryEnabled.Store(false)
-	}
+	telemetryEnabled.Store(reportingAllowed(conf.GetSettings(), time.Now()))
 }
 
 // IsTelemetryEnabled returns true if telemetry is enabled
@@ -35,13 +31,13 @@ func IsTelemetryEnabled() bool {
 // EnableTestMode enables test mode and updates the telemetry enabled state
 // This is useful for tests that need to enable telemetry without real settings
 func EnableTestMode() {
-	atomic.StoreInt32(&testMode, 1)
+	testMode.Store(testModeEnabled)
 	UpdateTelemetryEnabled()
 }
 
 // DisableTestMode disables test mode and updates the telemetry enabled state
 func DisableTestMode() {
-	atomic.StoreInt32(&testMode, 0)
+	testMode.Store(testModeDisabled)
 	UpdateTelemetryEnabled()
 }
 

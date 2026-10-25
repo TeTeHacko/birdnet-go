@@ -1,7 +1,9 @@
 package classifier
 
 import (
+	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/tphakala/birdnet-go/internal/conf"
@@ -9,6 +11,26 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// Isolate the process-global config path for the whole classifier test
+	// package so settings-mutating tests never overwrite the developer's real
+	// ~/.config/birdnet-go/config.yaml. Tests call conf.SaveSettings() (via
+	// applyConfigForInstall, the primary-variant swap path, or ScanInstalled's
+	// Models.Enabled sync); without an isolated conf.ConfigPath, SaveSettings
+	// resolves GetDefaultConfigPaths() and clobbers the real config with test
+	// data. This is the package-wide backstop that also covers the pre-existing
+	// geomodel/perch/bsg tests predating the per-test isolateTestConfig helper.
+	// FindConfigFile treats a missing explicit config path as fatal, so an empty
+	// file (a valid empty YAML document) is created up front. os.CreateTemp is used
+	// rather than t.TempDir() because TestMain has no *testing.T.
+	cfgFile, err := os.CreateTemp("", "classifier-test-config-*.yaml")
+	if err != nil {
+		panic("classifier TestMain: create temp config file: " + err.Error())
+	}
+	if err := cfgFile.Close(); err != nil {
+		panic("classifier TestMain: close temp config file: " + err.Error())
+	}
+	conf.ConfigPath = cfgFile.Name()
+
 	goleak.VerifyTestMain(m)
 }
 
@@ -62,11 +84,11 @@ func TestGetSpeciesOccurrence(t *testing.T) {
 				},
 			}
 
-			bn := &BirdNET{
-				Settings: settings,
-			}
-
-			occurrence := bn.GetSpeciesOccurrence(tt.species)
+			// The range filter is owned by the orchestrator's service since Phase 2b.
+			// With no backend loaded, occurrenceAtTime short-circuits to 0, matching the
+			// former bn.GetSpeciesOccurrence nil-range-filter fast path these cases hit.
+			rfs := newTestRangeFilterService(nil)
+			occurrence := rfs.occurrenceAtTime(tt.species, time.Now(), settings)
 			assert.InDelta(t, tt.expected, occurrence, 0.001, tt.description)
 		})
 	}

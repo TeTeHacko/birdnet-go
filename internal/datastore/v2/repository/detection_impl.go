@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/tphakala/birdnet-go/internal/datastore"
@@ -293,6 +292,52 @@ func (r *detectionRepository) Update(ctx context.Context, id uint, updates map[s
 		return ErrDetectionLocked
 	}
 	return nil
+}
+
+// columnClipSampleRate is the detections column holding the clip's sample rate (Hz).
+const columnClipSampleRate = "clip_sample_rate"
+
+// RecordClipSampleRate sets the clip sample rate of a detection whose clip_name
+// still equals clipName, overwriting any stored value. A single-row UPDATE with a
+// WHERE guard is atomic on SQLite and MySQL, so it needs no transaction or lock.
+// Unlike Update it does not check detection locks: the rate is clip metadata.
+func (r *detectionRepository) RecordClipSampleRate(ctx context.Context, id uint, clipName string, rate int) error {
+	if clipName == "" || rate <= 0 {
+		return nil
+	}
+	return datastore.RetryOnLock(ctx, "v2_record_clip_sample_rate", func() error {
+		return r.clipRows(ctx, id, clipName).Update(columnClipSampleRate, rate).Error
+	}, r.metrics)
+}
+
+// FillClipSampleRate sets the clip sample rate only while it is NULL and clip_name
+// still equals clipName. It reports whether a row changed.
+func (r *detectionRepository) FillClipSampleRate(ctx context.Context, id uint, clipName string, rate int) (bool, error) {
+	if clipName == "" || rate <= 0 {
+		return false, nil
+	}
+	var rowsAffected int64
+	err := datastore.RetryOnLock(ctx, "v2_fill_clip_sample_rate", func() error {
+		res := r.clipRows(ctx, id, clipName).
+			Where(columnClipSampleRate+" IS NULL").
+			Update(columnClipSampleRate, rate)
+		if res.Error != nil {
+			return res.Error
+		}
+		rowsAffected = res.RowsAffected
+		return nil
+	}, r.metrics)
+	if err != nil {
+		return false, err
+	}
+	return rowsAffected > 0, nil
+}
+
+// clipRows selects the detection row with the given ID whose clip_name still
+// equals clipName, for the guarded clip sample rate updates.
+func (r *detectionRepository) clipRows(ctx context.Context, id uint, clipName string) *gorm.DB {
+	return r.db.WithContext(ctx).Table(r.tableName()).
+		Where("id = ? AND clip_name = ?", id, clipName)
 }
 
 // Delete removes a detection by ID.
@@ -764,16 +809,21 @@ func (r *detectionRepository) applySearchOrdering(query *gorm.DB, filters *Searc
 	return query
 }
 
+// searchQuery builds the filtered (but unordered and unpaginated) detections query
+// shared by Search and CountSearch, so both always agree on which rows match.
+func (r *detectionRepository) searchQuery(ctx context.Context, filters *SearchFilters) *gorm.DB {
+	query := r.db.WithContext(ctx).Table(r.tableName())
+	query = r.buildSearchFilters(query, filters)
+	return r.buildSearchJoins(query, filters)
+}
+
 // Search finds detections matching the given filters.
 func (r *detectionRepository) Search(ctx context.Context, filters *SearchFilters) ([]*entities.Detection, int64, error) {
 	if filters == nil {
 		filters = &SearchFilters{}
 	}
 
-	// Build query with filters
-	query := r.db.WithContext(ctx).Table(r.tableName())
-	query = r.buildSearchFilters(query, filters)
-	query = r.buildSearchJoins(query, filters)
+	query := r.searchQuery(ctx, filters)
 
 	// Count total before pagination
 	var total int64
@@ -792,6 +842,21 @@ func (r *detectionRepository) Search(ctx context.Context, filters *SearchFilters
 	}
 
 	return dets, total, nil
+}
+
+// CountSearch counts detections matching the given filters without loading them.
+// It runs only the COUNT that Search runs for its total, so callers that need just
+// the total avoid Search's unbounded row fetch when no Limit is set.
+func (r *detectionRepository) CountSearch(ctx context.Context, filters *SearchFilters) (int64, error) {
+	if filters == nil {
+		filters = &SearchFilters{}
+	}
+
+	var total int64
+	if err := r.searchQuery(ctx, filters).Count(&total).Error; err != nil {
+		return 0, err
+	}
+	return total, nil
 }
 
 // ============================================================================
@@ -852,26 +917,55 @@ func (r *detectionRepository) countByHalfOpenRange(ctx context.Context, start, e
 // Aggregations
 // ============================================================================
 
-// GetTopSpecies returns the most frequently detected species in a time range.
-func (r *detectionRepository) GetTopSpecies(ctx context.Context, start, end int64, minConfidence float64, modelID *uint, limit int) ([]SpeciesCount, error) {
+// GetTopSpecies returns the most frequently detected species in a time range. species is an optional
+// scientific-name filter: when non-empty the ranking is restricted to those species (parameterized
+// IN, applied before the volume ORDER BY / LIMIT so the result stays volume-ordered and capped);
+// when nil/empty every species is ranked.
+//
+// False positives are excluded from the count, matching GetSpeciesSummary (which powers the species
+// selector's ranking) and the hourly/confidence data queries this feeds (GetBatchHourlyOccurrences,
+// GetBatchConfidences). Without this, "top species" ranked here would count detections the user
+// flagged as false, so the ranking population disagreed with both the selector and the very buckets
+// these species are then charted from.
+func (r *detectionRepository) GetTopSpecies(ctx context.Context, start, end int64, minConfidence float64, modelID *uint, species []string, limit int) ([]SpeciesCount, error) {
 	var results []SpeciesCount
 
-	query := r.db.WithContext(ctx).Table(r.tableName()).
+	detTable := r.tableName()
+	labTable := r.labelsTable()
+	revTable := r.reviewsTable()
+
+	query := r.db.WithContext(ctx).Table(detTable).
 		Select(fmt.Sprintf("%s.label_id, %s.scientific_name, COUNT(*) as count",
-			r.tableName(), r.labelsTable())).
+			detTable, labTable)).
 		Joins(fmt.Sprintf("JOIN %s ON %s.id = %s.label_id",
-			r.labelsTable(), r.labelsTable(), r.tableName())).
-		Where(fmt.Sprintf("%s.detected_at >= ? AND %s.detected_at <= ?", r.tableName(), r.tableName()), start, end).
-		Where(fmt.Sprintf("%s.confidence >= ?", r.tableName()), minConfidence)
+			labTable, labTable, detTable)).
+		Joins(fmt.Sprintf("LEFT JOIN %s ON %s.id = %s.detection_id",
+			revTable, detTable, revTable)).
+		Where(fmt.Sprintf("%s.detected_at >= ? AND %s.detected_at <= ?", detTable, detTable), start, end).
+		Where(fmt.Sprintf("%s.confidence >= ?", detTable), minConfidence).
+		Where(fmt.Sprintf("(%s.verified IS NULL OR %s.verified != ?)", revTable, revTable),
+			string(entities.VerificationFalsePositive))
 
 	if modelID != nil {
-		query = query.Where(fmt.Sprintf("%s.model_id = ?", r.tableName()), *modelID)
+		query = query.Where(fmt.Sprintf("%s.model_id = ?", detTable), *modelID)
 	}
 
-	err := query.Group("label_id").
-		Order("count DESC").
-		Limit(limit).
-		Scan(&results).Error
+	// Optional species filter: parameterized IN over the joined labels table, applied before the
+	// ORDER BY count / LIMIT so the ranking is narrowed to the selection while staying volume-ordered.
+	if len(species) > 0 {
+		query = query.Where(fmt.Sprintf("%s.scientific_name IN ?", labTable), species)
+	}
+
+	query = query.Group("label_id").Order("count DESC, label_id ASC")
+
+	// limit <= 0 means "no limit". Callers with an explicit species filter pass 0 so a species that
+	// owns several model labels is not truncated to fewer rows than the number of selected species
+	// (the label rows are merged back into one series per species downstream).
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+
+	err := query.Scan(&results).Error
 
 	return results, err
 }
@@ -930,6 +1024,56 @@ func (r *detectionRepository) GetBatchHourlyOccurrences(ctx context.Context, lab
 				counts[row.Hour] = row.Count
 				result[row.LabelID] = counts
 			}
+		}
+	}
+
+	return result, nil
+}
+
+// GetBatchConfidences returns per-label-ID detection confidences for the given label IDs over
+// [start, end), false positives excluded and filtered by minConfidence. It mirrors
+// GetBatchHourlyOccurrences: one query per chunk covers many labels (grouped client-side by
+// label_id), large label sets are chunked to stay within SQL host-parameter limits, and each label
+// ID appears in exactly one chunk so no cross-chunk merge is needed. The raw values are returned
+// (not pre-binned) so the binning math stays in shared, dialect-agnostic Go.
+func (r *detectionRepository) GetBatchConfidences(ctx context.Context, labelIDs []uint, start, end int64, minConfidence float64) (map[uint][]float64, error) {
+	result := make(map[uint][]float64, len(labelIDs))
+
+	// Return empty map for empty input (no query)
+	if len(labelIDs) == 0 {
+		return result, nil
+	}
+
+	type labelConfidence struct {
+		LabelID    uint
+		Confidence float64
+	}
+
+	detTable := r.tableName()
+	revTable := r.reviewsTable()
+
+	// Chunk label IDs to avoid exceeding SQL host-parameter limits on the IN clause.
+	for i := 0; i < len(labelIDs); i += batchQuerySize {
+		// Fail fast between chunks if the caller's context was cancelled.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		chunkEnd := min(i+batchQuerySize, len(labelIDs))
+		chunk := labelIDs[i:chunkEnd]
+
+		var rows []labelConfidence
+		err := r.db.WithContext(ctx).Table(fmt.Sprintf("%s d", detTable)).
+			Joins(fmt.Sprintf("LEFT JOIN %s dr ON d.id = dr.detection_id", revTable)).
+			Select("d.label_id as label_id, d.confidence as confidence").
+			Where("d.label_id IN ? AND d.detected_at >= ? AND d.detected_at < ? AND d.confidence >= ?", chunk, start, end, minConfidence).
+			Where("(dr.verified IS NULL OR dr.verified != ?)", string(entities.VerificationFalsePositive)).
+			Scan(&rows).Error
+		if err != nil {
+			return nil, fmt.Errorf("batch confidences: %w", err)
+		}
+
+		for _, row := range rows {
+			result[row.LabelID] = append(result[row.LabelID], row.Confidence)
 		}
 	}
 
@@ -1086,7 +1230,7 @@ func (r *detectionRepository) GetTopSpeciesByModel(ctx context.Context, modelID 
 			r.labelsTable(), r.labelsTable(), r.tableName())).
 		Where(fmt.Sprintf("%s.model_id = ?", r.tableName()), modelID).
 		Group("label_id").
-		Order("count DESC").
+		Order("count DESC, label_id ASC").
 		Limit(limit).
 		Scan(&results).Error
 
@@ -1142,6 +1286,88 @@ func (r *detectionRepository) SaveModelContributions(ctx context.Context, detect
 			return tx.Table(r.modelContributionsTable()).Create(&contribs).Error
 		})
 	}, r.metrics)
+}
+
+// contributionWithModelRow is the scan target of the contribution and model join.
+type contributionWithModelRow struct {
+	ID            uint
+	DetectionID   uint
+	ModelID       uint
+	HitCount      int
+	MaxConfidence float64
+	FirstHitAt    *int64
+	LastHitAt     *int64
+	MinConfidence *float64
+	ConfidenceSum *float64
+	ModelName     string
+	ModelVersion  string
+	ModelVariant  string
+	ModelType     string
+}
+
+// contributionWithModelColumns lists the selected columns explicitly so that
+// classifier_path is never read.
+const contributionWithModelColumns = "c.id, c.detection_id, c.model_id, c.hit_count, c.max_confidence, " +
+	"c.first_hit_at, c.last_hit_at, c.min_confidence, c.confidence_sum, " +
+	"m.name AS model_name, m.version AS model_version, m.variant AS model_variant, m.model_type AS model_type"
+
+// contributionOrder gives each detection's contributions a total, stable order.
+const contributionOrder = "c.detection_id ASC, c.hit_count DESC, c.max_confidence DESC, c.model_id ASC"
+
+// GetModelContributionsByDetectionIDs returns the stored model contributions of
+// the given detections, keyed by detection ID. See the interface for ordering.
+func (r *detectionRepository) GetModelContributionsByDetectionIDs(ctx context.Context, detectionIDs []uint) (map[uint][]*entities.DetectionModelContribution, error) {
+	result := make(map[uint][]*entities.DetectionModelContribution)
+	if len(detectionIDs) == 0 {
+		return result, nil
+	}
+
+	// De-duplicate so one detection's rows are fetched by exactly one chunk.
+	ids := slices.Clone(detectionIDs)
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+
+	for i := 0; i < len(ids); i += batchQuerySize {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		chunk := ids[i:min(i+batchQuerySize, len(ids))]
+
+		var rows []contributionWithModelRow
+		err := r.db.WithContext(ctx).
+			Table(r.modelContributionsTable()+" c").
+			Select(contributionWithModelColumns).
+			Joins(fmt.Sprintf("JOIN %s m ON m.id = c.model_id", r.modelsTable())).
+			Where("c.detection_id IN ?", chunk).
+			Order(contributionOrder).
+			Scan(&rows).Error
+		if err != nil {
+			return nil, fmt.Errorf("batch load model contributions: %w", err)
+		}
+
+		for j := range rows {
+			row := &rows[j]
+			result[row.DetectionID] = append(result[row.DetectionID], &entities.DetectionModelContribution{
+				ID:            row.ID,
+				DetectionID:   row.DetectionID,
+				ModelID:       row.ModelID,
+				HitCount:      row.HitCount,
+				MaxConfidence: row.MaxConfidence,
+				FirstHitAt:    row.FirstHitAt,
+				LastHitAt:     row.LastHitAt,
+				MinConfidence: row.MinConfidence,
+				ConfidenceSum: row.ConfidenceSum,
+				Model: &entities.AIModel{
+					ID:        row.ModelID,
+					Name:      row.ModelName,
+					Version:   row.ModelVersion,
+					Variant:   row.ModelVariant,
+					ModelType: entities.ModelType(row.ModelType),
+				},
+			})
+		}
+	}
+	return result, nil
 }
 
 // SavePredictionsBatch stores predictions for multiple detections efficiently.
@@ -1434,7 +1660,7 @@ func (r *detectionRepository) Lock(ctx context.Context, detectionID uint) error 
 }
 
 // Unlock removes the lock from a detection.
-// This operation is idempotent — unlocking an already-unlocked detection succeeds silently.
+// This operation is idempotent: unlocking an already-unlocked detection succeeds silently.
 // Uses RetryOnLock for transient SQLite lock contention.
 func (r *detectionRepository) Unlock(ctx context.Context, detectionID uint) error {
 	return datastore.RetryOnLock(ctx, "v2_unlock_detection", func() error {
@@ -1510,7 +1736,7 @@ func (r *detectionRepository) GetLocksByDetectionIDs(ctx context.Context, detect
 
 // GetSpeciesSummary returns summary statistics for all species.
 // Groups by scientific_name to aggregate across all models for the same species.
-func (r *detectionRepository) GetSpeciesSummary(ctx context.Context, start, end int64, modelID *uint, sourceIDs ...uint) ([]SpeciesSummaryData, error) {
+func (r *detectionRepository) GetSpeciesSummary(ctx context.Context, start, end int64, modelID *uint) ([]SpeciesSummaryData, error) {
 	var results []SpeciesSummaryData
 
 	detTable := r.tableName()
@@ -1535,9 +1761,6 @@ func (r *detectionRepository) GetSpeciesSummary(ctx context.Context, start, end 
 	if modelID != nil {
 		query = query.Where(fmt.Sprintf("%s.model_id = ?", detTable), *modelID)
 	}
-	if len(sourceIDs) > 0 {
-		query = query.Where(fmt.Sprintf("%s.source_id IN ?", detTable), sourceIDs)
-	}
 
 	err := query.Group(fmt.Sprintf("%s.scientific_name", labTable)).
 		Order("total_detections DESC").
@@ -1548,8 +1771,7 @@ func (r *detectionRepository) GetSpeciesSummary(ctx context.Context, start, end 
 
 // buildAnalyticsBaseQuery creates a base query with JOIN and WHERE clauses for analytics.
 // This helper reduces duplication between analytics query methods.
-// sourceIDs (when non-empty) restricts results to detections from the listed audio sources.
-func (r *detectionRepository) buildAnalyticsBaseQuery(ctx context.Context, start, end int64, labelID, modelID *uint, sourceIDs ...uint) *gorm.DB {
+func (r *detectionRepository) buildAnalyticsBaseQuery(ctx context.Context, start, end int64, labelIDs []uint, modelID *uint) *gorm.DB {
 	detTable := r.tableName()
 	revTable := r.reviewsTable()
 	query := r.db.WithContext(ctx).Table(fmt.Sprintf("%s d", detTable)).
@@ -1557,27 +1779,26 @@ func (r *detectionRepository) buildAnalyticsBaseQuery(ctx context.Context, start
 		Where("d.detected_at >= ? AND d.detected_at < ?", start, end).
 		Where("(dr.verified IS NULL OR dr.verified != ?)", string(entities.VerificationFalsePositive))
 
-	if labelID != nil {
-		query = query.Where("d.label_id = ?", *labelID)
+	// A species has one label per model, so a species filter is a set of label IDs, not one:
+	// filtering on a single label silently dropped every detection made by the other models.
+	if len(labelIDs) > 0 {
+		query = query.Where("d.label_id IN ?", labelIDs)
 	}
 	if modelID != nil {
 		query = query.Where("d.model_id = ?", *modelID)
-	}
-	if len(sourceIDs) > 0 {
-		query = query.Where("d.source_id IN ?", sourceIDs)
 	}
 
 	return query
 }
 
 // GetHourlyDistribution returns detection counts by hour.
-func (r *detectionRepository) GetHourlyDistribution(ctx context.Context, start, end int64, tzOffsetSeconds int, labelID, modelID *uint, sourceIDs ...uint) ([]HourlyDistributionData, error) {
+func (r *detectionRepository) GetHourlyDistribution(ctx context.Context, start, end int64, tzOffsetSeconds int, labelIDs []uint, modelID *uint) ([]HourlyDistributionData, error) {
 	var results []HourlyDistributionData
 
 	// Bucket by wall-clock hour in the configured timezone via hourFromUnixExpr.
 	// Exclude detections marked as false_positive
 	hourExpr := r.hourFromUnixExpr("d.detected_at", tzOffsetSeconds)
-	query := r.buildAnalyticsBaseQuery(ctx, start, end, labelID, modelID, sourceIDs...).
+	query := r.buildAnalyticsBaseQuery(ctx, start, end, labelIDs, modelID).
 		Select(fmt.Sprintf("%s as hour, COUNT(*) as count", hourExpr)).
 		Group("hour").
 		Order("hour ASC")
@@ -1586,14 +1807,26 @@ func (r *detectionRepository) GetHourlyDistribution(ctx context.Context, start, 
 	return results, err
 }
 
+// GetDetectionTimestamps returns raw detected_at epochs for [start, end), false positives
+// excluded, in no particular order. See the interface doc for why bucketing happens in Go,
+// not SQL.
+func (r *detectionRepository) GetDetectionTimestamps(ctx context.Context, start, end int64, labelIDs []uint) ([]int64, error) {
+	var timestamps []int64
+	// No ORDER BY: the caller buckets timestamps into a map and sorts the resulting cells
+	// itself, so ordering (potentially millions of) rows in SQL would be wasted work.
+	err := r.buildAnalyticsBaseQuery(ctx, start, end, labelIDs, nil).
+		Pluck("d.detected_at", &timestamps).Error
+	return timestamps, err
+}
+
 // GetDailyAnalytics returns daily statistics.
-func (r *detectionRepository) GetDailyAnalytics(ctx context.Context, start, end int64, tzOffsetSeconds int, labelID, modelID *uint, sourceIDs ...uint) ([]DailyAnalyticsData, error) {
+func (r *detectionRepository) GetDailyAnalytics(ctx context.Context, start, end int64, tzOffsetSeconds int, labelIDs []uint, modelID *uint) ([]DailyAnalyticsData, error) {
 	var results []DailyAnalyticsData
 
 	// Group by wall-clock date in the configured timezone (offset-adjusted).
 	// Exclude detections marked as false_positive
 	dateExpr := r.dateFromUnixExpr("d.detected_at", tzOffsetSeconds)
-	query := r.buildAnalyticsBaseQuery(ctx, start, end, labelID, modelID, sourceIDs...).
+	query := r.buildAnalyticsBaseQuery(ctx, start, end, labelIDs, modelID).
 		Select(fmt.Sprintf(`
 			%s as date,
 			COUNT(*) as total_detections,
@@ -1608,7 +1841,7 @@ func (r *detectionRepository) GetDailyAnalytics(ctx context.Context, start, end 
 }
 
 // GetDetectionTrends returns detection trends over time.
-func (r *detectionRepository) GetDetectionTrends(ctx context.Context, period string, limit, tzOffsetSeconds int, modelID *uint, sourceIDs ...uint) ([]DailyAnalyticsData, error) {
+func (r *detectionRepository) GetDetectionTrends(ctx context.Context, period string, limit, tzOffsetSeconds int, modelID *uint) ([]DailyAnalyticsData, error) {
 	// Calculate start time based on period
 	var startTime int64
 	now := time.Now().Unix()
@@ -1622,118 +1855,167 @@ func (r *detectionRepository) GetDetectionTrends(ctx context.Context, period str
 		startTime = now - (24 * 3600)
 	}
 
-	return r.GetDailyAnalytics(ctx, startTime, now, tzOffsetSeconds, nil, modelID, sourceIDs...)
+	return r.GetDailyAnalytics(ctx, startTime, now, tzOffsetSeconds, nil, modelID)
 }
 
-// GetNewSpecies returns species detected for the first time ever within the range.
+// GetNewSpecies returns species detected for the first time ever within the range, false positives
+// excluded, so a species whose qualifying detections were all reviewed away is not reported as new.
 // Groups by scientific_name to aggregate across all models for the same species.
 // Uses MIN(id) as tie-breaker to avoid duplicates when multiple detections share the same timestamp.
-// When sourceIDs is non-empty, "first ever" is scoped to detections from those audio sources only.
-func (r *detectionRepository) GetNewSpecies(ctx context.Context, start, end int64, limit, offset int, sourceIDs ...uint) ([]NewSpeciesData, error) {
+func (r *detectionRepository) GetNewSpecies(ctx context.Context, start, end int64, limit, offset int) ([]NewSpeciesData, error) {
 	var results []NewSpeciesData
 
-	// Build optional source filter applied inside both derived table and outer join.
-	// Scoping inside the derived table ensures "lifetime first" is per-source when filtering;
-	// scoping in the outer join keeps detection_id/confidence consistent with the same source set.
-	sourceClauseInner, sourceClauseOuter, sourceArgs := buildSourceFilterClauses(sourceIDs, "d2", "d")
-
+	// Use raw SQL to properly group by scientific_name across all label IDs
+	// This finds species where their lifetime first detection is within the requested range.
+	//
+	// Approach: Use a derived table to compute lifetime first detection per species,
+	// The species_first derived table finds each species' lifetime first detection with one
+	// grouped scan; the outer join then picks the representative detection at that timestamp.
+	// count_in_period is a correlated subquery evaluated once per reported species (a handful per
+	// window, each an index lookup by label and time), joined on scientific_name so it counts the
+	// species across every model's label, not just the label of the first detection.
+	const noBeginTimeMillis int64 = 0
+	fpFilter := string(entities.VerificationFalsePositive)
 	rawSQL := fmt.Sprintf(`
 		SELECT
 			MIN(d.label_id) as label_id,
 			species_first.scientific_name,
 			species_first.lifetime_first as first_detected,
 			species_first.lifetime_last as last_detected,
+			species_first.first_begin_time,
 			MIN(d.id) as detection_id,
-			MAX(d.confidence) as confidence
+			MAX(d.confidence) as confidence,
+			(
+				SELECT COUNT(*)
+				FROM %s d3
+				JOIN %s l3 ON l3.id = d3.label_id
+				LEFT JOIN %s dr3 ON dr3.detection_id = d3.id
+				WHERE l3.scientific_name = species_first.scientific_name
+					AND d3.detected_at >= ? AND d3.detected_at < ?
+					AND (dr3.verified IS NULL OR dr3.verified != ?)
+			) as count_in_period
 		FROM (
 			SELECT
 				l2.scientific_name,
 				MIN(d2.detected_at) as lifetime_first,
-				MAX(d2.detected_at) as lifetime_last
+				MAX(d2.detected_at) as lifetime_last,
+				MIN(NULLIF(d2.begin_time, ?)) as first_begin_time
 			FROM %s d2
 			JOIN %s l2 ON l2.id = d2.label_id
-			%s
+			LEFT JOIN %s dr2 ON dr2.detection_id = d2.id
+			WHERE (dr2.verified IS NULL OR dr2.verified != ?)
 			GROUP BY l2.scientific_name
 			HAVING MIN(d2.detected_at) >= ? AND MIN(d2.detected_at) < ?
 		) species_first
 		JOIN %s l ON l.scientific_name = species_first.scientific_name
-		JOIN %s d ON d.label_id = l.id AND d.detected_at = species_first.lifetime_first %s
-		GROUP BY species_first.scientific_name, species_first.lifetime_first
+		JOIN %s d ON d.label_id = l.id AND d.detected_at = species_first.lifetime_first
+		LEFT JOIN %s dr ON dr.detection_id = d.id
+		WHERE (dr.verified IS NULL OR dr.verified != ?)
+		GROUP BY species_first.scientific_name, species_first.lifetime_first, species_first.lifetime_last, species_first.first_begin_time
 		ORDER BY first_detected DESC
 		LIMIT ? OFFSET ?
-	`, r.tableName(), r.labelsTable(), sourceClauseInner, r.labelsTable(), r.tableName(), sourceClauseOuter)
+	`, r.tableName(), r.labelsTable(), r.reviewsTable(), r.tableName(), r.labelsTable(), r.reviewsTable(), r.labelsTable(), r.tableName(), r.reviewsTable())
 
-	args := make([]any, 0, len(sourceArgs)*2+4)
-	args = append(args, sourceArgs...) // inner WHERE source_id IN ?
-	args = append(args, start, end)    // HAVING bounds
-	args = append(args, sourceArgs...) // outer AND source_id IN ?
-	args = append(args, limit, offset) // pagination
-
-	err := r.db.WithContext(ctx).Raw(rawSQL, args...).Scan(&results).Error
+	// Placeholders in text order: the count_in_period subquery in the SELECT list, then the
+	// species_first derived table, then the outer WHERE, then LIMIT/OFFSET.
+	err := r.db.WithContext(ctx).Raw(rawSQL, start, end, fpFilter, noBeginTimeMillis, fpFilter, start, end, fpFilter, limit, offset).Scan(&results).Error
 	return results, err
 }
 
 // GetSpeciesFirstDetectionInPeriod returns the first detection of each species within a date range.
 // Groups by scientific_name to aggregate across all models for the same species.
-// Uses ROW_NUMBER() window function to correctly identify the detection with the earliest timestamp
-// per species, with id as tie-breaker for deterministic results.
-// When sourceIDs is non-empty, results are scoped to detections from those audio sources.
-func (r *detectionRepository) GetSpeciesFirstDetectionInPeriod(ctx context.Context, start, end int64, limit, offset int, sourceIDs ...uint) ([]SpeciesFirstSeen, error) {
+//
+// It uses a plain GROUP BY + MIN(detected_at) rather than a ROW_NUMBER() window
+// function. The only consumer is the species tracker (yearly/seasonal first-seen
+// loads), which uses just scientific_name + first_detected and discards label_id
+// and detection_id; MIN(detected_at) per scientific_name is exactly that first-seen
+// date, and avoids the window function's full per-period sort (a large cost on the
+// startup load). label_id is reported as MIN(label_id) (a representative, not
+// necessarily the first row's label); detection_id is no longer selected (left zero).
+func (r *detectionRepository) GetSpeciesFirstDetectionInPeriod(ctx context.Context, start, end int64, limit, offset int) ([]SpeciesFirstSeen, error) {
 	var results []SpeciesFirstSeen
 
-	// The source filter is appended to an existing `WHERE d.detected_at ...` clause inside the
-	// inner subquery, so we need the AND-style fragment (second return value), not a fresh WHERE.
-	_, sourceClause, sourceArgs := buildSourceFilterClauses(sourceIDs, "", "d")
-
 	rawSQL := fmt.Sprintf(`
-		SELECT label_id, scientific_name, first_detected, detection_id
-		FROM (
-			SELECT
-				d.label_id,
-				l.scientific_name,
-				d.detected_at as first_detected,
-				d.id as detection_id,
-				ROW_NUMBER() OVER (PARTITION BY l.scientific_name ORDER BY d.detected_at ASC, d.id ASC) as rn
-			FROM %s d
-			JOIN %s l ON l.id = d.label_id
-			WHERE d.detected_at >= ? AND d.detected_at < ?%s
-		) ranked
-		WHERE rn = 1
-		ORDER BY first_detected ASC
+		SELECT
+			MIN(d.label_id) as label_id,
+			l.scientific_name,
+			MIN(d.detected_at) as first_detected
+		FROM %s d
+		JOIN %s l ON l.id = d.label_id
+		WHERE d.detected_at >= ? AND d.detected_at < ?
+		GROUP BY l.scientific_name
+		ORDER BY first_detected ASC, l.scientific_name ASC
 		LIMIT ? OFFSET ?
-	`, r.tableName(), r.labelsTable(), sourceClause)
+	`, r.tableName(), r.labelsTable())
 
-	args := make([]any, 0, 4+len(sourceArgs))
-	args = append(args, start, end)
-	args = append(args, sourceArgs...)
-	args = append(args, limit, offset)
-
-	err := r.db.WithContext(ctx).Raw(rawSQL, args...).Scan(&results).Error
+	err := r.db.WithContext(ctx).Raw(rawSQL, start, end, limit, offset).Scan(&results).Error
 	return results, err
 }
 
-// buildSourceFilterClauses returns SQL fragments and args for filtering by audio source IDs.
-// innerAlias is the alias used in a WHERE-style clause (e.g. "d2" → "WHERE d2.source_id IN (?,?)").
-// outerAlias is the alias used in an AND-style clause appended to an existing ON or WHERE (e.g. "d" → " AND d.source_id IN (?,?)").
-// Returns empty strings and no args when sourceIDs is empty.
-func buildSourceFilterClauses(sourceIDs []uint, innerAlias, outerAlias string) (innerClause, outerClause string, args []any) {
-	if len(sourceIDs) == 0 {
-		return "", "", nil
-	}
-	placeholders := make([]string, len(sourceIDs))
-	args = make([]any, len(sourceIDs))
-	for i, id := range sourceIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-	list := strings.Join(placeholders, ",")
-	if innerAlias != "" {
-		innerClause = fmt.Sprintf("WHERE %s.source_id IN (%s)", innerAlias, list)
-	}
-	if outerAlias != "" {
-		outerClause = fmt.Sprintf(" AND %s.source_id IN (%s)", outerAlias, list)
-	}
-	return innerClause, outerClause, args
+// GetSpeciesFirstSeenInPeriod returns the in-period first detection of each species over the
+// half-open range [start, end), false positives excluded, grouped by scientific name so a species
+// with one label per model collapses to a single first-seen. Unlike GetSpeciesFirstDetectionInPeriod
+// (which omits the false-positive exclusion and is paginated for the species tracker), this goes
+// through buildAnalyticsBaseQuery so it shares the analytics false-positive filter, and returns every
+// species (no LIMIT) for the accumulation curve. GROUP BY scientific_name with MIN(detected_at) makes
+// the reviews LEFT JOIN immune to fan-out: duplicate joined rows for one detection collapse under the
+// aggregate. label_id is not selected (it is irrelevant to accumulation and stays zero).
+func (r *detectionRepository) GetSpeciesFirstSeenInPeriod(ctx context.Context, start, end int64) ([]SpeciesFirstSeen, error) {
+	var results []SpeciesFirstSeen
+
+	err := r.buildAnalyticsBaseQuery(ctx, start, end, nil, nil).
+		Joins(fmt.Sprintf("JOIN %s l ON l.id = d.label_id", r.labelsTable())).
+		Select("l.scientific_name as scientific_name, MIN(d.detected_at) as first_detected").
+		Group("l.scientific_name").
+		Order("first_detected ASC, l.scientific_name ASC").
+		Scan(&results).Error
+
+	return results, err
+}
+
+// GetSpeciesPhenologyInPeriod returns each species' residency span (MIN/MAX detected_at and the
+// detection COUNT) over the half-open range [start, end), false positives excluded, grouped by
+// scientific name so a species with one label per model collapses to a single span. It shares the
+// analytics false-positive filter via buildAnalyticsBaseQuery and returns the top `limit` species by
+// volume (ORDER BY count DESC) for the arrival/departure phenology chart. GROUP BY scientific_name
+// makes the reviews LEFT JOIN immune to fan-out under MIN/MAX, and because DetectionReview has a
+// unique index on detection_id (reviews are 1:1 with detections) the LEFT JOIN never multiplies rows,
+// so COUNT(*) counts each detection once (the same basis as GetHourlyDistribution).
+func (r *detectionRepository) GetSpeciesPhenologyInPeriod(ctx context.Context, start, end int64, limit int) ([]SpeciesPhenology, error) {
+	var results []SpeciesPhenology
+
+	err := r.buildAnalyticsBaseQuery(ctx, start, end, nil, nil).
+		Joins(fmt.Sprintf("JOIN %s l ON l.id = d.label_id", r.labelsTable())).
+		Select("l.scientific_name as scientific_name, MIN(d.detected_at) as first_detected, MAX(d.detected_at) as last_detected, COUNT(*) as count").
+		Group("l.scientific_name").
+		Order("count DESC, l.scientific_name ASC").
+		Limit(limit).
+		Scan(&results).Error
+
+	return results, err
+}
+
+// GetSourceActivitySummaries returns each audio source with at least one (false-positive-excluded)
+// detection in the half-open range [start, end): the source identity columns and its in-period
+// detection count, ordered by count descending. It shares the analytics false-positive filter via
+// buildAnalyticsBaseQuery and INNER JOINs audio_sources on d.source_id, so detections with a NULL
+// source_id (legacy-migrated, source-less) are excluded. GROUP BY every selected source column keeps
+// MySQL's ONLY_FULL_GROUP_BY happy, and because DetectionReview is 1:1 with detections the reviews
+// LEFT JOIN never multiplies rows, so COUNT(d.id) counts each detection once (the same basis as
+// GetSpeciesPhenologyInPeriod). Powers the analytics source/mic filter's option list.
+func (r *detectionRepository) GetSourceActivitySummaries(ctx context.Context, start, end int64) ([]SourceActivitySummary, error) {
+	var results []SourceActivitySummary
+
+	err := r.buildAnalyticsBaseQuery(ctx, start, end, nil, nil).
+		Joins(fmt.Sprintf("JOIN %s s ON s.id = d.source_id", r.sourcesTable())).
+		// COUNT(DISTINCT d.id): the reviews LEFT JOIN is 1:1 so plain COUNT is already fan-out-immune
+		// today, but DISTINCT keeps the count correct if a future join introduces row multiplication.
+		Select("s.id as source_id, s.display_name as display_name, s.node_name as node_name, s.source_type as source_type, COUNT(DISTINCT d.id) as count").
+		Group("s.id, s.display_name, s.node_name, s.source_type").
+		Order("count DESC, s.id ASC").
+		Scan(&results).Error
+
+	return results, err
 }
 
 // ============================================================================

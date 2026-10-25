@@ -30,6 +30,18 @@ type DetectionRepository interface {
 	// Returns ErrDetectionNotFound if not found, ErrDetectionLocked if locked.
 	Update(ctx context.Context, id uint, updates map[string]any) error
 
+	// RecordClipSampleRate sets the clip sample rate (Hz) of the detection whose
+	// clip_name still equals clipName, overwriting any stored value. An empty
+	// clipName or rate <= 0 is a no-op. It ignores detection locks (the rate is
+	// clip metadata) and never reports ErrDetectionNotFound or ErrDetectionLocked.
+	RecordClipSampleRate(ctx context.Context, id uint, clipName string, rate int) error
+
+	// FillClipSampleRate sets the clip sample rate (Hz) only while it is NULL and
+	// clip_name still equals clipName, so concurrent fills converge and an exporter
+	// value is never overwritten. It reports whether a row changed. An empty
+	// clipName or rate <= 0 is a no-op. It ignores detection locks.
+	FillClipSampleRate(ctx context.Context, id uint, clipName string, rate int) (bool, error)
+
 	// Delete removes a detection by ID.
 	// Returns ErrDetectionNotFound if not found, ErrDetectionLocked if locked.
 	Delete(ctx context.Context, id uint) error
@@ -83,6 +95,11 @@ type DetectionRepository interface {
 	// Returns results, total count, and any error.
 	Search(ctx context.Context, filters *SearchFilters) ([]*entities.Detection, int64, error)
 
+	// CountSearch returns the number of detections matching the given filters,
+	// the same total Search reports, without loading any rows. Sorting and
+	// pagination fields are ignored.
+	CountSearch(ctx context.Context, filters *SearchFilters) (int64, error)
+
 	// === Counts ===
 
 	// CountAll returns the total number of detections.
@@ -104,7 +121,7 @@ type DetectionRepository interface {
 
 	// GetTopSpecies returns the most frequently detected species in a time range.
 	// modelID is optional; pass nil to include all models.
-	GetTopSpecies(ctx context.Context, start, end int64, minConfidence float64, modelID *uint, limit int) ([]SpeciesCount, error)
+	GetTopSpecies(ctx context.Context, start, end int64, minConfidence float64, modelID *uint, species []string, limit int) ([]SpeciesCount, error)
 
 	// GetBatchHourlyOccurrences returns per-label-ID hourly detection counts (0-23)
 	// for the given label IDs in a single grouped query (per chunk). The result maps
@@ -160,6 +177,14 @@ type DetectionRepository interface {
 	// SaveModelContributions stores per-model contribution data for a detection.
 	SaveModelContributions(ctx context.Context, detectionID uint, contribs []*entities.DetectionModelContribution) error
 
+	// GetModelContributionsByDetectionIDs returns the stored model contributions of
+	// the given detections, keyed by detection ID. Detections without rows have no
+	// key. Each detection's rows are ordered by hit count (highest first), then
+	// maximum confidence (highest first), then model ID. Each row's Model carries
+	// ID, Name, Version, Variant and ModelType only. Large ID sets are queried in
+	// chunks of batchQuerySize.
+	GetModelContributionsByDetectionIDs(ctx context.Context, detectionIDs []uint) (map[uint][]*entities.DetectionModelContribution, error)
+
 	// === Reviews ===
 
 	// SaveReview creates or updates a review for a detection.
@@ -214,7 +239,7 @@ type DetectionRepository interface {
 	Lock(ctx context.Context, detectionID uint) error
 
 	// Unlock removes the lock from a detection.
-	// This operation is idempotent — unlocking an already-unlocked detection succeeds silently.
+	// This operation is idempotent: unlocking an already-unlocked detection succeeds silently.
 	Unlock(ctx context.Context, detectionID uint) error
 
 	// IsLocked checks if a detection is locked.
@@ -235,41 +260,71 @@ type DetectionRepository interface {
 
 	// GetSpeciesSummary returns summary statistics for all species.
 	// modelID is optional; pass nil to include all models.
-	// sourceIDs is variadic; omit to include all audio sources.
-	GetSpeciesSummary(ctx context.Context, start, end int64, modelID *uint, sourceIDs ...uint) ([]SpeciesSummaryData, error)
+	GetSpeciesSummary(ctx context.Context, start, end int64, modelID *uint) ([]SpeciesSummaryData, error)
 
 	// GetHourlyDistribution returns detection counts by hour. tzOffsetSeconds is the
 	// configured timezone's UTC offset, applied so detections bucket by wall-clock hour in
-	// that zone rather than the database/OS-local zone. labelID and modelID are optional filters.
-	// sourceIDs is variadic; omit to include all audio sources.
-	GetHourlyDistribution(ctx context.Context, start, end int64, tzOffsetSeconds int, labelID, modelID *uint, sourceIDs ...uint) ([]HourlyDistributionData, error)
+	// that zone rather than the database/OS-local zone. labelIDs (every label of one species across
+	// models) and modelID are optional filters: nil or empty labelIDs means no label filter, so a
+	// caller that resolved a species to no labels must return its own empty result (or pass the
+	// no-match sentinel) rather than forward the empty slice.
+	GetHourlyDistribution(ctx context.Context, start, end int64, tzOffsetSeconds int, labelIDs []uint, modelID *uint) ([]HourlyDistributionData, error)
+
+	// GetDetectionTimestamps returns the raw detected_at epochs (seconds) for the half-open
+	// range [start, end), excluding false positives, in no particular order. labelIDs is an
+	// optional species filter (every label of the species; nil or empty for none). Callers bucket the timestamps in Go (e.g. the seasonal heatmap),
+	// which keeps the slot/date math out of dialect SQL and correct across DST.
+	GetDetectionTimestamps(ctx context.Context, start, end int64, labelIDs []uint) ([]int64, error)
+
+	// GetBatchConfidences returns the per-label-ID detection confidences for the given label IDs over
+	// the half-open range [start, end), false positives excluded and filtered by minConfidence. Results
+	// group by label_id so a single query (per chunk) covers many labels; callers that map one species
+	// to multiple model label IDs concatenate the per-label slices themselves. Order within a label is
+	// unspecified (callers bin the values); the confidence distribution chart buckets them in Go.
+	GetBatchConfidences(ctx context.Context, labelIDs []uint, start, end int64, minConfidence float64) (map[uint][]float64, error)
 
 	// GetDailyAnalytics returns daily statistics.
 	// tzOffsetSeconds is the configured timezone's UTC offset, applied so detections bucket by
 	// wall-clock date in that zone rather than the database/OS-local zone.
-	// labelID and modelID are optional filters.
-	// sourceIDs is variadic; omit to include all audio sources.
-	GetDailyAnalytics(ctx context.Context, start, end int64, tzOffsetSeconds int, labelID, modelID *uint, sourceIDs ...uint) ([]DailyAnalyticsData, error)
+	// labelIDs (every label of one species across models) and modelID are optional filters; nil or
+	// empty labelIDs means no label filter (see GetHourlyDistribution).
+	GetDailyAnalytics(ctx context.Context, start, end int64, tzOffsetSeconds int, labelIDs []uint, modelID *uint) ([]DailyAnalyticsData, error)
 
 	// GetDetectionTrends returns detection trends over time.
 	// period is "day", "week", or "month".
 	// tzOffsetSeconds is the configured timezone's UTC offset, applied so detections bucket by
 	// wall-clock date in that zone rather than the database/OS-local zone.
 	// modelID is optional.
-	// sourceIDs is variadic; omit to include all audio sources.
-	GetDetectionTrends(ctx context.Context, period string, limit, tzOffsetSeconds int, modelID *uint, sourceIDs ...uint) ([]DailyAnalyticsData, error)
+	GetDetectionTrends(ctx context.Context, period string, limit, tzOffsetSeconds int, modelID *uint) ([]DailyAnalyticsData, error)
 
 	// GetNewSpecies returns species detected for the first time ever within the range.
-	// sourceIDs is variadic; omit to include all audio sources.
-	// When sourceIDs is set, "first ever" is scoped to detections from those sources.
-	GetNewSpecies(ctx context.Context, start, end int64, limit, offset int, sourceIDs ...uint) ([]NewSpeciesData, error)
+	GetNewSpecies(ctx context.Context, start, end int64, limit, offset int) ([]NewSpeciesData, error)
 
 	// GetSpeciesFirstDetectionInPeriod returns the first detection of each species
 	// within a specific date range (e.g., "First Robin of Spring 2024").
 	// This is distinct from GetNewSpecies (lifetime firsts) and
 	// GetSpeciesFirstDetection (per-species first ever).
-	// sourceIDs is variadic; omit to include all audio sources.
-	GetSpeciesFirstDetectionInPeriod(ctx context.Context, start, end int64, limit, offset int, sourceIDs ...uint) ([]SpeciesFirstSeen, error)
+	GetSpeciesFirstDetectionInPeriod(ctx context.Context, start, end int64, limit, offset int) ([]SpeciesFirstSeen, error)
+
+	// GetSpeciesFirstSeenInPeriod returns the first detection (MIN detected_at) of each species
+	// within the half-open range [start, end), false positives excluded, grouped by scientific name
+	// so multi-model labels collapse to one species. Unlike GetSpeciesFirstDetectionInPeriod it
+	// excludes false positives and is not paginated (every species is returned), as required by the
+	// species accumulation analytics. Results are ordered by first-seen ascending.
+	GetSpeciesFirstSeenInPeriod(ctx context.Context, start, end int64) ([]SpeciesFirstSeen, error)
+
+	// GetSpeciesPhenologyInPeriod returns each species' residency span within the half-open range
+	// [start, end): MIN/MAX detected_at and the detection COUNT, false positives excluded, grouped by
+	// scientific name so multi-model labels collapse to one species. Results are the top `limit` species
+	// by detection volume (ORDER BY count DESC), as required by the arrival/departure phenology chart.
+	GetSpeciesPhenologyInPeriod(ctx context.Context, start, end int64, limit int) ([]SpeciesPhenology, error)
+
+	// GetSourceActivitySummaries returns each audio source with at least one (false-positive-excluded)
+	// detection in the half-open range [start, end): the source's identity columns and its in-period
+	// detection count, ordered by count descending. Sources are INNER JOINed on audio_sources, so
+	// detections with a NULL source_id (legacy-migrated, source-less) are excluded. Powers the analytics
+	// source/mic filter's option list. COUNT is fan-out-immune because reviews are 1:1 with detections.
+	GetSourceActivitySummaries(ctx context.Context, start, end int64) ([]SourceActivitySummary, error)
 
 	// === Utilities ===
 

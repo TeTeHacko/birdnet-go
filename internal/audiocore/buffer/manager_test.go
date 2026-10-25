@@ -237,18 +237,18 @@ func TestManager_HasAnalysis(t *testing.T) {
 
 	m := buffer.NewManager(newTestLogger())
 
-	// Before allocation — should return false.
+	// Before allocation - should return false.
 	assert.False(t, m.HasAnalysis("source-1", "birdnet"))
 
-	// Allocate and check — should return true.
+	// Allocate and check - should return true.
 	err := m.AllocateAnalysis("source-1", "birdnet", managerTestCapacity, managerTestOverlapSize, managerTestReadSize)
 	require.NoError(t, err)
 	assert.True(t, m.HasAnalysis("source-1", "birdnet"))
 
-	// Different model — should return false.
+	// Different model - should return false.
 	assert.False(t, m.HasAnalysis("source-1", "perch_v2"))
 
-	// Different source — should return false.
+	// Different source - should return false.
 	assert.False(t, m.HasAnalysis("source-2", "birdnet"))
 }
 
@@ -333,32 +333,23 @@ func TestManager_BytePoolFor_NonPositiveReturnsNil(t *testing.T) {
 	assert.Nil(t, m.BytePoolFor(-1))
 }
 
-// ---------------------------------------------------------------------------
-// Per-size Float64Pool tests
-// ---------------------------------------------------------------------------
-
-// TestManager_Float64PoolFor_LazyPerSize verifies that Float64PoolFor returns
-// distinct pools for different sizes and the same pool for the same size.
-func TestManager_Float64PoolFor_LazyPerSize(t *testing.T) {
+// TestManager_AllocateAnalysis_HighOverlap reproduces the exact dimensions the
+// analysis pipeline allocates for a 3s / 48kHz BirdNET clip at birdnet.overlap
+// 2.4s (a false-positive filter level value): clip 288000, overlap 230400, read
+// 57600 -- an 80% overlap where readSize < overlapSize. This must allocate
+// successfully; rejecting it left every model idle (no analysis buffer).
+func TestManager_AllocateAnalysis_HighOverlap(t *testing.T) {
 	t.Parallel()
 	m := buffer.NewManager(newTestLogger())
 
-	pool1 := m.Float64PoolFor(72192)
-	require.NotNil(t, pool1)
+	const (
+		clipBytes    = 48000 * 3 * 1 * 2 // 288000
+		overlapBytes = 230400            // 2.4s * 48000 * 2
+		readSize     = clipBytes - overlapBytes
+	)
+	require.Less(t, readSize, overlapBytes, "test premise: overlap exceeds 50%%")
 
-	pool2 := m.Float64PoolFor(80000)
-	require.NotNil(t, pool2)
-	assert.NotSame(t, pool1, pool2, "different sizes must yield different pools")
-
-	pool1Again := m.Float64PoolFor(72192)
-	assert.Same(t, pool1, pool1Again, "same size must yield same pool")
-}
-
-// TestManager_Float64PoolFor_NonPositiveReturnsNil verifies that Float64PoolFor
-// returns nil for zero and negative sizes.
-func TestManager_Float64PoolFor_NonPositiveReturnsNil(t *testing.T) {
-	t.Parallel()
-	m := buffer.NewManager(newTestLogger())
-	assert.Nil(t, m.Float64PoolFor(0))
-	assert.Nil(t, m.Float64PoolFor(-1))
+	err := m.AllocateAnalysis("src-1", "BirdNET_V2.4", clipBytes, overlapBytes, readSize)
+	require.NoError(t, err, "high-overlap analysis buffer allocation must succeed")
+	assert.True(t, m.HasAnalysis("src-1", "BirdNET_V2.4"))
 }

@@ -7,10 +7,21 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { writable } from 'svelte/store';
 import { createComponentTestFactory, screen, fireEvent } from '../../../../test/render-helpers';
+import { useAudioPlayback } from '$lib/utils/useAudioPlayback.svelte';
 import SpectrogramPlayer from './SpectrogramPlayer.svelte';
 
 // --- Mock state that tests can mutate before each render ---
+
+const mockDashboardSettings = writable<{ defaultAudioGain?: number }>({ defaultAudioGain: 0 });
+
+vi.mock('$lib/stores/settings', () => ({
+  dashboardSettings: {
+    subscribe: (fn: (val: { defaultAudioGain?: number }) => void) =>
+      mockDashboardSettings.subscribe(fn),
+  },
+}));
 
 let mockAudioState = {
   isPlaying: false,
@@ -42,7 +53,7 @@ let mockLoadingState = {
   cleanup: vi.fn(),
 };
 
-// Mock useAudioPlayback — return reactive getters backed by mockAudioState
+// Mock useAudioPlayback - return reactive getters backed by mockAudioState
 vi.mock('$lib/utils/useAudioPlayback.svelte', () => ({
   useAudioPlayback: vi.fn(() => ({
     get isPlaying() {
@@ -87,7 +98,7 @@ vi.mock('$lib/utils/useAudioPlayback.svelte', () => ({
   })),
 }));
 
-// Mock useDelayedLoading — return reactive getters backed by mockLoadingState
+// Mock useDelayedLoading - return reactive getters backed by mockLoadingState
 vi.mock('$lib/utils/delayedLoading.svelte', () => ({
   useDelayedLoading: vi.fn(() => ({
     get loading() {
@@ -106,7 +117,7 @@ vi.mock('$lib/utils/delayedLoading.svelte', () => ({
   })),
 }));
 
-// Mock buildAppUrl — return input unchanged
+// Mock buildAppUrl - return input unchanged
 vi.mock('$lib/utils/urlHelpers', () => ({
   buildAppUrl: vi.fn((path: string) => path),
 }));
@@ -139,7 +150,7 @@ describe('SpectrogramPlayer', () => {
       setPlaybackSpeed: vi.fn(),
     };
 
-    // Reset loading mock state — default to loaded (not loading, no error)
+    // Reset loading mock state - default to loaded (not loading, no error)
     mockLoadingState = {
       loading: false,
       showSpinner: false,
@@ -149,6 +160,9 @@ describe('SpectrogramPlayer', () => {
       reset: vi.fn(),
       cleanup: vi.fn(),
     };
+
+    // Reset settings mock state
+    mockDashboardSettings.set({ defaultAudioGain: 0 });
   });
 
   afterEach(() => {
@@ -336,6 +350,18 @@ describe('SpectrogramPlayer', () => {
     expect(btn).toBeDisabled();
   });
 
+  it('labels the play button as loading, not Pause, while a playing clip reloads', () => {
+    mockAudioState.isLoading = true;
+    mockAudioState.isPlaying = true;
+
+    spectrogramTest.render({
+      audioUrl: '/api/v2/audio/test-123',
+      detectionId: 'test-123',
+    });
+
+    expect(screen.getByRole('button')).toHaveAttribute('aria-label', 'media.audio.loading');
+  });
+
   // ---------------------------------------------------------------
   // Additional: shows audio error message
   // ---------------------------------------------------------------
@@ -364,5 +390,164 @@ describe('SpectrogramPlayer', () => {
     const group = screen.getByRole('group');
     expect(group).toBeInTheDocument();
     expect(group).toHaveAttribute('aria-label', 'media.audio.player');
+  });
+
+  // ---------------------------------------------------------------
+  // 8. Initializes useAudioPlayback with defaultGainDb from dashboardSettings
+  // ---------------------------------------------------------------
+  it('passes defaultGainDb from dashboardSettings to useAudioPlayback', () => {
+    mockDashboardSettings.set({ defaultAudioGain: 12 });
+
+    spectrogramTest.render({
+      audioUrl: '/api/v2/audio/test-123',
+      detectionId: 'test-123',
+    });
+
+    expect(useAudioPlayback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audioUrl: '/api/v2/audio/test-123',
+        detectionId: 'test-123',
+        defaultGainDb: 12,
+      })
+    );
+  });
+
+  it('falls back to 0 dB when defaultAudioGain is not configured in dashboardSettings', () => {
+    mockDashboardSettings.set({});
+
+    spectrogramTest.render({
+      audioUrl: '/api/v2/audio/test-123',
+      detectionId: 'test-123',
+    });
+
+    expect(useAudioPlayback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audioUrl: '/api/v2/audio/test-123',
+        detectionId: 'test-123',
+        defaultGainDb: 0,
+      })
+    );
+  });
+
+  describe('status reason after a failed image', () => {
+    // Longer than the sum of every retry delay (about 2.5 minutes)
+    const PAST_ALL_RETRIES_MS = 5 * 60 * 1000;
+    // First entry of RETRY_DELAYS in SpectrogramPlayer.svelte
+    const FIRST_RETRY_DELAY_MS = 500;
+    let statusFetch: ReturnType<typeof vi.fn>;
+
+    function answerStatus(body: Record<string, unknown>) {
+      statusFetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ data: body }))));
+      vi.stubGlobal('fetch', statusFetch);
+    }
+
+    function failFirstImage() {
+      spectrogramTest.render({ audioUrl: '/api/v2/audio/test-123', detectionId: 'test-123' });
+      return fireEvent.error(screen.getByAltText('components.audio.spectrogramAlt'));
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it.each(['source_missing', 'source_invalid'])(
+      'stops the retry loop and shows the unavailable state for %s',
+      async reason => {
+        answerStatus({ status: 'not_started', reason });
+
+        await failFirstImage();
+        await vi.advanceTimersByTimeAsync(PAST_ALL_RETRIES_MS);
+
+        expect(statusFetch).toHaveBeenCalledTimes(1);
+        expect(statusFetch.mock.calls[0]?.[0]).toBe(
+          '/api/v2/spectrogram/test-123/status?size=md&raw=true'
+        );
+        expect(mockLoadingState.setError).toHaveBeenCalledTimes(1);
+        expect(
+          screen.getByAltText('components.audio.spectrogramAlt').getAttribute('src')
+        ).not.toContain('&t=');
+      }
+    );
+
+    it.each([
+      ['a pending source', { status: 'failed', reason: 'source_pending' }],
+      ['no reason', { status: 'not_started' }],
+    ])('keeps retrying for %s', async (_name, body) => {
+      answerStatus(body);
+
+      await failFirstImage();
+      await vi.advanceTimersByTimeAsync(FIRST_RETRY_DELAY_MS);
+
+      expect(mockLoadingState.setError).not.toHaveBeenCalled();
+      expect(screen.getByAltText('components.audio.spectrogramAlt').getAttribute('src')).toContain(
+        '&t='
+      );
+    });
+
+    describe('a status check still pending', () => {
+      let answer: (r: Response) => void = () => {};
+      const terminalAnswer = () =>
+        new Response(JSON.stringify({ data: { status: 'failed', reason: 'source_missing' } }));
+
+      beforeEach(() => {
+        statusFetch = vi.fn(
+          () =>
+            new Promise<Response>(resolve => {
+              answer = resolve;
+            })
+        );
+        vi.stubGlobal('fetch', statusFetch);
+      });
+
+      it('is dropped when the image loads', async () => {
+        await failFirstImage();
+        await fireEvent.load(screen.getByAltText('components.audio.spectrogramAlt'));
+
+        answer(terminalAnswer());
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(mockLoadingState.setError).not.toHaveBeenCalled();
+      });
+
+      it('is dropped when the detection changes', async () => {
+        const { rerender } = spectrogramTest.render({
+          audioUrl: '/api/v2/audio/test-123',
+          detectionId: 'test-123',
+        });
+        await fireEvent.error(screen.getByAltText('components.audio.spectrogramAlt'));
+        await rerender({ detectionId: 'other-456' });
+
+        answer(terminalAnswer());
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(mockLoadingState.setError).not.toHaveBeenCalled();
+      });
+
+      it('is dropped when the player is destroyed', async () => {
+        const { unmount } = spectrogramTest.render({
+          audioUrl: '/api/v2/audio/test-123',
+          detectionId: 'test-123',
+        });
+        await fireEvent.error(screen.getByAltText('components.audio.spectrogramAlt'));
+        unmount();
+
+        answer(terminalAnswer());
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(mockLoadingState.setError).not.toHaveBeenCalled();
+      });
+    });
+
+    it('asks for the status once however many retries fail', async () => {
+      answerStatus({ status: 'failed', reason: 'render_failed' });
+
+      await failFirstImage();
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await vi.advanceTimersByTimeAsync(PAST_ALL_RETRIES_MS);
+        await fireEvent.error(screen.getByAltText('components.audio.spectrogramAlt'));
+      }
+
+      expect(statusFetch).toHaveBeenCalledTimes(1);
+    });
   });
 });

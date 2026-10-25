@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import Button from './lib/desktop/components/ui/Button.svelte';
   import LoadingSpinner from './lib/desktop/components/ui/LoadingSpinner.svelte';
   import RootLayout from './lib/desktop/layouts/RootLayout.svelte';
@@ -21,6 +21,13 @@
     getSpeciesDictVersion,
   } from './lib/stores/appState.svelte';
   import { navigation } from './lib/stores/navigation.svelte';
+  import { buildAppUrl } from './lib/utils/urlHelpers';
+  import { resolveLoginRedirect, DEFAULT_LOGIN_TARGET } from './lib/utils/loginRedirect';
+  import { resolveAnalyticsRedirect } from './lib/desktop/features/analytics/registry/analyticsRouting';
+  // Type-only import (erased at build time, so GenericErrorPage stays lazily loaded via
+  // dynamic import below) used to type the dynamic component precisely instead of `any`.
+  import type GenericErrorPageComponent from './lib/desktop/views/GenericErrorPage.svelte';
+  import { resolveSettingsAlias } from './lib/utils/settingsAlias';
   import { settingsActions } from './lib/stores/settings.js';
   import { activateWatchdog } from './lib/stores/connectionState.svelte';
   import WizardDialog from './lib/desktop/features/wizard/WizardDialog.svelte';
@@ -28,6 +35,10 @@
     wizardState,
     WIZARD_DISMISSED_VERSION_KEY,
   } from './lib/desktop/features/wizard/wizardState.svelte';
+  import {
+    resolveWizardLaunch,
+    type SettingsLoadState,
+  } from './lib/desktop/features/wizard/wizardLaunch';
 
   const logger = getLogger('app');
 
@@ -41,8 +52,14 @@
   }
 
   // Dynamic imports for heavy pages - properly typed component references
-  let Analytics = $state<Component | null>(null);
-  let AdvancedAnalytics = $state<Component | null>(null);
+  let SummaryPage = $state<Component | null>(null);
+  let ActivityPage = $state<Component | null>(null);
+  let TrendsPage = $state<Component | null>(null);
+  let BiodiversityPage = $state<Component | null>(null);
+  let NocturnalPage = $state<Component | null>(null);
+  let WeatherPage = $state<Component | null>(null);
+  let SoundscapePage = $state<Component | null>(null);
+  let ReviewPage = $state<Component | null>(null);
   let Species = $state<Component | null>(null);
   let Search = $state<Component | null>(null);
   let About = $state<Component | null>(null);
@@ -57,7 +74,7 @@
   let ErrorPage = $state<Component | null>(null);
   let ServerErrorPage = $state<Component | null>(null);
   let LiveStream = $state<Component | null>(null);
-  let GenericErrorPage = $state<any>(null);
+  let GenericErrorPage = $state<typeof GenericErrorPageComponent | null>(null);
 
   let currentRoute = $state<string>('');
   let currentPage = $state<string>('');
@@ -89,16 +106,35 @@
   // Reading navigation.currentPath makes this $derived re-evaluate on every
   // client-side route change so the redirect target always reflects the
   // current view (which is what the user expects when they log in mid-session).
+  // buildAppUrl adds the reverse-proxy prefix: LoginModal strips the prefixed UI base
+  // from this value, and the backend adds the base back.
   let postLoginRedirect = $derived.by(() => {
-    const path = navigation.currentPath || '/ui/';
+    const path = buildAppUrl(navigation.currentPath || '/ui/');
     if (typeof window !== 'undefined') {
       return path + window.location.search;
     }
     return path;
   });
 
+  // The login route (/ui/login) shows the same full-screen login form as private mode
+  // to a visitor who is not allowed in. The backend sends logged-out visitors of
+  // protected pages to /login?redirect=<page>, which the navigation store's `/ui` prefixing
+  // turns into this route; the form returns to the page after a password login. A visitor
+  // who is already allowed goes straight to that target.
+  let loginRouteActive = $derived(currentRoute === 'login' && securityEnabled && !accessAllowed);
+  // The validated post-login page (unprefixed); only meaningful on the login route.
+  let loginTarget = $derived(
+    currentRoute === 'login' ? resolveLoginRedirect(navigation.currentSearch) : DEFAULT_LOGIN_TARGET
+  );
+  let loginRedirectUrl = $derived(
+    currentRoute === 'login' ? buildAppUrl(loginTarget) : postLoginRedirect
+  );
+
   // App initialization state
   let appInitialized = $derived(appState.initialized);
+
+  // Outcome of the settings load started at app init; gates the onboarding wizard
+  let settingsLoad = $state<SettingsLoadState>('pending');
   let appLoading = $derived(appState.loading);
   let appError = $derived(appState.error);
 
@@ -111,6 +147,7 @@
   }
 
   const routeConfigs: RouteConfig[] = [
+    { route: 'login', page: 'login', titleKey: 'auth.loginTitle', component: '' },
     { route: 'dashboard', page: 'dashboard', titleKey: 'navigation.dashboard', component: '' },
     {
       route: 'live-stream',
@@ -131,16 +168,52 @@
       component: 'species',
     },
     {
-      route: 'analytics',
-      page: 'analytics',
-      titleKey: 'navigation.analytics',
-      component: 'analytics',
+      route: 'analytics-summary',
+      page: 'analytics/summary',
+      titleKey: 'pageTitle.analyticsSummary',
+      component: 'analytics-summary',
     },
     {
-      route: 'advanced-analytics',
-      page: 'analytics/advanced',
-      titleKey: 'pageTitle.advancedAnalytics',
-      component: 'advanced-analytics',
+      route: 'analytics-activity',
+      page: 'analytics/activity',
+      titleKey: 'pageTitle.analyticsActivity',
+      component: 'analytics-activity',
+    },
+    {
+      route: 'analytics-trends',
+      page: 'analytics/trends',
+      titleKey: 'pageTitle.analyticsTrends',
+      component: 'analytics-trends',
+    },
+    {
+      route: 'analytics-biodiversity',
+      page: 'analytics/biodiversity',
+      titleKey: 'pageTitle.analyticsBiodiversity',
+      component: 'analytics-biodiversity',
+    },
+    {
+      route: 'analytics-nocturnal',
+      page: 'analytics/nocturnal',
+      titleKey: 'pageTitle.analyticsNocturnal',
+      component: 'analytics-nocturnal',
+    },
+    {
+      route: 'analytics-weather',
+      page: 'analytics/weather',
+      titleKey: 'pageTitle.analyticsWeather',
+      component: 'analytics-weather',
+    },
+    {
+      route: 'analytics-soundscape',
+      page: 'analytics/soundscape',
+      titleKey: 'pageTitle.analyticsSoundscape',
+      component: 'analytics-soundscape',
+    },
+    {
+      route: 'analytics-review',
+      page: 'analytics/review',
+      titleKey: 'pageTitle.analyticsReview',
+      component: 'analytics-review',
     },
     { route: 'search', page: 'search', titleKey: 'navigation.search', component: 'search' },
     {
@@ -191,6 +264,7 @@
     '/database': 'system.sections.database',
     '/terminal': 'system.sections.terminal',
     '/inference': 'system.sections.inference',
+    '/import-export': 'system.sections.importExport',
   };
 
   // Dynamic import helper
@@ -207,17 +281,58 @@
             LiveStream = module.default;
           }
           break;
-        case 'analytics':
-          if (!Analytics) {
-            const module = await import('./lib/desktop/features/analytics/pages/Analytics.svelte');
-            Analytics = module.default;
+        case 'analytics-summary':
+          if (!SummaryPage) {
+            const module =
+              await import('./lib/desktop/features/analytics/pages/SummaryPage.svelte');
+            SummaryPage = module.default;
           }
           break;
-        case 'advanced-analytics':
-          if (!AdvancedAnalytics) {
+        case 'analytics-activity':
+          if (!ActivityPage) {
             const module =
-              await import('./lib/desktop/features/analytics/pages/AdvancedAnalytics.svelte');
-            AdvancedAnalytics = module.default;
+              await import('./lib/desktop/features/analytics/pages/ActivityPage.svelte');
+            ActivityPage = module.default;
+          }
+          break;
+        case 'analytics-trends':
+          if (!TrendsPage) {
+            const module = await import('./lib/desktop/features/analytics/pages/TrendsPage.svelte');
+            TrendsPage = module.default;
+          }
+          break;
+        case 'analytics-biodiversity':
+          if (!BiodiversityPage) {
+            const module =
+              await import('./lib/desktop/features/analytics/pages/BiodiversityPage.svelte');
+            BiodiversityPage = module.default;
+          }
+          break;
+        case 'analytics-nocturnal':
+          if (!NocturnalPage) {
+            const module =
+              await import('./lib/desktop/features/analytics/pages/NocturnalPage.svelte');
+            NocturnalPage = module.default;
+          }
+          break;
+        case 'analytics-weather':
+          if (!WeatherPage) {
+            const module =
+              await import('./lib/desktop/features/analytics/pages/WeatherPage.svelte');
+            WeatherPage = module.default;
+          }
+          break;
+        case 'analytics-soundscape':
+          if (!SoundscapePage) {
+            const module =
+              await import('./lib/desktop/features/analytics/pages/SoundscapePage.svelte');
+            SoundscapePage = module.default;
+          }
+          break;
+        case 'analytics-review':
+          if (!ReviewPage) {
+            const module = await import('./lib/desktop/features/analytics/pages/ReviewPage.svelte');
+            ReviewPage = module.default;
           }
           break;
         case 'species':
@@ -356,11 +471,24 @@
     [uiPath() + '/']: findRouteConfig('dashboard'),
     [uiPath()]: findRouteConfig('dashboard'),
     [uiPath('dashboard')]: findRouteConfig('dashboard'),
+    [uiPath('login')]: findRouteConfig('login'),
     [uiPath('live-stream')]: findRouteConfig('live-stream'),
     [uiPath('notifications')]: findRouteConfig('notifications'),
+    // Fallbacks if handleRouting's redirect does not fire (e.g. an aggressive
+    // sub_filter proxy rewrite that corrupts the literal path before handleRouting
+    // runs, or SSR). The normal flow never reaches these entries directly: the bare
+    // hub redirects to summary and the retired /advanced path redirects to activity.
+    [uiPath('analytics')]: findRouteConfig('analytics-summary'),
+    [uiPath('analytics', 'advanced')]: findRouteConfig('analytics-activity'),
     [uiPath('analytics', 'species')]: findRouteConfig('species'),
-    [uiPath('analytics', 'advanced')]: findRouteConfig('advanced-analytics'),
-    [uiPath('analytics')]: findRouteConfig('analytics'),
+    [uiPath('analytics', 'summary')]: findRouteConfig('analytics-summary'),
+    [uiPath('analytics', 'activity')]: findRouteConfig('analytics-activity'),
+    [uiPath('analytics', 'trends')]: findRouteConfig('analytics-trends'),
+    [uiPath('analytics', 'biodiversity')]: findRouteConfig('analytics-biodiversity'),
+    [uiPath('analytics', 'nocturnal')]: findRouteConfig('analytics-nocturnal'),
+    [uiPath('analytics', 'weather')]: findRouteConfig('analytics-weather'),
+    [uiPath('analytics', 'soundscape')]: findRouteConfig('analytics-soundscape'),
+    [uiPath('analytics', 'review')]: findRouteConfig('analytics-review'),
     [uiPath('search')]: findRouteConfig('search'),
     [uiPath('detections')]: findRouteConfig('detections'),
     [uiPath('about')]: findRouteConfig('about'),
@@ -407,6 +535,21 @@
   }
 
   function handleRouting(path: string): void {
+    // The title must match the section Settings.svelte renders for bare settings.
+    path = resolveSettingsAlias(path);
+
+    // Analytics routes: redirect the bare hub, the retired /advanced path, and
+    // legacy ?tab= deep links onto the per-view routes (single hop), preserving
+    // other query params. resolveAnalyticsRedirect returns null when canonical.
+    const analyticsRedirect = resolveAnalyticsRedirect(
+      path,
+      typeof window !== 'undefined' ? window.location.search : ''
+    );
+    if (analyticsRedirect) {
+      navigation.redirect(analyticsRedirect);
+      return;
+    }
+
     // Special handling for detection detail pages
     if (UI_DETECTIONS_PREFIX_RE.test(path) && path.split('/').length > 3) {
       const pathParts = path.split('/');
@@ -423,8 +566,7 @@
 
     // Handle system and settings subpages
     if (UI_SYSTEM_PREFIX_RE.test(path)) {
-      const normalizedPath = path.endsWith('/') && path.length > 1 ? path.slice(0, -1) : path;
-      const exactMatch = pathToRouteMap.get(normalizedPath);
+      const exactMatch = pathToRouteMap.get(path);
       if (exactMatch) {
         currentRoute = exactMatch.route;
         currentPage = exactMatch.page;
@@ -473,7 +615,8 @@
       currentPage = 'error-generic';
       // For dynamic error titles from URL, we use a generic error key
       pageTitleKey = 'common.error';
-      dynamicErrorCode = errorCode || '500';
+      // errorCode is already truthy in this branch, so no '500' fallback is needed.
+      dynamicErrorCode = errorCode;
       loadComponent('error-generic');
     } else {
       // Unknown route, default to 404
@@ -509,10 +652,19 @@
     // Load settings at app startup so they are available on any page the user navigates to
     // first (e.g. System → Terminal) without requiring a visit to the Settings page.
     // Skip when authentication is required but not yet provided to avoid 401 console errors.
+    // The onboarding wizard saves settings, so it launches only once this load resolved.
     if (!securityEnabled || accessAllowed) {
-      settingsActions.loadSettings().catch(err => {
-        logger.error('Failed to load settings on app init', err);
-      });
+      settingsActions
+        .loadSettings()
+        .then(() => {
+          settingsLoad = 'loaded';
+        })
+        .catch(err => {
+          settingsLoad = 'failed';
+          logger.error('Failed to load settings on app init', err);
+        });
+    } else {
+      settingsLoad = 'skipped';
     }
 
     // Initial routing is handled by the reactive $effect below when appInitialized becomes true
@@ -534,30 +686,49 @@
     handleRouting(currentPath);
   });
 
-  // Wizard trigger: launch after first route loads
+  // A visitor who is already allowed has nothing to do on the login route: send them to
+  // the requested page. Keyed on the route and the access state, so it also covers access
+  // changing while the route is shown. The replace keeps Back from returning here. The
+  // target is read untracked: the redirect itself changes it, and must not run this again.
+  $effect(() => {
+    if (currentRoute !== 'login' || loginRouteActive) return;
+    const target = untrack(() => loginTarget);
+    navigation.redirect(target);
+  });
+
+  // Wizard trigger: launch after first route loads. Onboarding also waits for the
+  // App's settings load (see resolveWizardLaunch), so the effect re-runs when
+  // settingsLoad changes.
   let wizardChecked = $state(false);
   $effect(() => {
     if (!appInitialized || loadingComponent || wizardChecked) return;
-    wizardChecked = true;
+    if (appState.freshInstall && settingsLoad === 'pending') return;
 
     // Check localStorage dismissal before any wizard flow. This covers the case
     // where the server-side dismiss failed (e.g. 401 when not authenticated) but
     // the client-side fallback persisted the dismissal.
+    let dismissedVersion: string | null = null;
     try {
-      const dismissedVersion = localStorage.getItem(WIZARD_DISMISSED_VERSION_KEY);
-      if (dismissedVersion === appState.version) return;
+      dismissedVersion = localStorage.getItem(WIZARD_DISMISSED_VERSION_KEY);
     } catch {
       // localStorage unavailable (private browsing, etc.)
     }
 
-    if (appState.freshInstall) {
+    const decision = resolveWizardLaunch({
+      dismissedVersion,
+      version: appState.version,
+      freshInstall: appState.freshInstall,
+      newVersion: appState.newVersion,
+      settingsLoad,
+    });
+    if (decision === 'wait') return;
+    wizardChecked = true;
+
+    if (decision === 'onboarding') {
       wizardState.launch('onboarding', {
         currentVersion: appState.version,
       });
-      return;
-    }
-
-    if (appState.newVersion) {
+    } else if (decision === 'whats-new') {
       wizardState.launch('whats-new', {
         previousVersion: appState.previousVersion ?? undefined,
         currentVersion: appState.version,
@@ -626,9 +797,16 @@
     </div>
   </div>
   <!-- Private mode: force login form before any app UI is visible -->
-{:else if requireLogin}
+{:else if requireLogin || loginRouteActive}
   <div class="flex h-screen w-full items-center justify-center bg-[var(--color-base-200)]">
-    <LoginModal isOpen={true} onClose={() => {}} redirectUrl={postLoginRedirect} {authConfig} />
+    <!-- Private mode keeps the form open; on the login route, closing goes to the dashboard -->
+    <LoginModal
+      isOpen={true}
+      onClose={() => {}}
+      onCancel={requireLogin ? undefined : () => navigation.redirect(DEFAULT_LOGIN_TARGET)}
+      redirectUrl={loginRedirectUrl}
+      {authConfig}
+    />
   </div>
   <!-- Show fatal error page if initialization failed -->
 {:else if appError}
@@ -668,10 +846,22 @@
       {@render renderRoute(LiveStream)}
     {:else if currentRoute === 'notifications'}
       {@render renderRoute(Notifications)}
-    {:else if currentRoute === 'analytics'}
-      {@render renderRoute(Analytics)}
-    {:else if currentRoute === 'advanced-analytics'}
-      {@render renderRoute(AdvancedAnalytics)}
+    {:else if currentRoute === 'analytics-summary'}
+      {@render renderRoute(SummaryPage)}
+    {:else if currentRoute === 'analytics-activity'}
+      {@render renderRoute(ActivityPage)}
+    {:else if currentRoute === 'analytics-trends'}
+      {@render renderRoute(TrendsPage)}
+    {:else if currentRoute === 'analytics-biodiversity'}
+      {@render renderRoute(BiodiversityPage)}
+    {:else if currentRoute === 'analytics-nocturnal'}
+      {@render renderRoute(NocturnalPage)}
+    {:else if currentRoute === 'analytics-weather'}
+      {@render renderRoute(WeatherPage)}
+    {:else if currentRoute === 'analytics-soundscape'}
+      {@render renderRoute(SoundscapePage)}
+    {:else if currentRoute === 'analytics-review'}
+      {@render renderRoute(ReviewPage)}
     {:else if currentRoute === 'species'}
       {@render renderRoute(Species)}
     {:else if currentRoute === 'search'}

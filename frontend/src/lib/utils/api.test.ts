@@ -19,7 +19,7 @@ vi.mock('$lib/stores/appState.svelte', () => ({
   refreshCsrfToken: vi.fn().mockResolvedValue(false),
 }));
 
-import { getCsrfToken, fetchWithCSRF, api, resetRedirectGuard } from './api';
+import { getCsrfToken, fetchWithCSRF, api, resetRedirectGuard, ApiError } from './api';
 
 describe('API utilities', () => {
   beforeEach(() => {
@@ -208,6 +208,38 @@ describe('API utilities', () => {
       });
     });
 
+    it('exposes the error_key on ApiError', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        statusText: 'Conflict',
+        headers: new Headers(),
+        json: () =>
+          Promise.resolve({
+            error_key: 'analysis.gallery.errors.operationInProgress',
+            error_params: { name: 'Geomodel' },
+            message: 'another model operation is in progress',
+          }),
+      });
+
+      await expect(fetchWithCSRF('/api/test')).rejects.toMatchObject({
+        status: 409,
+        errorKey: 'analysis.gallery.errors.operationInProgress',
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        statusText: 'Conflict',
+        headers: new Headers(),
+        json: () => Promise.resolve({ message: 'conflict' }),
+      });
+
+      const err = await fetchWithCSRF('/api/test').catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ApiError);
+      expect((err as ApiError).errorKey).toBeUndefined();
+    });
+
     it('returns null for empty responses', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -246,6 +278,100 @@ describe('API utilities', () => {
       expect(appState.refreshCsrfToken).toHaveBeenCalledOnce();
       expect(mockFetch).toHaveBeenCalledTimes(2);
       expect(result).toEqual({ saved: true });
+    });
+
+    describe('onHeaders', () => {
+      const okResponse = (etag: string) => ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json', ETag: etag }),
+        json: () => Promise.resolve({}),
+      });
+
+      it('receives the response headers on success without reaching fetch', async () => {
+        mockFetch.mockResolvedValueOnce(okResponse('"e-1"'));
+        const onHeaders = vi.fn<(headers: Headers) => void>();
+
+        await fetchWithCSRF('/api/test', { onHeaders });
+
+        expect(onHeaders).toHaveBeenCalledOnce();
+        expect(onHeaders.mock.calls[0][0].get('ETag')).toBe('"e-1"');
+        const init = mockFetch.mock.calls[0][1] as Record<string, unknown>;
+        expect(init).not.toHaveProperty('onHeaders');
+      });
+
+      it('receives the headers of an HTTP error response before it rejects', async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: false,
+          status: 412,
+          statusText: 'Precondition Failed',
+          headers: new Headers({ ETag: '"e-2"' }),
+          json: () => Promise.resolve({ error: 'stale' }),
+        });
+        const onHeaders = vi.fn<(headers: Headers) => void>();
+
+        await expect(fetchWithCSRF('/api/test', { onHeaders })).rejects.toMatchObject({
+          status: 412,
+        });
+
+        expect(onHeaders).toHaveBeenCalledOnce();
+        expect(onHeaders.mock.calls[0][0].get('ETag')).toBe('"e-2"');
+      });
+
+      it('is called once, for the response of a CSRF retry only', async () => {
+        const appState = await import('$lib/stores/appState.svelte');
+        vi.mocked(appState.refreshCsrfToken).mockResolvedValueOnce(true);
+        mockFetch.mockResolvedValueOnce({
+          ok: false,
+          status: 403,
+          statusText: 'Forbidden',
+          headers: new Headers({ ETag: '"from-403"' }),
+          json: () => Promise.resolve({}),
+        });
+        mockFetch.mockResolvedValueOnce(okResponse('"from-retry"'));
+        const onHeaders = vi.fn<(headers: Headers) => void>();
+
+        await fetchWithCSRF('/api/test', { method: 'PUT', body: {}, onHeaders });
+
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(onHeaders).toHaveBeenCalledOnce();
+        expect(onHeaders.mock.calls[0][0].get('ETag')).toBe('"from-retry"');
+      });
+    });
+
+    it('retries a request that carries custom headers with the refreshed CSRF token', async () => {
+      mockCsrfToken = 'stale-csrf-token';
+      const appState = await import('$lib/stores/appState.svelte');
+      vi.mocked(appState.refreshCsrfToken).mockImplementationOnce(() => {
+        mockCsrfToken = 'fresh-csrf-token';
+        return Promise.resolve(true);
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden',
+        headers: new Headers(),
+        json: () => Promise.resolve({}),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: () => Promise.resolve({}),
+      });
+
+      await fetchWithCSRF('/api/test', {
+        method: 'PUT',
+        body: {},
+        headers: { 'If-Match': '"etag-1"' },
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const [, first] = mockFetch.mock.calls[0];
+      const [, retry] = mockFetch.mock.calls[1];
+      expect(first.headers.get('X-CSRF-Token')).toBe('stale-csrf-token');
+      expect(retry.headers.get('X-CSRF-Token')).toBe('fresh-csrf-token');
+      expect(retry.headers.get('If-Match')).toBe('"etag-1"');
     });
 
     it('returns text for non-JSON responses', async () => {
@@ -324,6 +450,24 @@ describe('API utilities', () => {
       expect(window.location.href).toBe('/ui/');
     });
 
+    it('does not call onHeaders for a 401 that redirects to login', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        headers: new Headers(),
+      });
+      const onHeaders = vi.fn<(headers: Headers) => void>();
+
+      // The request hangs until the page navigates away; give it time to settle.
+      await Promise.race([
+        fetchWithCSRF('/api/test', { onHeaders }),
+        new Promise<string>(resolve => setTimeout(() => resolve('pending'), 50)),
+      ]);
+
+      expect(onHeaders).not.toHaveBeenCalled();
+    });
+
     it('does not throw ApiError on 401', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
@@ -332,7 +476,7 @@ describe('API utilities', () => {
         headers: new Headers(),
       });
 
-      // The call should NOT reject — it should hang.
+      // The call should NOT reject; it should hang.
       let threw = false;
       const raceResult = await Promise.race([
         fetchWithCSRF('/api/test').catch(() => {

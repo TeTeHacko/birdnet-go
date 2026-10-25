@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import { createI18nMock, analyticsI18nTranslations } from '../../../../../../test/render-helpers';
+import { reactiveState } from '../../../../../../test/reactive-state.svelte';
 import SpeciesFilterForm from './SpeciesFilterForm.svelte';
 
 // Mock i18n translations using shared translation constants
@@ -8,14 +9,19 @@ vi.mock('$lib/i18n', () => ({
   t: createI18nMock(analyticsI18nTranslations),
 }));
 
-const createDefaultFilters = () => ({
+// Plain fixture values. createDefaultFilters() and the variants below wrap a
+// fresh copy in reactiveState so the bound `filters.*` props are reactive
+// proxies, matching how the app passes a $state object via bind:filters (see
+// reactive-state.svelte.ts).
+const defaultFilterValues = {
   timePeriod: 'all' as const,
   startDate: '',
   endDate: '',
   sortOrder: 'count_desc' as const,
   searchTerm: '',
-  sourceGroups: [] as string[],
-});
+};
+
+const createDefaultFilters = () => reactiveState({ ...defaultFilterValues });
 
 describe('SpeciesFilterForm', () => {
   beforeEach(() => {
@@ -58,9 +64,9 @@ describe('SpeciesFilterForm', () => {
       },
     });
 
-    // SelectDropdown renders as a button, not combobox
-    const timePeriodSelect = screen.getByRole('button', { name: /all time/i });
-    expect(timePeriodSelect).toBeInTheDocument();
+    // The trigger is named by its <label for>, and shows the selected option as its text
+    const timePeriodSelect = screen.getByRole('combobox', { name: 'Time Period' });
+    expect(timePeriodSelect).toHaveTextContent('All Time');
   });
 
   it('displays sort order options', () => {
@@ -75,17 +81,17 @@ describe('SpeciesFilterForm', () => {
       },
     });
 
-    // SelectDropdown renders as a button with the translated label
-    // Default sort order is count_desc -> "Most Detections"
-    const sortSelect = screen.getByRole('button', { name: /most detections/i });
-    expect(sortSelect).toBeInTheDocument();
+    // The trigger is named by its <label for>; the default sort order count_desc shows
+    // "Most Detections"
+    const sortSelect = screen.getByRole('combobox', { name: 'Sort By' });
+    expect(sortSelect).toHaveTextContent('Most Detections');
   });
 
   it('shows custom date fields when custom time period is selected', () => {
-    const customFilters = {
-      ...createDefaultFilters(),
+    const customFilters = reactiveState({
+      ...defaultFilterValues,
       timePeriod: 'custom' as const,
-    };
+    });
 
     render(SpeciesFilterForm, {
       props: {
@@ -251,10 +257,10 @@ describe('SpeciesFilterForm', () => {
   });
 
   it('shows filtered indicator when search term is present', () => {
-    const searchFilters = {
-      ...createDefaultFilters(),
+    const searchFilters = reactiveState({
+      ...defaultFilterValues,
       searchTerm: 'robin',
-    };
+    });
 
     render(SpeciesFilterForm, {
       props: {
@@ -356,7 +362,7 @@ describe('SpeciesFilterForm', () => {
   });
 
   it('updates filter values correctly', async () => {
-    const filters = { ...createDefaultFilters() };
+    const filters = createDefaultFilters();
 
     render(SpeciesFilterForm, {
       props: {

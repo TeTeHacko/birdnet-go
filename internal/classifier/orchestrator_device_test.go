@@ -4,36 +4,53 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/tphakala/birdnet-go/internal/inference"
 )
 
-// TestGetModelDevice covers device resolution for loaded, unloaded, and
-// torn-down instances.
-func TestGetModelDevice(t *testing.T) {
+// TestGetModelRuntimeInfo covers the compound device/backend/precision accessor
+// for loaded and unknown models. The triplet is resolved in a single call so the
+// status card never observes a mixed-generation triplet when a reload races a
+// poll. A loaded model returns its live device, backend, and precision; an
+// unknown model returns the not-loaded triplet (Unknown device, empty
+// backend/precision) so the caller falls back to the static ModelInfo metadata.
+func TestGetModelRuntimeInfo(t *testing.T) {
 	t.Parallel()
 
 	const (
 		cpuModelID = "cpu_model"
-		gpuModelID = "gpu_model"
+		ovModelID  = "ov_model"
 	)
 	o := newTestOrchestrator(t,
-		&mockModelInstance{id: cpuModelID, device: deviceCPU},
-		&mockModelInstance{id: gpuModelID, device: "GPU"},
+		&mockModelInstance{id: cpuModelID, device: deviceCPU, backend: BackendONNX, precision: string(QuantizationINT8)},
+		&mockModelInstance{id: ovModelID, device: inference.OVDeviceGPU, backend: BackendOpenVINO, precision: string(QuantizationFP16)},
 	)
 
-	t.Run("returns the live instance device", func(t *testing.T) {
+	t.Run("returns the live instance triplet", func(t *testing.T) {
 		t.Parallel()
-		assert.Equal(t, deviceCPU, o.GetModelDevice(cpuModelID))
-		assert.Equal(t, "GPU", o.GetModelDevice(gpuModelID))
+		device, backend, precision := o.GetModelRuntimeInfo(cpuModelID)
+		assert.Equal(t, deviceCPU, device)
+		assert.Equal(t, BackendONNX, backend)
+		assert.Equal(t, string(QuantizationINT8), precision)
+
+		device, backend, precision = o.GetModelRuntimeInfo(ovModelID)
+		assert.Equal(t, inference.OVDeviceGPU, device)
+		assert.Equal(t, BackendOpenVINO, backend,
+			"an ONNX model executed on OpenVINO must report OpenVINO, not ONNX")
+		assert.Equal(t, string(QuantizationFP16), precision)
 	})
 
-	t.Run("unknown model returns Unknown", func(t *testing.T) {
+	t.Run("unknown model reports Unknown device and empty backend/precision", func(t *testing.T) {
 		t.Parallel()
-		assert.Equal(t, deviceUnknown, o.GetModelDevice("not_loaded"))
+		device, backend, precision := o.GetModelRuntimeInfo("not_loaded")
+		assert.Equal(t, deviceUnknown, device)
+		assert.Empty(t, backend, "empty backend signals static-metadata fallback")
+		assert.Empty(t, precision, "empty precision signals static-metadata fallback")
 	})
 }
 
-// TestGetModelDevice_NilInstance verifies a torn-down entry reports Unknown.
-func TestGetModelDevice_NilInstance(t *testing.T) {
+// TestGetModelRuntimeInfo_NilInstance verifies a torn-down entry reports the
+// not-loaded triplet: Unknown device, empty backend/precision (static fallback).
+func TestGetModelRuntimeInfo_NilInstance(t *testing.T) {
 	t.Parallel()
 	o := &Orchestrator{
 		models: map[string]*modelEntry{
@@ -41,7 +58,10 @@ func TestGetModelDevice_NilInstance(t *testing.T) {
 		},
 		modelRSS: make(map[string]int64),
 	}
-	assert.Equal(t, deviceUnknown, o.GetModelDevice("closed"))
+	device, backend, precision := o.GetModelRuntimeInfo("closed")
+	assert.Equal(t, deviceUnknown, device)
+	assert.Empty(t, backend)
+	assert.Empty(t, precision)
 }
 
 // TestModelScheduleStatus covers the schedule gating contract: only the bat

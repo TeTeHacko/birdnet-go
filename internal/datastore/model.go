@@ -28,27 +28,56 @@ type Note struct {
 	// internal/datastore/v2/entities). On the legacy v1 datastore the field is
 	// never rehydrated on read, so the detections API returns a nil Source for
 	// historical detections saved through that path.
-	Source      AudioSource         `gorm:"-"`
-	Model       detection.ModelInfo `gorm:"-"` // Runtime only: model that produced this detection
-	BeginTime   time.Time
-	EndTime     time.Time
-	SpeciesCode string
+	Source AudioSource `gorm:"-"`
+	// FirstTime is runtime-only: the per-species summary queries (GetTopBirdsData) collapse a
+	// day's detections into one Note per species whose Time is the latest detection, and carry
+	// the earliest one here so the daily summary can report first heard and last heard apart.
+	// Empty on every other read path.
+	FirstTime string              `gorm:"-" json:"-"`
+	Model     detection.ModelInfo `gorm:"-"` // Runtime only: model that produced this detection
+	// ModelContributions is runtime-only: the legacy notes schema has no column for it, so
+	// it is never persisted through this model. v2only Save reads it to write the
+	// detection_model_contributions rows.
+	ModelContributions map[string]detection.ResultModelContrib `gorm:"-" json:"-"`
+	BeginTime          time.Time
+	EndTime            time.Time
+	SpeciesCode        string
 	// ScientificName includes optimized index (scientific_name, date) for new species tracking performance
-	ScientificName string  `gorm:"index:idx_notes_sciname;index:idx_notes_sciname_date;index:idx_notes_sciname_date_optimized,priority:1"`
-	CommonName     string  `gorm:"index:idx_notes_comname;index:idx_notes_date_commonname_confidence"`
-	Confidence     float64 `gorm:"index:idx_notes_date_commonname_confidence"`
-	Latitude       float64
-	Longitude      float64
-	Threshold      float64
-	Sensitivity    float64
-	ClipName       string
+	ScientificName string `gorm:"index:idx_notes_sciname;index:idx_notes_sciname_date;index:idx_notes_sciname_date_optimized,priority:1"`
+	CommonName     string `gorm:"index:idx_notes_comname;index:idx_notes_date_commonname_confidence"`
+	// RawScientificName preserves the exact scientific name the model emitted before
+	// canonical-name normalization collapsed it into ScientificName. Nullable column:
+	// NULL/empty means the raw name equals ScientificName (no taxonomic alias applied).
+	// Persisted so a future re-split can un-merge; json:"-" keeps it out of API/MQTT/SSE
+	// payloads while GORM maps it to the raw_scientific_name column.
+	// NOTE: only the legacy notes datastore persists this column. The v2only normalized
+	// datastore (the default for fresh installs and migrated databases) drops it; the
+	// canonical ScientificName still flows there, so de-duplication works, but the raw
+	// name is not retained on that path. See PR discussion / follow-up for v2 support.
+	RawScientificName string  `json:"-"`
+	Confidence        float64 `gorm:"index:idx_notes_date_commonname_confidence"`
+	Latitude          float64
+	Longitude         float64
+	Threshold         float64
+	Sensitivity       float64
+	ClipName          string
+	// SpectrogramClipName is the clip name of a spectrogram render that outlived the audio
+	// (v2 store only); runtime-only on Note, never serialized.
+	SpectrogramClipName string `gorm:"-" json:"-"`
+	// ClipSampleRate is the sample rate in Hz of the saved clip file (v2 store only);
+	// 0 when unknown. Runtime-only on Note: the legacy table gets no column and the
+	// frozen v1 output does not carry it.
+	ClipSampleRate int `gorm:"-" json:"-"`
 	ProcessingTime time.Duration
-	Unlikely       bool          `gorm:"default:false"`                 // Tagged by ultrasonic validation filter
-	Occurrence     float64       `gorm:"-" json:"occurrence,omitempty"` // Runtime only, occurrence probability (0-1) based on location/time
-	Results        []Results     `gorm:"foreignKey:NoteID;constraint:OnDelete:CASCADE"`
-	Review         *NoteReview   `gorm:"foreignKey:NoteID;constraint:OnDelete:CASCADE"` // One-to-one relationship with cascade delete
-	Comments       []NoteComment `gorm:"foreignKey:NoteID;constraint:OnDelete:CASCADE"` // One-to-many relationship with cascade delete
-	Lock           *NoteLock     `gorm:"foreignKey:NoteID;constraint:OnDelete:CASCADE"` // One-to-one relationship with cascade delete
+	Unlikely       bool    `gorm:"default:false"`                 // Tagged by ultrasonic validation filter
+	Occurrence     float64 `gorm:"-" json:"occurrence,omitempty"` // Runtime only, occurrence probability (0-1) based on location/time
+	// RawLabel is the full un-truncated classifier label (e.g. "power_tool"); runtime-only,
+	// not persisted. Used at Save time to classify non-bird sound classes correctly.
+	RawLabel string        `gorm:"-"`
+	Results  []Results     `gorm:"foreignKey:NoteID;constraint:OnDelete:CASCADE"`
+	Review   *NoteReview   `gorm:"foreignKey:NoteID;constraint:OnDelete:CASCADE"` // One-to-one relationship with cascade delete
+	Comments []NoteComment `gorm:"foreignKey:NoteID;constraint:OnDelete:CASCADE"` // One-to-many relationship with cascade delete
+	Lock     *NoteLock     `gorm:"foreignKey:NoteID;constraint:OnDelete:CASCADE"` // One-to-one relationship with cascade delete
 
 	// Virtual fields to maintain compatibility with templates
 	Verified string `gorm:"-"` // This will be populated from Review.Verified
@@ -61,6 +90,9 @@ type Results struct {
 	NoteID     uint `gorm:"index;not null;constraint:OnDelete:CASCADE,OnUpdate:CASCADE;foreignKey:NoteID;references:ID"` // Foreign key to associate with Note
 	Species    string
 	Confidence float32
+	// RawLabel is the full un-truncated classifier label (e.g. "power_tool"); runtime-only,
+	// not persisted. Used at Save time to classify non-bird sound classes correctly.
+	RawLabel string `gorm:"-"`
 }
 
 // Copy creates a deep copy of the Results struct
@@ -70,6 +102,7 @@ func (r Results) Copy() Results {
 		NoteID:     r.NoteID,
 		Species:    r.Species,
 		Confidence: r.Confidence,
+		RawLabel:   r.RawLabel,
 	}
 }
 
@@ -162,6 +195,27 @@ type ImageCacheQuery struct {
 	ProviderName   string
 }
 
+// MediaName returns the clip name that identifies the detection's media files: the
+// audio clip when it exists, otherwise the clip a kept spectrogram belongs to.
+func (n *Note) MediaName() string {
+	if n.ClipName != "" {
+		return n.ClipName
+	}
+	return n.SpectrogramClipName
+}
+
+// IsSpectrogramOnly reports whether retention removed the detection's audio but a
+// spectrogram image was kept.
+func (n *Note) IsSpectrogramOnly() bool {
+	return IsSpectrogramOnly(n.ClipName, n.SpectrogramClipName)
+}
+
+// IsSpectrogramOnly reports whether a detection with the given audio clip name and
+// kept spectrogram clip name has no audio but has a kept spectrogram.
+func IsSpectrogramOnly(clipName, spectrogramClipName string) bool {
+	return clipName == "" && spectrogramClipName != ""
+}
+
 // DetectionRecord represents a bird detection record for search results
 type DetectionRecord struct {
 	ID             string    `json:"id"`
@@ -177,9 +231,14 @@ type DetectionRecord struct {
 	Locked         bool      `json:"locked,omitempty"`
 	Unlikely       bool      `json:"unlikely,omitempty"`
 	HasAudio       bool      `json:"hasAudio,omitempty"`
-	Device         string    `json:"device,omitempty"`
-	Source         string    `json:"source,omitempty"`
-	TimeOfDay      string    `json:"timeOfDay,omitempty"`
+	// SpectrogramOnly is true when retention removed the audio but a spectrogram image was kept.
+	SpectrogramOnly bool `json:"spectrogramOnly,omitempty"`
+	// ClipSampleRate is the sample rate in Hz of the detection's original audio clip (omitted when unknown); bat spectrograms span 0 to half of it.
+	ClipSampleRate int    `json:"clipSampleRate,omitempty"`
+	Device         string `json:"device,omitempty"`
+	Source         string `json:"source,omitempty"`
+	TimeOfDay      string `json:"timeOfDay,omitempty"`
+	ModelType      string `json:"modelType,omitempty"` // AI model type (e.g. "bird", "bat"); drives the spectrogram frequency range
 }
 
 // DynamicThreshold represents a persisted dynamic threshold for a species
@@ -187,34 +246,32 @@ type DetectionRecord struct {
 // users experience a sudden drop in detections after restart when learned thresholds are lost.
 type DynamicThreshold struct {
 	ID             uint      `gorm:"primaryKey"`
-	SpeciesName    string    `gorm:"uniqueIndex:idx_dt_species_model;not null;size:200"`                   // Common name (lowercase)
-	ModelName      string    `gorm:"uniqueIndex:idx_dt_species_model;not null;size:100;default:'BirdNET'"` // Model that produced this threshold
-	ScientificName string    `gorm:"size:200"`                                                             // Scientific name for thumbnails
-	Level          int       `gorm:"not null;default:0"`                                                   // Adjustment level (0-3)
-	CurrentValue   float64   `gorm:"not null"`                                                             // Current threshold value
-	BaseThreshold  float64   `gorm:"not null"`                                                             // Original base threshold for reference
-	HighConfCount  int       `gorm:"not null;default:0"`                                                   // Count of high-confidence detections
-	ValidHours     int       `gorm:"not null"`                                                             // Hours until expiry
-	ExpiresAt      time.Time `gorm:"index;not null"`                                                       // When this threshold expires
-	LastTriggered  time.Time `gorm:"index;not null"`                                                       // Last time threshold was triggered
-	FirstCreated   time.Time `gorm:"not null"`                                                             // When first created
-	UpdatedAt      time.Time `gorm:"not null"`                                                             // Last update time
-	TriggerCount   int       `gorm:"not null;default:0"`                                                   // Total number of times triggered (for statistics)
+	SpeciesName    string    `gorm:"uniqueIndex;not null;size:200"` // Common name (lowercase); tracking is per species, not per model
+	ScientificName string    `gorm:"size:200"`                      // Scientific name for thumbnails
+	Level          int       `gorm:"not null;default:0"`            // Adjustment level (0-3)
+	CurrentValue   float64   `gorm:"not null"`                      // Current threshold value
+	BaseThreshold  float64   `gorm:"not null"`                      // model-global base of the model that last learned (display only)
+	HighConfCount  int       `gorm:"not null;default:0"`            // Count of high-confidence detections
+	ValidHours     int       `gorm:"not null"`                      // Hours until expiry
+	ExpiresAt      time.Time `gorm:"index;not null"`                // When this threshold expires
+	LastTriggered  time.Time `gorm:"index;not null"`                // Last time threshold was triggered
+	FirstCreated   time.Time `gorm:"not null"`                      // When first created
+	UpdatedAt      time.Time `gorm:"not null"`                      // Last update time
+	TriggerCount   int       `gorm:"not null;default:0"`            // Total number of times triggered (for statistics)
 }
 
 // ThresholdEvent records each change to a dynamic threshold for audit/history purposes.
 // This enables the frontend to display a timeline of threshold adjustments per species.
 type ThresholdEvent struct {
 	ID            uint      `gorm:"primaryKey"`
-	SpeciesName   string    `gorm:"index;not null;size:200"`             // Common name (lowercase)
-	ModelName     string    `gorm:"not null;size:100;default:'BirdNET'"` // Model that produced this event
-	PreviousLevel int       `gorm:"not null"`                            // Level before change
-	NewLevel      int       `gorm:"not null"`                            // Level after change
-	PreviousValue float64   `gorm:"not null"`                            // Threshold value before change
-	NewValue      float64   `gorm:"not null"`                            // Threshold value after change
-	ChangeReason  string    `gorm:"not null;size:50"`                    // "high_confidence", "expiry", "manual_reset"
-	Confidence    float64   `gorm:"default:0"`                           // Detection confidence that triggered change (if applicable)
-	CreatedAt     time.Time `gorm:"index;not null"`                      // When the event occurred
+	SpeciesName   string    `gorm:"index;not null;size:200"` // Common name (lowercase); events are per species, not per model
+	PreviousLevel int       `gorm:"not null"`                // Level before change
+	NewLevel      int       `gorm:"not null"`                // Level after change
+	PreviousValue float64   `gorm:"not null"`                // Threshold value before change
+	NewValue      float64   `gorm:"not null"`                // Threshold value after change
+	ChangeReason  string    `gorm:"not null;size:50"`        // "high_confidence", "expiry", "manual_reset"
+	Confidence    float64   `gorm:"default:0"`               // Detection confidence that triggered change (if applicable)
+	CreatedAt     time.Time `gorm:"index;not null"`          // When the event occurred
 
 	// ScientificName is a virtual field (not persisted in legacy DB) used by v2only
 	// datastore to correctly resolve the Label foreign key. The processor populates

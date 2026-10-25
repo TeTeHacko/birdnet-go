@@ -22,9 +22,13 @@ var (
 
 // TestMain sets up the MySQL container for all tests in this package
 func TestMain(m *testing.M) {
+	if code, skip := containers.SkipTestMainIfContainerRuntimeUnavailable(); skip {
+		os.Exit(code)
+	}
+
 	var err error
 
-	ctx := context.Background()
+	ctx := context.Background() //nolint:gocritic // no *testing.T available (TestMain / setup helper)
 
 	// Create MySQL container
 	mysqlContainer, err = containers.NewMySQLContainer(ctx, nil) // Use defaults
@@ -35,13 +39,13 @@ func TestMain(m *testing.M) {
 	// Get database connection
 	testDB = mysqlContainer.DB()
 	if testDB == nil {
-		_ = mysqlContainer.Terminate(context.Background())
+		_ = mysqlContainer.Terminate(context.Background()) //nolint:gocritic // no *testing.T available in TestMain
 		panic("database connection is nil")
 	}
 
 	// Run migrations
 	if err := runMigrations(testDB); err != nil {
-		_ = mysqlContainer.Terminate(context.Background())
+		_ = mysqlContainer.Terminate(context.Background()) //nolint:gocritic // no *testing.T available in TestMain
 		panic("failed to run migrations: " + err.Error())
 	}
 
@@ -49,7 +53,7 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	// Cleanup
-	if err := mysqlContainer.Terminate(context.Background()); err != nil {
+	if err := mysqlContainer.Terminate(context.Background()); err != nil { //nolint:gocritic // no *testing.T available in TestMain
 		panic("failed to terminate MySQL container: " + err.Error())
 	}
 
@@ -60,7 +64,7 @@ func TestMain(m *testing.M) {
 func runMigrations(db *sql.DB) error {
 	// TODO: Apply actual schema migrations here
 	// For now, this is a placeholder that would execute SQL schema files
-	ctx := context.Background()
+	ctx := context.Background() //nolint:gocritic // no *testing.T available (TestMain / setup helper)
 
 	// Example: Create a simple test table
 	schema := `
@@ -337,16 +341,16 @@ func TestMySQL_Aggregation_GroupBy(t *testing.T) {
 	defer func() { _ = rows.Close() }()
 
 	results := make([]struct {
-		species    string
-		count      int
-		avgConf    float64
+		species string
+		count   int
+		avgConf float64
 	}, 0)
 
 	for rows.Next() {
 		var r struct {
-			species    string
-			count      int
-			avgConf    float64
+			species string
+			count   int
+			avgConf float64
 		}
 		err := rows.Scan(&r.species, &r.count, &r.avgConf)
 		require.NoError(t, err)
@@ -371,7 +375,7 @@ func TestMySQL_HAVING_Clause(t *testing.T) {
 	}{
 		{"Turdus merula", 0.95},
 		{"Turdus merula", 0.83}, // Changed from 0.85 to avoid FLOAT precision boundary issues
-		{"Turdus merula", 0.75},  // Average will be ~0.843, clearly < 0.85
+		{"Turdus merula", 0.75}, // Average will be ~0.843, clearly < 0.85
 		{"Parus major", 0.92},
 		{"Parus major", 0.88}, // Average will be 0.90, clearly > 0.85
 	}
@@ -601,3 +605,21 @@ func TestMySQL_ForeignKeyConstraint(t *testing.T) {
 // - Connection pool exhaustion scenarios
 // - JSON column operations (MySQL 5.7+)
 // - Full-text search capabilities
+
+// TestMySQLContainerReset_RestoresForeignKeyChecksOnFailure pins that a failed truncate does not
+// leave foreign key checks off on a connection that goes back to the pool.
+func TestMySQLContainerReset_RestoresForeignKeyChecksOnFailure(t *testing.T) {
+	err := mysqlContainer.Reset(t.Context(), []string{"test_detections", "no_such_table"})
+	require.Error(t, err, "truncating a missing table must fail")
+
+	// Hold more connections than the pool keeps idle, so the one Reset used is among them.
+	const probeConns = 8
+	for i := range probeConns {
+		conn, err := testDB.Conn(t.Context())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = conn.Close() })
+		var checks int
+		require.NoError(t, conn.QueryRowContext(t.Context(), "SELECT @@foreign_key_checks").Scan(&checks))
+		assert.Equal(t, 1, checks, "connection %d was returned to the pool with foreign key checks off", i)
+	}
+}

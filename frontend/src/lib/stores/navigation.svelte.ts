@@ -8,25 +8,30 @@
  */
 
 import { buildAppUrl, getAppBasePath, extractRelativePath } from '$lib/utils/urlHelpers';
+import { DEFAULT_LOGIN_TARGET as DEFAULT_PATH } from '$lib/utils/loginRedirect';
 
 // Path constants built via array join at runtime.
 // IMPORTANT: Do NOT use string literals like '/ui/dashboard' or '/ui/' here.
 // nginx sub_filter rewrites quoted strings matching patterns like '/u' in JS bundles,
 // corrupting constants and breaking path logic. Array.join() is immune to this.
-const DEFAULT_PATH = ['', 'ui', 'dashboard'].join('/');
 const UI_PREFIX_STR = ['', 'ui'].join('/');
 
 // Regex patterns for UI path matching.
 // Regex syntax (/^\/ui\//) is immune to sub_filter rules that target quoted strings.
 const UI_PATH_RE = /^\/ui\//;
 const UI_ROOT_RE = /^\/ui\/?$/;
+// One or more trailing slashes.
+const TRAILING_SLASHES_RE = /\/+$/;
 
 /**
  * Navigation store interface
  */
 export interface NavigationStore {
   currentPath: string;
+  /** Reactive query string, including '?', independent of page routing. */
+  currentSearch: string;
   navigate: (url: string) => void;
+  redirect: (url: string) => void;
   handlePopState: () => void;
 }
 
@@ -54,11 +59,14 @@ function stripProxyPrefix(pathname: string): string {
 function normalizeUiPath(url: string): string {
   // Strip any proxy prefix that sub_filter may have injected into the value.
   // This handles cases where sub_filter rewrites constants or URL values.
-  const cleaned = stripProxyPrefix(url);
+  const stripped = stripProxyPrefix(url);
+
+  // A path made only of slashes becomes empty and falls into the root case below.
+  const cleaned = stripped.replace(TRAILING_SLASHES_RE, '');
 
   // Handle root or empty (including /ui and /ui/)
   // Use regex instead of string literals to avoid sub_filter corruption.
-  if (cleaned === '/' || cleaned === '' || UI_ROOT_RE.test(cleaned)) {
+  if (cleaned === '' || UI_ROOT_RE.test(cleaned)) {
     return DEFAULT_PATH;
   }
   // Already has /ui/ prefix
@@ -77,6 +85,7 @@ function normalizeUiPath(url: string): string {
  * for routing, while using proxy-aware URLs for the browser address bar.
  */
 export function createNavigation(): NavigationStore {
+  let currentSearch = $state(typeof window === 'undefined' ? '' : window.location.search);
   let currentPath = $state(
     (() => {
       if (typeof window === 'undefined') return DEFAULT_PATH;
@@ -88,26 +97,31 @@ export function createNavigation(): NavigationStore {
       // Update URL if normalization changed the path
       // Use buildAppUrl to maintain proxy prefix in browser
       if (path !== pathname) {
-        window.history.replaceState({}, '', buildAppUrl(path));
+        window.history.replaceState(
+          {},
+          '',
+          buildAppUrl(path) + currentSearch + window.location.hash
+        );
       }
       return path;
     })()
   );
 
   /**
-   * Navigate to a new path using SPA navigation (no page reload).
-   * Updates both internal state and browser URL bar with proxy-aware URL.
+   * Apply a new URL to internal routing state and the browser address bar.
    *
-   * Query parameters are preserved in the browser URL but NOT stored in currentPath.
-   * This matches the behavior on page reload where window.location.pathname
-   * (which doesn't include query string) is used for routing.
+   * Query parameters are exposed separately as currentSearch; query and hash
+   * remain outside currentPath. This matches the behavior on page reload where
+   * window.location.pathname (which doesn't include query string) is used for
+   * routing.
    *
-   * @param url - Path to navigate to, optionally with query string (e.g., '/ui/detections/123?tab=review')
+   * @param url - Path to apply, optionally with query string / hash
+   * @param mode - 'push' adds a history entry; 'replace' overwrites the current one
    */
-  function navigate(url: string): void {
+  function applyUrl(url: string, mode: 'push' | 'replace'): void {
     // Separate pathname from query string and hash fragment
     // Only pathname goes to currentPath (matches window.location.pathname behavior)
-    // Query and hash are preserved in browser URL only
+    // Query state is separate from the route; the browser retains the full suffix.
     let pathname: string;
     let suffix: string; // query string + hash fragment
 
@@ -137,12 +151,38 @@ export function createNavigation(): NavigationStore {
     // Normalize only the pathname for internal routing state
     const normalizedPath = normalizeUiPath(pathname);
     currentPath = normalizedPath;
+    currentSearch = suffix.startsWith('?') ? suffix.split('#')[0] : '';
 
     if (typeof window !== 'undefined') {
       // Build proxy-aware URL for the browser address bar (includes query/hash)
       const fullUrl = buildAppUrl(normalizedPath) + suffix;
-      window.history.pushState({}, '', fullUrl);
+      if (mode === 'replace') {
+        window.history.replaceState({}, '', fullUrl);
+      } else {
+        window.history.pushState({}, '', fullUrl);
+      }
     }
+  }
+
+  /**
+   * Navigate to a new path using SPA navigation (no page reload).
+   * Pushes a new history entry so Back returns to the previous view.
+   *
+   * @param url - Path to navigate to, optionally with query string (e.g., '/ui/detections/123?tab=review')
+   */
+  function navigate(url: string): void {
+    applyUrl(url, 'push');
+  }
+
+  /**
+   * Redirect to a new path, replacing the current history entry instead of
+   * pushing a new one. Used for retired routes so the dead URL does not linger
+   * in history (Back skips straight past it).
+   *
+   * @param url - Path to redirect to, optionally with query string
+   */
+  function redirect(url: string): void {
+    applyUrl(url, 'replace');
   }
 
   /**
@@ -155,16 +195,50 @@ export function createNavigation(): NavigationStore {
     // Get pathname and strip proxy prefix for internal routing
     const pathname = stripProxyPrefix(window.location.pathname);
     currentPath = normalizeUiPath(pathname);
+    currentSearch = window.location.search;
   }
 
   return {
     get currentPath() {
       return currentPath;
     },
+    get currentSearch() {
+      return currentSearch;
+    },
     navigate,
+    redirect,
     handlePopState,
   };
 }
 
 // Singleton instance
 export const navigation = createNavigation();
+
+/**
+ * Navigate an application anchor without reloading in-memory forms.
+ * Modified clicks, downloads and explicit browsing targets retain native behavior.
+ */
+export function handleAppLinkClick(event: MouseEvent): void {
+  const anchor = event.currentTarget;
+  if (
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey ||
+    !(anchor instanceof window.HTMLAnchorElement) ||
+    (anchor.target && anchor.target !== '_self') ||
+    anchor.hasAttribute('download')
+  ) {
+    return;
+  }
+
+  const url = new URL(anchor.href);
+  if (url.origin !== window.location.origin || !UI_PATH_RE.test(stripProxyPrefix(url.pathname))) {
+    return;
+  }
+
+  event.preventDefault();
+  navigation.navigate(url.pathname + url.search + url.hash);
+}

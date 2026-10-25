@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"iter"
+	"regexp"
 	"strings"
 	"time"
 
@@ -32,7 +33,7 @@ type EqualizerFilter struct {
 	Q         float64 `yaml:"q" json:"q"`
 	Gain      float64 `yaml:"gain" json:"gain"`     // Only used for certain filter types like Peaking
 	Width     float64 `yaml:"width" json:"width"`   // Only used for certain filter types like BandPass and BandReject
-	Passes    int     `yaml:"passes" json:"passes"` // Filter passes for added attenuation or gain
+	Passes    int     `yaml:"passes" json:"passes"` // Cascaded filter sections: 0 turns the filter off, and so does a config.yaml entry with no passes key; 1 or more applies it that many times (at most 16); each pass adds 12 dB/oct for LowPass and HighPass
 }
 
 // EqualizerSettings is a struct for audio EQ settings
@@ -42,24 +43,31 @@ type EqualizerSettings struct {
 }
 
 type ExportSettings struct {
-	Debug         bool                  `yaml:"debug" json:"debug" mapstructure:"debug"`                         // true to enable audio export debug
-	Enabled       bool                  `yaml:"enabled" json:"enabled" mapstructure:"enabled"`                   // export audio clips containing indentified bird calls
-	Path          string                `yaml:"path" json:"path" mapstructure:"path"`                            // path to audio clip export directory
-	Type          string                `yaml:"type" json:"type" mapstructure:"type"`                            // audio file type, wav, mp3 or flac
-	Bitrate       string                `yaml:"bitrate" json:"bitrate" mapstructure:"bitrate"`                   // bitrate for audio export
-	Retention     RetentionSettings     `yaml:"retention" json:"retention" mapstructure:"retention"`             // retention settings
-	Length        int                   `yaml:"length" json:"length" mapstructure:"length"`                      // audio capture length in seconds
-	PreCapture    int                   `yaml:"precapture" json:"preCapture" mapstructure:"preCapture"`          // pre-capture in seconds
-	Gain          float64               `yaml:"gain" json:"gain" mapstructure:"gain"`                            // gain in dB for audio capture
-	Normalization NormalizationSettings `yaml:"normalization" json:"normalization" mapstructure:"normalization"` // audio normalization settings (EBU R128)
+	Debug          bool                  `yaml:"debug" json:"debug" mapstructure:"debug"`                            // true to enable audio export debug
+	Enabled        bool                  `yaml:"enabled" json:"enabled" mapstructure:"enabled"`                      // export audio clips containing indentified bird calls
+	Path           string                `yaml:"path" json:"path" mapstructure:"path"`                               // path to audio clip export directory
+	Type           string                `yaml:"type" json:"type" mapstructure:"type"`                               // audio file type: wav, flac, aac, opus or mp3
+	UltrasonicType string                `yaml:"ultrasonictype" json:"ultrasonicType" mapstructure:"ultrasonicType"` // wav or flac only; used for bat/ultrasonic captures above 48 kHz
+	Bitrate        string                `yaml:"bitrate,omitempty" json:"bitrate" mapstructure:"bitrate"`            // bitrate for audio export
+	Retention      RetentionSettings     `yaml:"retention" json:"retention" mapstructure:"retention"`                // retention settings
+	Length         int                   `yaml:"length" json:"length" mapstructure:"length"`                         // audio capture length in seconds
+	PreCapture     int                   `yaml:"precapture" json:"preCapture" mapstructure:"preCapture"`             // pre-capture in seconds
+	Gain           float64               `yaml:"gain" json:"gain" mapstructure:"gain"`                               // gain in dB for audio capture
+	Normalization  NormalizationSettings `yaml:"normalization" json:"normalization" mapstructure:"normalization"`    // audio normalization settings (EBU R128)
 }
 
-// NormalizationSettings contains audio normalization configuration based on EBU R128 standard
+// NormalizationSettings contains audio normalization configuration based on EBU R128 standard.
+//
+// Clip normalization applies a single linear gain to reach TargetLUFS without
+// exceeding TruePeak (go-audio-dsp loudnorm). There is no dynamic-range
+// stage, so LoudnessRange is accepted and validated but never applied; it is
+// retained only so existing config.yaml files keep loading unchanged.
 type NormalizationSettings struct {
-	Enabled       bool    `yaml:"enabled" json:"enabled" mapstructure:"enabled"`                   // true to enable loudness normalization
-	TargetLUFS    float64 `yaml:"targetlufs" json:"targetLUFS" mapstructure:"targetLUFS"`          // target integrated loudness in LUFS (default: -23)
-	LoudnessRange float64 `yaml:"loudnessrange" json:"loudnessRange" mapstructure:"loudnessRange"` // loudness range in LU (default: 7)
-	TruePeak      float64 `yaml:"truepeak" json:"truePeak" mapstructure:"truePeak"`                // true peak limit in dBTP (default: -2)
+	Enabled    bool    `yaml:"enabled" json:"enabled" mapstructure:"enabled"`          // true to enable loudness normalization
+	TargetLUFS float64 `yaml:"targetlufs" json:"targetLUFS" mapstructure:"targetLUFS"` // target integrated loudness in LUFS (default: -23)
+	// Deprecated: no longer applied; retained so existing configs keep loading.
+	LoudnessRange float64 `yaml:"loudnessrange" json:"loudnessRange" mapstructure:"loudnessRange"`
+	TruePeak      float64 `yaml:"truepeak" json:"truePeak" mapstructure:"truePeak"` // true peak limit in dBTP (default: -2)
 }
 
 type RetentionSettings struct {
@@ -100,8 +108,6 @@ type AudioSettings struct {
 	FfmpegVersion   string              `yaml:"-" json:"ffmpegVersion,omitempty"`                               // ffmpeg version string, runtime value
 	FfmpegMajor     int                 `yaml:"-" json:"ffmpegMajor,omitempty"`                                 // ffmpeg major version number, runtime value
 	FfmpegMinor     int                 `yaml:"-" json:"ffmpegMinor,omitempty"`                                 // ffmpeg minor version number, runtime value
-	SoxPath         string              `yaml:"soxpath" mapstructure:"soxpath" json:"soxPath"`                  // path to sox, runtime value
-	SoxAudioTypes   []string            `yaml:"-" json:"-"`                                                     // supported audio types of sox, runtime value
 	FfprobePath     string              `yaml:"-" json:"-"`                                                     // path to ffprobe, derived from ffmpeg path at runtime
 	StreamTransport string              `yaml:"streamtransport" json:"streamTransport"`                         // preferred transport for audio streaming: "auto", "sse", or "ws"
 	Export          ExportSettings      `yaml:"export" json:"export"`                                           // export settings
@@ -133,15 +139,6 @@ func (a *AudioSettings) FindSourceByID(sourceID string) *AudioSourceConfig {
 		}
 	}
 	return nil
-}
-
-// NeedsFfprobeWorkaround returns true if the current FFmpeg version requires
-// using ffprobe to get audio file length for spectrograms (FFmpeg 5.x bug).
-// FFmpeg 7.x and later have this issue fixed.
-func (a *AudioSettings) NeedsFfprobeWorkaround() bool {
-	// FFmpeg 5.x has a bug that requires using ffprobe for audio duration
-	// FFmpeg 7.x and later have this fixed
-	return a.FfmpegMajor == 5
 }
 
 // HasFfmpegVersion returns true if FFmpeg version information has been detected and populated.
@@ -248,13 +245,13 @@ const (
 	SpectrogramStyleScientific       = "scientific"
 )
 
-// Spectrogram dynamic range preset constants (dB values for Sox -z parameter).
+// Spectrogram dynamic range preset constants (dynamic range in dB).
 // Lower values increase contrast, making weak signals stand out better.
 // Higher values show more detail but with lower contrast.
 const (
 	SpectrogramDynamicRangeHighContrast = "80"  // High contrast - weak signals visible
 	SpectrogramDynamicRangeStandard     = "100" // Standard - balanced (default)
-	SpectrogramDynamicRangeExtended     = "120" // Extended - more detail, Sox default
+	SpectrogramDynamicRangeExtended     = "120" // Extended - more detail
 )
 
 // SpectrogramPreRender contains settings for spectrogram generation modes.
@@ -352,11 +349,12 @@ type EBirdSettings struct {
 
 // WeatherSettings contains all weather-related settings
 type WeatherSettings struct {
-	Provider     string               `yaml:"provider" json:"provider"`         // "none", "yrno", "openweather", or "wunderground"
-	PollInterval int                  `yaml:"pollinterval" json:"pollInterval"` // weather data polling interval in minutes
-	Debug        bool                 `yaml:"debug" json:"debug"`               // true to enable debug mode
-	OpenWeather  OpenWeatherSettings  `yaml:"openweather" json:"openWeather"`   // OpenWeather integration settings
-	Wunderground WundergroundSettings `yaml:"wunderground" json:"wunderground"` // WeatherUnderground integration settings
+	Provider      string                `yaml:"provider" json:"provider"`           // "none", "yrno", "openweather", "wunderground", or "pirateweather"
+	PollInterval  int                   `yaml:"pollinterval" json:"pollInterval"`   // weather data polling interval in minutes
+	Debug         bool                  `yaml:"debug" json:"debug"`                 // true to enable debug mode
+	OpenWeather   OpenWeatherSettings   `yaml:"openweather" json:"openWeather"`     // OpenWeather integration settings
+	Wunderground  WundergroundSettings  `yaml:"wunderground" json:"wunderground"`   // WeatherUnderground integration settings
+	PirateWeather PirateWeatherSettings `yaml:"pirateweather" json:"pirateWeather"` // Pirate Weather integration settings
 }
 
 // ---------------- Notification push configuration -----------------
@@ -427,7 +425,7 @@ type PushProviderConfig struct {
 	// Script-specific
 	Command     string            `yaml:"command" json:"command"`
 	Args        []string          `yaml:"args" json:"args"`
-	Environment map[string]string `yaml:"environment" json:"environment"`
+	Environment map[string]string `yaml:"environment" json:"environment" jsonschema:"nullable"`
 	InputFormat string            `yaml:"input_format" json:"input_format" mapstructure:"input_format"`
 	// Webhook-specific
 	Endpoints []WebhookEndpointConfig `yaml:"endpoints" json:"endpoints"`
@@ -438,7 +436,7 @@ type PushProviderConfig struct {
 type WebhookEndpointConfig struct {
 	URL     string            `yaml:"url" json:"url"`
 	Method  string            `yaml:"method" json:"method"`                          // POST, PUT, PATCH (default: POST)
-	Headers map[string]string `yaml:"headers" json:"headers"`                        // Custom HTTP headers
+	Headers map[string]string `yaml:"headers" json:"headers" jsonschema:"nullable"`  // Custom HTTP headers
 	Timeout Duration          `yaml:"timeout" json:"timeout" mapstructure:"timeout"` // Per-endpoint timeout (default: use provider timeout)
 	Auth    WebhookAuthConfig `yaml:"auth" json:"auth"`                              // Authentication configuration
 }
@@ -474,7 +472,7 @@ type PushFilterConfig struct {
 	Types           []string       `yaml:"types" json:"types" mapstructure:"types"`
 	Priorities      []string       `yaml:"priorities" json:"priorities" mapstructure:"priorities"`
 	Components      []string       `yaml:"components" json:"components" mapstructure:"components"`
-	MetadataFilters map[string]any `yaml:"metadata_filters" json:"metadata_filters" mapstructure:"metadata_filters"`
+	MetadataFilters map[string]any `yaml:"metadata_filters" json:"metadata_filters" mapstructure:"metadata_filters" jsonschema:"nullable"`
 }
 
 // WundergroundSettings contains settings for WeatherUnderground integration.
@@ -494,11 +492,32 @@ type OpenWeatherSettings struct {
 	Language string `yaml:"language" json:"language"` // language code for the response
 }
 
+// PirateWeatherSettings contains settings for Pirate Weather integration.
+// Pirate Weather is a Dark Sky-API-compatible drop-in service; only an API
+// key and an optional endpoint override are needed (unlike OpenWeather it has
+// no units/language options here; the provider always requests SI units).
+type PirateWeatherSettings struct {
+	APIKey   string `yaml:"apikey" json:"apiKey"`     // Pirate Weather API key
+	Endpoint string `yaml:"endpoint" json:"endpoint"` // Pirate Weather API endpoint
+}
+
 // PrivacyFilterSettings contains settings for the privacy filter.
 type PrivacyFilterSettings struct {
-	Debug      bool    `yaml:"debug" json:"debug"`           // true to enable debug mode
-	Enabled    bool    `yaml:"enabled" json:"enabled"`       // true to enable privacy filter
-	Confidence float32 `yaml:"confidence" json:"confidence"` // confidence threshold for human detection
+	Debug      bool        `yaml:"debug" json:"debug"`           // true to enable debug mode
+	Enabled    bool        `yaml:"enabled" json:"enabled"`       // true to enable privacy filter
+	Confidence float32     `yaml:"confidence" json:"confidence"` // confidence threshold for label-based human detection
+	VAD        VADSettings `yaml:"vad" json:"vad"`               // dedicated Silero VAD speech gate that augments the label-based filter
+}
+
+// VADSettings configures the Silero voice-activity-detection gate that augments
+// the label-based privacy filter. It detects speech PRESENCE only (not content
+// or speaker identity) and is opt-in. The Silero VAD model is embedded in the
+// binary, so no download is needed; it requires an ONNX Runtime library and is
+// inactive without one.
+type VADSettings struct {
+	Enabled   bool    `yaml:"enabled" json:"enabled"`     // true to enable the VAD speech gate (opt-in, default false)
+	Threshold float64 `yaml:"threshold" json:"threshold"` // speech-probability gate in (0,1]; default 0.6
+	ModelPath string  `yaml:"modelpath" json:"modelPath"` // optional override for the embedded silero .onnx; must be a sequence-export model (inputs input/h/c), not the stock upstream frame model; empty uses the embedded model
 }
 
 // DogBarkFilterSettings contains settings for the dog bark filter.
@@ -548,8 +567,16 @@ const (
 	StreamTypeUDP  = "udp"  // UDP/RTP - Low-latency LAN
 )
 
+// Transport protocol identifiers for RTSP/RTMP streams.
+const (
+	// TransportTCP is the TCP interleaved RTP transport.
+	TransportTCP = "tcp"
+	// TransportUDP is the UDP RTP transport.
+	TransportUDP = "udp"
+)
+
 // DefaultTransport is the default RTSP/RTMP transport protocol
-const DefaultTransport = "tcp"
+const DefaultTransport = TransportTCP
 
 // ChannelMode controls how multi-channel audio is handled before analysis.
 type ChannelMode string
@@ -582,6 +609,51 @@ var ValidChannelModes = map[ChannelMode]bool{
 	ChannelModeRight:   true,
 }
 
+// MediaMode controls which RTSP media a stream requests from the camera. It
+// only affects RTSP sources; other stream types ignore it.
+type MediaMode string
+
+const (
+	// MediaModeAuto requests audio-only first and falls back to the full stream
+	// (video decoded then discarded via -vn) only after repeated failures with no
+	// audio ever received. This is the bandwidth-conserving mode that avoids
+	// opening a camera video slot when the camera can deliver audio alone (#3798).
+	MediaModeAuto MediaMode = "auto"
+	// MediaModeAudioOnly forces the audio-only request and never falls back, so a
+	// camera that cannot deliver the audio track alone fails visibly instead of
+	// silently opening a video slot.
+	MediaModeAudioOnly MediaMode = "audio-only"
+	// MediaModeFullStream requests the full stream from the start (video decoded
+	// then discarded via -vn). It never sends -allowed_media_types audio, so it
+	// works with cameras that cannot SETUP the audio track in isolation.
+	MediaModeFullStream MediaMode = "full-stream"
+)
+
+// DefaultMediaMode is used when a stream does not specify a media mode. Full
+// stream is the most compatible request (every RTSP camera can deliver it) and
+// avoids the fragile audio-only handshake that some cameras (e.g. Unifi) complete
+// just long enough to mislead the audio-only fallback (#3953). Users who want to
+// conserve a camera video slot can select "auto" or "audio-only".
+const DefaultMediaMode = MediaModeFullStream
+
+// Canonical returns the effective media mode, treating an empty value as the
+// default. Callers comparing modes (e.g. hot-reload change detection) should
+// compare canonical values so an unset field and an explicit default are not
+// treated as a real change that would needlessly restart the stream.
+func (m MediaMode) Canonical() MediaMode {
+	if m == "" {
+		return DefaultMediaMode
+	}
+	return m
+}
+
+// ValidMediaModes is the set of accepted media mode values.
+var ValidMediaModes = map[MediaMode]bool{
+	MediaModeAuto:       true,
+	MediaModeAudioOnly:  true,
+	MediaModeFullStream: true,
+}
+
 // StreamConfig represents a single audio stream source
 type StreamConfig struct {
 	Name        string             `yaml:"name" json:"name" mapstructure:"name"`                                    // Required: descriptive name like "Front Yard"
@@ -590,6 +662,8 @@ type StreamConfig struct {
 	Type        string             `yaml:"type" json:"type" mapstructure:"type"`                                    // Stream type: rtsp, http, hls, rtmp, udp
 	Transport   string             `yaml:"transport" json:"transport" mapstructure:"transport"`                     // Transport: tcp or udp (for RTSP/RTMP)
 	ChannelMode ChannelMode        `yaml:"channelMode,omitempty" json:"channelMode" mapstructure:"channelMode"`     // Channel handling: downmix, left, or right
+	MediaMode   MediaMode          `yaml:"mediaMode,omitempty" json:"mediaMode" mapstructure:"mediaMode"`           // RTSP media request: auto, audio-only, or full-stream (ignored for non-RTSP)
+	Gain        float64            `yaml:"gain" json:"gain" mapstructure:"gain"`                                    // Input gain in dB (0 = no adjustment)
 	Equalizer   *EqualizerSettings `yaml:"equalizer,omitempty" json:"equalizer,omitempty" mapstructure:"equalizer"` // Per-stream EQ (nil = use global)
 	QuietHours  QuietHoursConfig   `yaml:"quietHours" json:"quietHours" mapstructure:"quietHours"`                  // Quiet hours configuration
 	Models      []string           `yaml:"models,omitempty" json:"models,omitempty" mapstructure:"models"`          // Model IDs for this stream (e.g., ["birdnet", "perch_v2"])
@@ -603,9 +677,9 @@ func (s *StreamConfig) IsEnabled() bool {
 // RTSPSettings contains settings for audio streaming (supports multiple protocols).
 // Note: Struct name kept for backward compatibility with existing code.
 type RTSPSettings struct {
-	Streams          []StreamConfig     `yaml:"streams" json:"streams" mapstructure:"streams"`                            // Stream configurations
-	URLs             []string           `yaml:"urls,omitempty" json:"urls,omitempty" mapstructure:"urls"`                 // Legacy: accepts old format, migrated on load
-	Transport        string             `yaml:"transport,omitempty" json:"transport,omitempty" mapstructure:"transport"`  // Legacy: global default, migrated on load
+	Streams          []StreamConfig     `yaml:"streams" json:"streams" mapstructure:"streams"`                            // Streams to analyze. Each entry has name (required, unique), url (required), enabled, type (rtsp, http, hls, rtmp or udp), transport (tcp or udp, RTSP and RTMP only; empty uses the global transport), mediaMode (auto, audio-only or full-stream, RTSP only; default full-stream), channelMode (downmix, left or right; default downmix) and gain (dB)
+	URLs             []string           `yaml:"urls,omitempty" json:"urls,omitempty" mapstructure:"urls"`                 // Legacy: a urls list in an older config is converted to streams on startup and saved; not read once streams has entries
+	Transport        string             `yaml:"transport,omitempty" json:"transport,omitempty" mapstructure:"transport"`  // Global default transport (tcp or udp): read as the engine-wide default and copied into streams that set none; kept after the urls migration
 	Health           RTSPHealthSettings `yaml:"health" json:"health" mapstructure:"health"`                               // Health monitoring settings
 	FFmpegParameters []string           `yaml:"ffmpegParameters" json:"ffmpegParameters" mapstructure:"ffmpegParameters"` // Custom FFmpeg parameters
 }
@@ -862,9 +936,9 @@ type SpeciesConfig struct {
 // species names in any case (e.g., "American Robin", "american robin")
 // and they will all resolve to the same lowercase key.
 type SpeciesSettings struct {
-	Include []string                 `yaml:"include" json:"include"` // Always include these species
-	Exclude []string                 `yaml:"exclude" json:"exclude"` // Always exclude these species
-	Config  map[string]SpeciesConfig `yaml:"config" json:"config"`   // Per-species configuration (keys normalized to lowercase)
+	Include []string                 `yaml:"include" json:"include"`                     // Always include these species
+	Exclude []string                 `yaml:"exclude" json:"exclude"`                     // Always exclude these species
+	Config  map[string]SpeciesConfig `yaml:"config" json:"config" jsonschema:"nullable"` // Per-species configuration (keys normalized to lowercase)
 }
 
 // LogDeduplicationSettings contains settings for log deduplication
@@ -875,12 +949,13 @@ type LogDeduplicationSettings struct {
 
 // SpeciesTrackingSettings contains settings for tracking new species
 type SpeciesTrackingSettings struct {
-	Enabled                      bool                     `yaml:"enabled" json:"enabled"`                                           // true to enable new species tracking
-	NewSpeciesWindowDays         int                      `yaml:"newspecieswindowdays" json:"newSpeciesWindowDays"`                 // Days to consider a species "new" (default: 14)
-	SyncIntervalMinutes          int                      `yaml:"syncintervalminutes" json:"syncIntervalMinutes"`                   // Interval to sync with database (default: 60)
-	NotificationSuppressionHours int                      `yaml:"notificationsuppressionhours" json:"notificationSuppressionHours"` // Hours to suppress duplicate notifications (default: 168)
-	YearlyTracking               YearlyTrackingSettings   `yaml:"yearlytracking" json:"yearlyTracking"`                             // Settings for yearly species tracking
-	SeasonalTracking             SeasonalTrackingSettings `yaml:"seasonaltracking" json:"seasonalTracking"`                         // Settings for seasonal species tracking
+	Enabled                      bool                       `yaml:"enabled" json:"enabled"`                                           // true to enable new species tracking
+	NewSpeciesWindowDays         int                        `yaml:"newspecieswindowdays" json:"newSpeciesWindowDays"`                 // Days to consider a species "new" (default: 7)
+	SyncIntervalMinutes          int                        `yaml:"syncintervalminutes" json:"syncIntervalMinutes"`                   // Interval to sync with database (default: 60)
+	NotificationSuppressionHours int                        `yaml:"notificationsuppressionhours" json:"notificationSuppressionHours"` // Hours to suppress duplicate notifications (default: 168)
+	YearlyTracking               YearlyTrackingSettings     `yaml:"yearlytracking" json:"yearlyTracking"`                             // Settings for yearly species tracking
+	SeasonalTracking             SeasonalTrackingSettings   `yaml:"seasonaltracking" json:"seasonalTracking"`                         // Settings for seasonal species tracking
+	InfrequentTracking           InfrequentTrackingSettings `yaml:"infrequenttracking" json:"infrequentTracking"`                     // Settings for infrequent (rarely returning) species tracking
 }
 
 // YearlyTrackingSettings contains settings for tracking first arrivals each year
@@ -888,14 +963,20 @@ type YearlyTrackingSettings struct {
 	Enabled    bool `yaml:"enabled" json:"enabled"`       // true to enable yearly tracking
 	ResetMonth int  `yaml:"resetmonth" json:"resetMonth"` // Month to reset yearly tracking (1=January, default: 1)
 	ResetDay   int  `yaml:"resetday" json:"resetDay"`     // Day to reset yearly tracking (default: 1)
-	WindowDays int  `yaml:"windowdays" json:"windowDays"` // Days to show "new this year" indicator (default: 30)
+	WindowDays int  `yaml:"windowdays" json:"windowDays"` // Days to show "new this year" indicator (default: 7)
 }
 
 // SeasonalTrackingSettings contains settings for tracking first arrivals each season
 type SeasonalTrackingSettings struct {
-	Enabled    bool              `yaml:"enabled" json:"enabled"`       // true to enable seasonal tracking
-	WindowDays int               `yaml:"windowdays" json:"windowDays"` // Days to show "new this season" indicator (default: 21)
-	Seasons    map[string]Season `yaml:"seasons" json:"seasons"`       // Season definitions
+	Enabled    bool              `yaml:"enabled" json:"enabled"`                       // true to enable seasonal tracking
+	WindowDays int               `yaml:"windowdays" json:"windowDays"`                 // Days to show "new this season" indicator (default: 7)
+	Seasons    map[string]Season `yaml:"seasons" json:"seasons" jsonschema:"nullable"` // Season definitions
+}
+
+// InfrequentTrackingSettings contains settings for flagging species detected for the first time after a long absence (rare returning visitors)
+type InfrequentTrackingSettings struct {
+	Enabled     bool `yaml:"enabled" json:"enabled"`         // true to enable infrequent species tracking
+	AbsenceDays int  `yaml:"absencedays" json:"absenceDays"` // Days since last detection before a return is flagged "infrequent" (default: 14)
 }
 
 // Season defines the start date for a season
@@ -1059,6 +1140,26 @@ func (s *SpeciesTrackingSettings) Validate() error {
 		}
 	}
 
+	// Validate infrequent tracking if enabled
+	if s.InfrequentTracking.Enabled {
+		if err := s.InfrequentTracking.Validate(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// Validate validates the InfrequentTrackingSettings configuration
+func (i *InfrequentTrackingSettings) Validate() error {
+	// Validate absence days
+	if i.AbsenceDays < 1 || i.AbsenceDays > 365 {
+		return errors.Newf("infrequent absence days must be between 1 and 365, got %d", i.AbsenceDays).
+			Component("config").
+			Category(errors.CategoryValidation).
+			Build()
+	}
+
 	return nil
 }
 
@@ -1201,25 +1302,27 @@ type InputConfig struct {
 }
 
 type BirdNETConfig struct {
-	Version            string              `yaml:"version,omitempty" json:"version,omitempty"`                 // model version: "2.4", "3.0"
-	Debug              bool                `yaml:"debug" json:"debug"`                                         // true to enable debug mode
-	Sensitivity        float64             `yaml:"sensitivity" json:"sensitivity"`                             // birdnet analysis sigmoid sensitivity
-	Threshold          float64             `yaml:"threshold" json:"threshold"`                                 // threshold for prediction confidence to report
-	Overlap            float64             `yaml:"overlap" json:"overlap"`                                     // birdnet analysis overlap between chunks
-	Longitude          float64             `yaml:"longitude" json:"longitude"`                                 // longitude of recording location for prediction filtering
-	Latitude           float64             `yaml:"latitude" json:"latitude"`                                   // latitude of recording location for prediction filtering
-	LocationConfigured bool                `yaml:"locationconfigured" json:"locationConfigured"`               // true when location has been explicitly configured by the user
-	Threads            int                 `yaml:"threads" json:"threads"`                                     // number of CPU threads to use for analysis
-	Locale             string              `yaml:"locale" json:"locale"`                                       // language to use for labels
-	RangeFilter        RangeFilterSettings `yaml:"rangefilter" json:"rangeFilter"`                             // range filter settings
-	ModelPath          string              `yaml:"modelpath,omitempty" json:"modelPath,omitempty"`             // path to external model file (empty for embedded)
-	LabelPath          string              `yaml:"labelpath,omitempty" json:"labelPath,omitempty"`             // path to external label file (empty for embedded)
-	Labels             []string            `yaml:"-" json:"-"`                                                 // list of available species labels, runtime value
-	UseXNNPACK         bool                `yaml:"usexnnpack" json:"useXnnpack"`                               // true to use XNNPACK delegate for inference acceleration
-	ONNXRuntimePath    string              `yaml:"onnxruntimepath,omitempty" json:"onnxRuntimePath,omitempty"` // path to ONNX Runtime shared library (required for ONNX models)
-	OpenVINOPath       string              `yaml:"openvinopath,omitempty" json:"openVinoPath,omitempty"`       // path to libopenvino_c shared library (OpenVINO image variants only)
-	Backend            string              `yaml:"backend,omitempty" json:"backend,omitempty"`                 // inference backend preference: "auto" (default), "onnx", or "openvino"
-	OpenVINODevice     string              `yaml:"openvinodevice,omitempty" json:"openVinoDevice,omitempty"`   // OpenVINO device preference: "auto" (default), "cpu", or "gpu"
+	Version             string              `yaml:"version,omitempty" json:"version,omitempty"`                         // model version: "2.4", "3.0"
+	Debug               bool                `yaml:"debug" json:"debug"`                                                 // true to enable debug mode
+	Sensitivity         float64             `yaml:"sensitivity" json:"sensitivity"`                                     // birdnet analysis sigmoid sensitivity
+	Threshold           float64             `yaml:"threshold" json:"threshold"`                                         // threshold for prediction confidence to report
+	Overlap             float64             `yaml:"overlap" json:"overlap"`                                             // birdnet analysis overlap between chunks
+	Longitude           float64             `yaml:"longitude" json:"longitude"`                                         // longitude of recording location for prediction filtering
+	Latitude            float64             `yaml:"latitude" json:"latitude"`                                           // latitude of recording location for prediction filtering
+	LocationConfigured  bool                `yaml:"locationconfigured" json:"locationConfigured"`                       // true when location has been explicitly configured by the user
+	Threads             int                 `yaml:"threads" json:"threads"`                                             // number of CPU threads to use for analysis
+	Locale              string              `yaml:"locale" json:"locale"`                                               // language to use for labels
+	RangeFilter         RangeFilterSettings `yaml:"rangefilter" json:"rangeFilter"`                                     // range filter settings
+	ModelPath           string              `yaml:"modelpath,omitempty" json:"modelPath,omitempty"`                     // path to external model file (empty for embedded)
+	LabelPath           string              `yaml:"labelpath,omitempty" json:"labelPath,omitempty"`                     // path to external label file (empty for embedded)
+	Labels              []string            `yaml:"-" json:"-"`                                                         // list of available species labels, runtime value
+	UseXNNPACK          bool                `yaml:"usexnnpack" json:"useXnnpack"`                                       // true to use XNNPACK delegate for inference acceleration
+	ONNXRuntimePath     string              `yaml:"onnxruntimepath,omitempty" json:"onnxRuntimePath,omitempty"`         // path to ONNX Runtime shared library (required for ONNX models)
+	OpenVINOPath        string              `yaml:"openvinopath,omitempty" json:"openVinoPath,omitempty"`               // path to libopenvino_c shared library (OpenVINO image variants only)
+	Backend             string              `yaml:"backend,omitempty" json:"backend,omitempty"`                         // inference backend preference: "auto" (default), "onnx", or "openvino"
+	OpenVINODevice      string              `yaml:"openvinodevice,omitempty" json:"openVinoDevice,omitempty"`           // OpenVINO device preference: "auto" (default), "cpu", or "gpu"
+	HuggingFaceEndpoint string              `yaml:"huggingfaceendpoint,omitempty" json:"huggingFaceEndpoint,omitempty"` // model download host, e.g. "https://hf-mirror.com" where huggingface.co is blocked; empty falls back to $HF_ENDPOINT then https://huggingface.co
+	ModelRegion         string              `yaml:"modelregion,omitempty" json:"modelRegion,omitempty"`                 // regional model preference: "auto" (resolve from coordinates, default), "global" (always global models), or a region slug pin (e.g. "iberia"); empty is treated as "auto"
 }
 
 // Inference backend preferences for BirdNET.Backend.
@@ -1238,6 +1341,25 @@ const (
 	OVDeviceGPU  = "gpu"
 )
 
+// Model region preferences for BirdNET.ModelRegion. "auto" resolves the regional
+// model from the configured coordinates and falls back to the global model when
+// nothing resolves; "global" always prefers the global model; any other value is
+// a pinned region slug. An empty string is treated as "auto". These mirror the
+// resolver's mode vocabulary in internal/classifier/region (ModeAuto/ModeGlobal),
+// kept as independent literals so this foundational config package stays free of a
+// classifier dependency; a drift-guard test asserts they stay equal.
+const (
+	ModelRegionAuto   = "auto"
+	ModelRegionGlobal = "global"
+)
+
+// ModelRegionSlugPattern validates a pinned region slug: lowercase alphanumeric
+// segments joined by single hyphens (e.g. "iberia", "north-america-east"). It is
+// syntactic only; an unknown but well-formed slug is accepted, because the
+// per-family resolver degrades an unknown slug to coordinates then global, and a
+// slug may be valid for a model family added later.
+var ModelRegionSlugPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
 // RangeFilterSettings contains settings for the range filter
 type RangeFilterSettings struct {
 	Debug                   bool                `yaml:"debug" json:"debug"`                               // true to enable debug mode
@@ -1253,10 +1375,20 @@ type RangeFilterSettings struct {
 
 // PerchConfig holds configuration for the Google Perch v2 model.
 type PerchConfig struct {
-	ModelPath string  `yaml:"modelpath,omitempty" json:"modelPath,omitempty"` // path to Perch v2 ONNX model file
-	LabelPath string  `yaml:"labelpath,omitempty" json:"labelPath,omitempty"` // path to Perch v2 label CSV file
-	Threshold float64 `yaml:"threshold" json:"threshold"`                     // confidence threshold for detections
-	Locale    string  `yaml:"locale,omitempty" json:"locale,omitempty"`       // locale for species label translation
+	ModelPath         string  `yaml:"modelpath,omitempty" json:"modelPath,omitempty"` // path to Perch v2 ONNX model file
+	LabelPath         string  `yaml:"labelpath,omitempty" json:"labelPath,omitempty"` // path to Perch v2 label CSV file
+	OverrideThreshold bool    `yaml:"overridethreshold" json:"overrideThreshold"`     // when true, gate Perch detections on Threshold instead of following BirdNET.Threshold
+	Threshold         float64 `yaml:"threshold" json:"threshold"`                     // confidence threshold for detections (applied only when OverrideThreshold is true)
+	Locale            string  `yaml:"locale,omitempty" json:"locale,omitempty"`       // locale for species label translation
+}
+
+// BirdNETV3Config holds configuration for the BirdNET v3.0 acoustic classifier.
+type BirdNETV3Config struct {
+	ModelPath         string  `yaml:"modelpath,omitempty" json:"modelPath,omitempty"` // path to BirdNET v3.0 ONNX model file
+	LabelPath         string  `yaml:"labelpath,omitempty" json:"labelPath,omitempty"` // path to BirdNET v3.0 label file
+	OverrideThreshold bool    `yaml:"overridethreshold" json:"overrideThreshold"`     // when true, gate BirdNET v3.0 detections on Threshold instead of following BirdNET.Threshold
+	Threshold         float64 `yaml:"threshold" json:"threshold"`                     // confidence threshold for detections (applied only when OverrideThreshold is true)
+	Locale            string  `yaml:"locale,omitempty" json:"locale,omitempty"`       // locale for species label translation
 }
 
 // BatConfig holds configuration for bat detection using BirdNET v2.4 embeddings.
@@ -1278,9 +1410,57 @@ type BatConfig struct {
 type UltrasonicFilterConfig struct {
 	Enabled          bool    `yaml:"enabled" json:"enabled"`                   // enable ultrasonic validation filter
 	CVThreshold      float64 `yaml:"cvthreshold" json:"cvThreshold"`           // detections with US frame CV below this are tagged unlikely
-	FFTSize          int     `yaml:"fftsize" json:"fftSize"`                   // FFT window size in samples (must be power of 2)
-	HopSize          int     `yaml:"hopsize" json:"hopSize"`                   // STFT hop size in samples
+	FFTSize          int     `yaml:"fftsize" json:"fftSize"`                   // FFT window size in samples (a power of 2, at least 2)
+	HopSize          int     `yaml:"hopsize" json:"hopSize"`                   // STFT hop size in samples, 1 to fftsize
 	FrequencySplitHz int     `yaml:"frequencysplithz" json:"frequencySplitHz"` // boundary between audible and ultrasonic bands in Hz
+}
+
+// ValidateSTFT checks the STFT fields of the filter: FFTSize a power of two of
+// at least 2, HopSize from 1 to FFTSize, and FrequencySplitHz positive. It
+// is the one rule set shared by settings validation, the load-time repair and
+// the filter itself; the filter computes nothing for a configuration it rejects.
+// Messages name the YAML keys so an operator can find the field.
+func (c UltrasonicFilterConfig) ValidateSTFT() error {
+	if err := c.validateFrame(); err != nil {
+		return err
+	}
+	return c.validateSplit()
+}
+
+// validateFrame checks the (FFTSize, HopSize) pair.
+func (c UltrasonicFilterConfig) validateFrame() error {
+	if c.FFTSize < minUltrasonicFFTSize || c.FFTSize&(c.FFTSize-1) != 0 {
+		return errors.Newf("bat.ultrasonicfilter.fftsize must be a power of two of at least %d, got %d",
+			minUltrasonicFFTSize, c.FFTSize).
+			Component("config").
+			Category(errors.CategoryValidation).
+			Context("operation", "validate_ultrasonic_filter").
+			Context("validation_type", "ultrasonic-filter").
+			Build()
+	}
+	if c.HopSize < 1 || c.HopSize > c.FFTSize {
+		return errors.Newf("bat.ultrasonicfilter.hopsize must be between 1 and bat.ultrasonicfilter.fftsize (%d), got %d",
+			c.FFTSize, c.HopSize).
+			Component("config").
+			Category(errors.CategoryValidation).
+			Context("operation", "validate_ultrasonic_filter").
+			Context("validation_type", "ultrasonic-filter").
+			Build()
+	}
+	return nil
+}
+
+// validateSplit checks FrequencySplitHz.
+func (c UltrasonicFilterConfig) validateSplit() error {
+	if c.FrequencySplitHz < 1 {
+		return errors.Newf("bat.ultrasonicfilter.frequencysplithz must be greater than 0, got %d", c.FrequencySplitHz).
+			Component("config").
+			Category(errors.CategoryValidation).
+			Context("operation", "validate_ultrasonic_filter").
+			Context("validation_type", "ultrasonic-filter").
+			Build()
+	}
+	return nil
 }
 
 // BSGConfig holds configuration for BSG regional bird models.
@@ -1294,7 +1474,12 @@ type BSGConfig struct {
 type ModelsConfig struct {
 	Enabled   []string `yaml:"enabled" json:"enabled"`                         // list of model IDs to load (e.g., "birdnet", "perch_v2")
 	Directory string   `yaml:"directory,omitempty" json:"directory,omitempty"` // base directory for downloaded model files
-	Installed []string `yaml:"installed,omitempty" json:"installed,omitempty"` // list of installed model IDs managed by the model gallery
+	// AutoEnableMigrated is an internal marker recording that the classifier's one-shot legacy
+	// model auto-enable has run for this config file, so it never re-runs. Do not edit by hand;
+	// a managed read-only config may set it true (with configversion: 2) to keep an explicit
+	// models.enabled from being re-seeded. Set by the classifier; hidden from the JSON API; the
+	// companion-marker rationale (why not ConfigVersion) lives in internal/conf/migrations.go.
+	AutoEnableMigrated bool `yaml:"autoenablemigrated,omitempty" json:"-"`
 }
 
 // Low-memory mode constants for the manual override.
@@ -1442,9 +1627,42 @@ type Security struct {
 	// immediate peer is not trusted, forwarded headers are ignored and the real
 	// connection address is used, preventing source-IP spoofing on a directly
 	// exposed instance. The reserved value "cloudflare" (TrustedProxyCloudflarePreset)
-	// expands to Cloudflare's published edge ranges. Hot-reloadable.
+	// expands to Cloudflare's published edge ranges. The same trust decides whether
+	// X-Forwarded-Proto (and X-Forwarded-Ssl, X-Forwarded-Protocol, X-Url-Scheme)
+	// is honored when deciding whether to send the HSTS header, so a proxy on a
+	// public or 100.64.0.0/10 (CGNAT, Tailscale IPv4) address must be listed here
+	// for HSTS to be sent. Other HTTPS checks, such as the COOP header and the
+	// CSRF cookie Secure flag, do not consult this list. The subnet bypass
+	// (AllowSubnetBypass) is stricter: it honors a forwarded client address only
+	// from a proxy listed here, even one on a private or loopback address, and a
+	// request that carries any client-IP header (CF-Connecting-IP, X-Forwarded-For, X-Real-IP, True-Client-IP or Forwarded) from any other peer gets no bypass.
+	// For the bypass, list each proxy's own address rather than a range that also
+	// holds clients: a client inside a listed range is trusted as a proxy, so its
+	// own forwarded headers can name any address. Have the proxy append X-Forwarded-For or overwrite
+	// X-Real-IP; the client-IP headers it forwards must all name the same client,
+	// and a Forwarded header is not accepted. Hot-reloadable.
 	TrustedProxies []string     `yaml:"trustedproxies" json:"trustedProxies"`
 	PublicAccess   PublicAccess `yaml:"publicaccess" json:"publicAccess"` // features accessible without authentication
+
+	// PlainHTTPSessionClients lists the IP addresses of clients that reach the
+	// app directly over plain HTTP, for example another container calling
+	// http://birdnet-go:8080 while browsers use an HTTPS reverse proxy. Session
+	// cookies issued to these clients omit the Secure attribute so the clients can
+	// send them back; every other client keeps Secure whenever HTTPS is
+	// configured. Only exact addresses are accepted, not ranges. The match uses
+	// the connection's peer address, never forwarded headers, and applies only to
+	// requests that arrive without TLS and without reverse-proxy headers. Never
+	// list the address a reverse proxy or tunnel (such as cloudflared) connects
+	// from. With host networking or a native install, a proxy on the same host
+	// connects from loopback (127.0.0.1, ::1) or the host's own address, so do
+	// not list those when one runs there; with bridge networking and the proxy
+	// on the host, do not list the container network gateway. Give listed
+	// clients a fixed address so it cannot be reassigned: browser sessions
+	// through a proxy that terminates TLS without sending forwarding headers
+	// would otherwise lose Secure. Not shown in the web UI. Empty by default.
+	// Hot-reloadable.
+	PlainHTTPSessionClients []string `yaml:"plainhttpsessionclients" json:"plainHttpSessionClients"`
+
 	// PrivateMode, when true, requires the user to authenticate before any
 	// UI data is shown. Enforcement lives at the v2 API data layer, which
 	// returns 401 to unauthenticated requests; the public SPA shell is still
@@ -1618,9 +1836,9 @@ func (s *GoogleDriveBackupSettings) Validate() error {
 
 // BackupTarget defines settings for a backup target
 type BackupTarget struct {
-	Type     string         `yaml:"type" json:"type"`         // Specifies the type of the backup target (e.g., "local", "s3", "ftp", "sftp"). This determines the storage mechanism.
-	Enabled  bool           `yaml:"enabled" json:"enabled"`   // If true, this backup target will be used for storing backups. At least one target should be enabled for backups to be stored.
-	Settings map[string]any `yaml:"settings" json:"settings"` // A map of key-value pairs for target-specific settings. TODO: Consider using BackupTargetSettings interface for type safety after implementing custom YAML unmarshaling.
+	Type     string         `yaml:"type" json:"type"`                               // Specifies the type of the backup target (e.g., "local", "s3", "ftp", "sftp"). This determines the storage mechanism.
+	Enabled  bool           `yaml:"enabled" json:"enabled"`                         // If true, this backup target will be used for storing backups. At least one target should be enabled for backups to be stored.
+	Settings map[string]any `yaml:"settings" json:"settings" jsonschema:"nullable"` // A map of key-value pairs for target-specific settings. TODO: Consider using BackupTargetSettings interface for type safety after implementing custom YAML unmarshaling.
 }
 
 // BackupScheduleConfig defines a single backup schedule
@@ -1632,16 +1850,22 @@ type BackupScheduleConfig struct {
 	IsWeekly bool   `yaml:"isweekly" json:"isWeekly"` // If true, this schedule is weekly (runs on the specified Weekday at Hour:Minute). If false, it's a daily schedule (runs every day at Hour:Minute). (Valid: true or false)
 }
 
+// ImportConfig controls the BirdNET-Pi import feature behavior.
+type ImportConfig struct {
+	// AllowInAppElevation enables the in-app sudo elevation ladder for native
+	// imports of unreadable source data. Default true. When false, the UI only
+	// offers copy-paste remediation and never prompts for a sudo password.
+	AllowInAppElevation bool `yaml:"allowinappelevation" json:"allowInAppElevation" mapstructure:"allowinappelevation"`
+}
+
 // BackupConfig contains backup-related configuration
 type BackupConfig struct {
-	Enabled        bool                   `yaml:"enabled" json:"enabled"`                // Global flag to enable or disable the entire backup system. If false, no backups (manual or scheduled) will occur.
-	Debug          bool                   `yaml:"debug" json:"debug"`                    // If true, enables detailed debug logging for backup operations.
-	Encryption     bool                   `yaml:"encryption" json:"encryption"`          // If true, enables encryption for backup archives. Requires EncryptionKey to be set.
-	EncryptionKey  string                 `yaml:"encryption_key" json:"encryptionKey"`   // Base64-encoded encryption key used for AES-256-GCM encryption of backup archives. Must be kept secret and safe.
-	SanitizeConfig bool                   `yaml:"sanitize_config" json:"sanitizeConfig"` // If true, sensitive information (like passwords, API keys) will be removed from the configuration file copy that is included in the backup archive.
-	Retention      BackupRetention        `yaml:"retention" json:"retention"`            // Defines policies for how long and how many backups are kept.
-	Targets        []BackupTarget         `yaml:"targets" json:"targets"`                // A list of configured backup targets (destinations) where backup archives will be stored.
-	Schedules      []BackupScheduleConfig `yaml:"schedules" json:"schedules"`            // A list of schedules (e.g., daily, weekly) that define when automatic backups should run.
+	Enabled    bool                   `yaml:"enabled" json:"enabled"`       // Global flag to enable or disable the entire backup system. If false, no backups (manual or scheduled) will occur.
+	Debug      bool                   `yaml:"debug" json:"debug"`           // If true, enables detailed debug logging for backup operations.
+	Encryption bool                   `yaml:"encryption" json:"encryption"` // If true, enables encryption for backup archives. The AES-256-GCM key is generated and managed automatically in encryption.key in the config directory; there is no key to configure.
+	Retention  BackupRetention        `yaml:"retention" json:"retention"`   // Defines policies for how long and how many backups are kept.
+	Targets    []BackupTarget         `yaml:"targets" json:"targets"`       // A list of configured backup targets (destinations) where backup archives will be stored.
+	Schedules  []BackupScheduleConfig `yaml:"schedules" json:"schedules"`   // A list of schedules (e.g., daily, weekly) that define when automatic backups should run.
 
 	// OperationTimeouts defines timeouts for various backup operations
 	OperationTimeouts struct {
@@ -1652,9 +1876,76 @@ type BackupConfig struct {
 	} `yaml:"operationtimeouts" json:"operationTimeouts"`
 }
 
+// ProfilingConfig gates the Go pprof HTTP endpoints.
+//
+// The endpoints are served by the main web server behind its authentication
+// middleware, never by the Prometheus telemetry listener. When no
+// authentication provider is configured (the common home-LAN default), Token is
+// required instead, and is generated automatically: on the config load path
+// when profiling is already enabled, and on the settings-save path when it is
+// switched on at runtime.
+//
+// The leaf key is deliberately named "token" and not "profilingtoken": support
+// dump scrubbing matches sensitive keys on word boundaries, so a squashed name
+// would not be redacted. See isSensitiveKey in internal/support/collector.go.
+// The two rate fields have different units on entirely different scales, which
+// is a documented footgun in the Go API rather than an inconsistency here:
+// SetBlockProfileRate takes nanoseconds of blocked time per sample, while
+// SetMutexProfileFraction takes a 1-in-N fraction of contention events. Both
+// sample LESS as the number grows, so the senses agree; only the units and the
+// magnitudes differ. Both are independent of Enabled: collecting samples and
+// serving /debug/pprof are separate decisions, and turning on the endpoint to
+// grab a heap profile must not silently start taxing the audio path.
+//
+// Use ResolvedBlockRate and ResolvedMutexFraction when handing these to the
+// runtime rather than reading the fields directly; they clamp values the
+// runtime would otherwise misread.
+//
+// The two rate comments below are lifted verbatim into the generated config
+// schema and the wiki's configuration reference, so they spell the recommended
+// numbers out rather than naming the constants that hold them.
+//
+// TestSchemaUpToDate does NOT protect the numbers here, which is the trap: it
+// regenerates those two artifacts FROM these comments and byte-compares, so this
+// comment sits on both sides of the equality and could say anything. Editing
+// 10000 to 20000 here and regenerating ships a wiki page recommending 20000 with
+// every test green. TestRecommendedRatesMatchSchemaDescription is what actually
+// pins these, by asserting the generated description carries the constant's
+// value. config.yaml is covered by TestRecommendedRatesMatchShippedConfig and
+// doc/PROFILING.md by TestRecommendedRatesMatchProfilingDoc.
+//
+// Do NOT rename these fields. The loader is viper.Unmarshal, which uses
+// mapstructure; there are no mapstructure tags here, so matching falls back to
+// the Go field name compared case-insensitively against the config key. The yaml
+// tag does not save you. Renaming BlockRate to BlockRateNanos was tried and
+// silently stopped loading blockrate from every existing config.yaml.
+// TestViperDecodesProfilingSection pins this.
+type ProfilingConfig struct {
+	Enabled bool   `yaml:"enabled" json:"enabled"` // true to serve /debug/pprof/* on the web server
+	Token   string `yaml:"token" json:"token"`     // secret required when no auth provider is configured; generated automatically
+
+	BlockRate     int `yaml:"blockrate" json:"blockRate"`         // nanoseconds of blocked time per sample; 0 disables. Independent of enabled: sampling costs CPU continuously whether or not a profile is ever fetched, so 0 is the only free setting and a very coarse rate still pays most of the cost. Recommended starting point: 10000. Values above 1e15 nanoseconds, about 11 days per sample, are clamped to that ceiling; no useful configuration reaches it. Hot-reloadable via the settings API.
+	MutexFraction int `yaml:"mutexfraction" json:"mutexFraction"` // reports one sampled event per this many contention events; 0 disables. Independent of enabled: sampling costs CPU continuously whether or not a profile is ever fetched. Recommended starting point: 100. Hot-reloadable via the settings API.
+}
+
+// DiagnosticsConfig groups the developer-facing diagnostics features. It is a
+// sibling of Logging and WebServer rather than a member of the telemetry
+// settings, because decoupling profiling from Prometheus metrics is the point:
+// enabling metrics must not expose profiling.
+type DiagnosticsConfig struct {
+	Profiling ProfilingConfig `yaml:"profiling" json:"profiling"` // pprof HTTP endpoint configuration
+}
+
 // Settings contains all configuration options for the BirdNET-Go application.
 type Settings struct {
 	Debug bool `yaml:"debug" json:"debug"` // true to enable debug mode
+
+	// ConfigVersion records the newest one-shot config migration applied to this file.
+	// It is managed automatically by config loading and should not be edited by hand;
+	// it lets a migration whose precondition cannot be recovered from the data itself
+	// run exactly once (see MigrateSourceTargetDefaults). Hidden from the settings API
+	// and preserved across saves by CloneSettings, so writers never drop it.
+	ConfigVersion int `yaml:"configversion,omitempty" json:"-"`
 
 	// Runtime values, not stored in config file
 	Version            string   `yaml:"-" json:"version,omitempty"`            // Version from build
@@ -1670,15 +1961,16 @@ type Settings struct {
 		TimeAs24h bool   `yaml:"timeas24h" json:"timeAs24h"` // true 24-hour time format, false 12-hour time format
 	} `yaml:"main" json:"main"`
 
-	BirdNET BirdNETConfig `yaml:"birdnet" json:"birdnet"` // BirdNET configuration
-	Perch   PerchConfig   `yaml:"perch" json:"perch"`     // Perch v2 model configuration
-	Bat     BatConfig     `yaml:"bat" json:"bat"`         // Bat detection configuration
-	BSG     BSGConfig     `yaml:"bsg" json:"bsg"`         // BSG regional bird model configuration
-	Models  ModelsConfig  `yaml:"models" json:"models"`   // Global model enablement and management
+	BirdNET   BirdNETConfig   `yaml:"birdnet" json:"birdnet"`     // BirdNET configuration
+	Perch     PerchConfig     `yaml:"perch" json:"perch"`         // Perch v2 model configuration
+	BirdNETV3 BirdNETV3Config `yaml:"birdnetv3" json:"birdnetv3"` // BirdNET v3.0 acoustic classifier configuration
+	Bat       BatConfig       `yaml:"bat" json:"bat"`             // Bat detection configuration
+	BSG       BSGConfig       `yaml:"bsg" json:"bsg"`             // BSG regional bird model configuration
+	Models    ModelsConfig    `yaml:"models" json:"models"`       // Global model enablement and management
 
 	LowMemory LowMemoryConfig `yaml:"lowmemory" json:"lowMemory" mapstructure:"lowmemory"` // Low-memory mode override (auto/on/off) for constrained systems
 
-	TaxonomySynonyms map[string]string `yaml:"taxonomySynonyms" json:"taxonomySynonyms" mapstructure:"taxonomySynonyms"` // Optional scientific-name synonym overrides merged with built-ins
+	TaxonomySynonyms map[string]string `yaml:"taxonomySynonyms" json:"taxonomySynonyms" mapstructure:"taxonomySynonyms" jsonschema:"nullable"` // Optional scientific-name synonym overrides merged with built-ins
 
 	Input InputConfig `yaml:"-" json:"-"` // Input configuration for file and directory analysis
 
@@ -1686,6 +1978,8 @@ type Settings struct {
 	WebServer WebServerSettings `yaml:"webserver" json:"webServer"` // web server configuration
 	Security  Security          `yaml:"security" json:"security"`   // security configuration
 	Sentry    SentrySettings    `yaml:"sentry" json:"sentry"`       // Sentry error tracking configuration
+
+	Diagnostics DiagnosticsConfig `yaml:"diagnostics" json:"diagnostics"` // developer diagnostics (pprof profiling)
 
 	Output struct {
 		File struct {
@@ -1711,9 +2005,67 @@ type Settings struct {
 
 	Backup BackupConfig `yaml:"backup" json:"backup"` // Backup configuration
 
+	Import ImportConfig `yaml:"import" json:"import"` // BirdNET-Pi import behavior
+
 	Notification NotificationConfig `yaml:"notification" json:"notification"` // Configuration for push notifications
 
 	Alerting AlertSettings `yaml:"alerting" json:"alerting"` // Alerting rules engine settings
+
+	// revision labels the client-writable state of this snapshot within one
+	// process. Unexported, so JSON, YAML, mapstructure and the schema generator
+	// ignore it, and CloneSettings copies it with the rest of the struct. It is
+	// stamped by UpdateSettings and CompareAndStoreSettings and is zero for a
+	// snapshot published by Load or StoreSettings. Read it through Revision.
+	revision uint64
+}
+
+// Revision identifies the client-writable state of this snapshot within one
+// process. It changes on every publish except the runtime-only range filter
+// writers (UpdateIncludedSpecies, ShouldUpdateRangeFilterToday and
+// ResetRangeFilterUpdateFlag), and a value handed out by a writer is never reused
+// by a later publish, so two snapshots published by a settings writer with the
+// same revision hold the same client-writable content. The range filter species
+// list and its update stamp are served to clients but cannot be written by them,
+// so they can differ between two snapshots that share a revision. Load and
+// StoreSettings do not stamp: a snapshot they publish keeps whatever revision it
+// carries (0 for a new one), so the guarantee above does not cover them.
+func (s *Settings) Revision() uint64 { return s.revision }
+
+// RangeFilterConfig returns a pointer to the range filter settings block. The block
+// is stored under birdnet.rangefilter for historical reasons; callers use this
+// accessor rather than naming BirdNET.RangeFilter directly so the storage location
+// can move in a later phase without touching them. It returns nil for a nil
+// receiver. The pointer aliases the receiver's own field, so a write through it
+// mutates that Settings value; callers that must not disturb the published snapshot
+// take the accessor on a clone (clone-mutate-publish).
+func (s *Settings) RangeFilterConfig() *RangeFilterSettings {
+	if s == nil {
+		return nil
+	}
+	return &s.BirdNET.RangeFilter
+}
+
+// Location returns the configured recording coordinates and whether the user has
+// explicitly configured a location. It reads BirdNET.Latitude, BirdNET.Longitude and
+// BirdNET.LocationConfigured through one accessor so their storage location can change
+// without updating every caller. It returns (0, 0, false) for a nil receiver.
+func (s *Settings) Location() (lat, lon float64, configured bool) {
+	if s == nil {
+		return 0, 0, false
+	}
+	return s.BirdNET.Latitude, s.BirdNET.Longitude, s.BirdNET.LocationConfigured
+}
+
+// LiveLocation returns a function that reports the station coordinates from the current
+// settings snapshot each time it is called, falling back to fallback when no snapshot has been
+// published. Long-lived consumers (such as suncalc.NewSunCalcWithSource) use it so a location
+// changed in the settings takes effect without a restart. A nil fallback reports (0, 0) until a
+// snapshot is published, so pass the settings the caller was constructed with.
+func LiveLocation(fallback *Settings) func() (latitude, longitude float64) {
+	return func() (latitude, longitude float64) {
+		latitude, longitude, _ = CurrentOrFallback(fallback).Location()
+		return latitude, longitude
+	}
 }
 
 // ResolveEQOverride returns the per-source or per-stream EQ override for the
@@ -1767,26 +2119,43 @@ func (s *Settings) GetEnabledOAuthProviders() []string {
 	return enabled
 }
 
+// IsAuthProviderConfigured reports whether this instance has any way to
+// authenticate a user: basic auth is enabled, or at least one OAuth provider is
+// enabled and fully configured.
+//
+// It deliberately ignores the allowed-subnet bypass, which is a per-request
+// concern handled by OAuth2Server.IsAuthenticationEnabled. This answers the
+// global question "can this instance authenticate anyone at all", which is what
+// decides whether an endpoint can rely on the auth middleware or has to carry
+// its own credential.
+func (s *Settings) IsAuthProviderConfigured() bool {
+	return s.Security.BasicAuth.Enabled || len(s.GetEnabledOAuthProviders()) > 0
+}
+
+// randomSecretBytes is the number of random bytes in a GenerateRandomSecret
+// secret: 256 bits, which encode to 43 base64url characters.
+const randomSecretBytes = 32
+
 // GenerateRandomSecret generates a URL-safe base64 encoded random string
 // suitable for use as a client secret. The output is 43 characters long,
-// providing 256 bits of entropy. Returns an error if the system's
-// cryptographic random number generator fails.
-func GenerateRandomSecret() (string, error) {
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", fmt.Errorf("failed to generate random secret: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(bytes), nil
+// providing 256 bits of entropy. It cannot fail: crypto/rand.Read never
+// returns an error and crashes the program if the system's random source is
+// unavailable.
+func GenerateRandomSecret() string {
+	bytes := make([]byte, randomSecretBytes)
+	rand.Read(bytes)
+	return base64.RawURLEncoding.EncodeToString(bytes)
 }
 
 // GetWeatherProvider returns the configured provider and its settings as any.
 type WeatherProvider string
 
 const (
-	WeatherNone         WeatherProvider = "none"
-	WeatherYrNo         WeatherProvider = "yrno"
-	WeatherOpenWeather  WeatherProvider = "openweather"
-	WeatherWunderground WeatherProvider = "wunderground"
+	WeatherNone          WeatherProvider = "none"
+	WeatherYrNo          WeatherProvider = "yrno"
+	WeatherOpenWeather   WeatherProvider = "openweather"
+	WeatherWunderground  WeatherProvider = "wunderground"
+	WeatherPirateWeather WeatherProvider = "pirateweather"
 )
 
 // Prefer explicit settings return to avoid confusion at call sites.
@@ -1797,6 +2166,8 @@ func (s *Settings) GetWeatherProvider() (provider WeatherProvider, settings any)
 		return WeatherOpenWeather, s.Realtime.Weather.OpenWeather
 	case string(WeatherWunderground):
 		return WeatherWunderground, s.Realtime.Weather.Wunderground
+	case string(WeatherPirateWeather):
+		return WeatherPirateWeather, s.Realtime.Weather.PirateWeather
 	case string(WeatherYrNo), string(WeatherNone):
 		return WeatherProvider(p), nil
 	default:
@@ -1816,6 +2187,14 @@ func (w *WundergroundSettings) ValidateWunderground() error {
 	}
 	if w.StationID == "" {
 		return fmt.Errorf("wunderground.stationId is required when provider is wunderground")
+	}
+	return nil
+}
+
+// ValidatePirateWeather validates Pirate Weather settings when the provider is "pirateweather"
+func (p *PirateWeatherSettings) ValidatePirateWeather() error {
+	if p.APIKey == "" {
+		return fmt.Errorf("pirateweather.apiKey is required when provider is pirateweather")
 	}
 	return nil
 }

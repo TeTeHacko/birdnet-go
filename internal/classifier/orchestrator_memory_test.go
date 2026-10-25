@@ -2,6 +2,7 @@ package classifier
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,11 +15,12 @@ import (
 
 // fakeInstance is a minimal ModelInstance for warm-up/RSS tests.
 type fakeInstance struct {
-	id         string
-	sampleRate int
-	clip       time.Duration
-	predictedN int
-	predictErr error
+	id           string
+	sampleRate   int
+	clip         time.Duration
+	predictedN   int
+	predictErr   error
+	resolvedPath string
 }
 
 func (f *fakeInstance) Predict(_ context.Context, samples [][]float32) ([]datastore.Results, error) {
@@ -36,7 +38,10 @@ func (f *fakeInstance) ModelVersion() string { return "test" }
 func (f *fakeInstance) NumSpecies() int      { return 1 }
 func (f *fakeInstance) Labels() []string     { return nil }
 func (f *fakeInstance) Close() error         { return nil }
-func (f *fakeInstance) Device() string       { return deviceCPU }
+func (f *fakeInstance) RuntimeInfo() (device, backend, precision string) {
+	return deviceCPU, BackendONNX, ""
+}
+func (f *fakeInstance) ResolvedModelPath() string { return f.resolvedPath }
 
 func TestWarmupAndRecordRSS_RecordsNonNegativeDelta(t *testing.T) {
 	t.Parallel()
@@ -47,7 +52,7 @@ func TestWarmupAndRecordRSS_RecordsNonNegativeDelta(t *testing.T) {
 	if before == 0 {
 		t.Skip("process RSS unavailable on this platform")
 	}
-	o.warmupAndRecordRSS(inst.ModelID(), before, inst)
+	o.warmupAndRecordRSS(inst.ModelID(), before, inst, silentInput(inst.Spec()))
 
 	// Warm-up must size the dummy clip from the spec (48000 * 3s = 144000).
 	require.Equal(t, 144000, inst.predictedN, "warm-up dummy size")
@@ -207,16 +212,18 @@ func TestLoadModel_RunsDeferredWarmup(t *testing.T) {
 
 // TestRunPendingWarmups_DoesNotHoldMapLockDuringWarmup is the core regression
 // guard: while the deferred warm-up inference runs, callers that take
-// o.mu.RLock (PredictModel, ModelInfos, PrimaryModelID) must not block. The
+// o.mu.RLock (PredictModel, ModelInfos, DefaultTargets) must not block. The
 // warm-up serializes via inferenceMu instead, exactly like a normal inference.
 func TestRunPendingWarmups_DoesNotHoldMapLockDuringWarmup(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
+	var startedOnce sync.Once
 	inst := &mockModelInstance{
 		id:   "Blocking_Model",
 		spec: ModelSpec{SampleRate: 48000, ClipLength: 3 * time.Second},
 		predict: func(_ context.Context, _ [][]float32) ([]datastore.Results, error) {
-			close(started)
+			// The warm-up is followed by the latency probe, which calls Predict again.
+			startedOnce.Do(func() { close(started) })
 			<-release
 			return nil, nil
 		},

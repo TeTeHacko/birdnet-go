@@ -129,20 +129,23 @@ func (r *SourceRegistry) Register(cfg *SourceConfig) (*AudioSource, error) {
 	}
 
 	src := &AudioSource{
-		ID:               id,
-		DisplayName:      displayName,
-		Type:             cfg.Type,
-		SafeString:       safeStr,
-		SampleRate:       cfg.SampleRate,
-		SourceSampleRate: cfg.SourceSampleRate,
-		BitDepth:         cfg.BitDepth,
-		Channels:         cfg.Channels,
-		SourceChannels:   cfg.SourceChannels,
-		ChannelMode:      cfg.ChannelMode,
-		Gain:             cfg.Gain,
-		State:            SourceInactive,
-		RegisteredAt:     time.Now(),
-		LastSeen:         time.Now(),
+		ID:                        id,
+		DisplayName:               displayName,
+		Type:                      cfg.Type,
+		SafeString:                safeStr,
+		SampleRate:                cfg.SampleRate,
+		SourceSampleRate:          cfg.SourceSampleRate,
+		SourceSampleRateEstimated: cfg.SourceSampleRateEstimated,
+		BitDepth:                  cfg.BitDepth,
+		Channels:                  cfg.Channels,
+		SourceChannels:            cfg.SourceChannels,
+		ChannelMode:               cfg.ChannelMode,
+		MediaMode:                 cfg.MediaMode,
+		Transport:                 cfg.Transport,
+		Gain:                      cfg.Gain,
+		State:                     SourceInactive,
+		RegisteredAt:              time.Now(),
+		LastSeen:                  time.Now(),
 	}
 	src.SetConnectionString(connStr)
 
@@ -266,6 +269,26 @@ func (r *SourceRegistry) UpdateState(sourceID string, state SourceState) error {
 	return nil
 }
 
+// TransitionState atomically sets the state to `to` only when the current
+// state equals `from`, and fires SourceStateChanged when it does. It returns
+// false, without an event, when the source does not exist or is in another
+// state. It lets a start path finish without overwriting a concurrent stop.
+func (r *SourceRegistry) TransitionState(sourceID string, from, to SourceState) bool {
+	r.mu.Lock()
+
+	src, ok := r.sources[sourceID]
+	if !ok || src.State != from {
+		r.mu.Unlock()
+		return false
+	}
+	src.State = to
+	snapshot := r.copySource(src)
+	r.mu.Unlock()
+
+	r.notify(SourceEvent{Type: SourceStateChanged, SourceID: sourceID, Source: snapshot})
+	return true
+}
+
 // UpdateDisplayName changes the display name of a source and fires
 // SourceReconfigured. Returns false if the source does not exist or
 // the name is unchanged.
@@ -311,6 +334,46 @@ func (r *SourceRegistry) UpdateAudioParams(sourceID string, sampleRate, bitDepth
 	r.mu.Unlock()
 
 	r.notify(SourceEvent{Type: SourceReconfigured, SourceID: sourceID, Source: snapshot})
+	return true
+}
+
+// SyncReconfiguredParams updates the registry entry's mode, transport, and probed
+// source-shape fields after an in-place reconfigure. Register writes these once at
+// add time and ReconfigureSource does not re-register, so without this the registry
+// keeps the values captured when the source was first added. Because
+// sourceNeedsReconfigure diffs the desired config against the registry entry, a
+// stale entry makes a change to only these fields re-trigger on every subsequent
+// reconfigure and restart the stream indefinitely; quiet-hours resume (which
+// rebuilds the stream config from the registry) would also use the old values.
+// transport is stored EXACTLY as the caller passes it (the pipeline's desired
+// value, matching what Register stores), NOT re-resolved to the engine default:
+// buildSourceConfigsWithModels leaves it empty for non-RTSP stream types, so
+// re-resolving here would store a concrete default that never equals the empty
+// desired value and would re-trigger a restart on every later reload. Source-shape
+// fields are only overwritten when the new value is known (non-zero), matching the
+// "desired != 0" guard in sourceNeedsReconfigure. It does not notify; the caller's following
+// UpdateAudioParams emits the SourceReconfigured event with the fully updated
+// snapshot.
+func (r *SourceRegistry) SyncReconfiguredParams(sourceID, channelMode, mediaMode, transport string, sourceSampleRate, sourceChannels int, sourceSampleRateEstimated bool) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	src, ok := r.sources[sourceID]
+	if !ok {
+		return false
+	}
+	src.ChannelMode = channelMode
+	src.MediaMode = mediaMode
+	src.Transport = transport
+	if sourceSampleRate != 0 {
+		src.SourceSampleRate = sourceSampleRate
+		// Keep the estimated marker in step with the rate it describes, so a later
+		// stop/resume that rebuilds the stream from the registry still forces
+		// resampling for a fallback estimate (#4350).
+		src.SourceSampleRateEstimated = sourceSampleRateEstimated
+	}
+	if sourceChannels != 0 {
+		src.SourceChannels = sourceChannels
+	}
 	return true
 }
 

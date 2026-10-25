@@ -1,0 +1,4158 @@
+// internal/api/v2/media/media.go
+package media
+
+import (
+	"context"
+	"fmt"
+	"io/fs"
+	"math"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/labstack/echo/v4"
+	"github.com/tphakala/birdnet-go/internal/api/v2/apicore"
+	"github.com/tphakala/birdnet-go/internal/audiocore/audioformat"
+	"github.com/tphakala/birdnet-go/internal/audiocore/audiotemp"
+	"github.com/tphakala/birdnet-go/internal/audiocore/transcode"
+	"github.com/tphakala/birdnet-go/internal/conf"
+	"github.com/tphakala/birdnet-go/internal/datastore/v2/repository"
+	"github.com/tphakala/birdnet-go/internal/diskmanager"
+	"github.com/tphakala/birdnet-go/internal/errors"
+	"github.com/tphakala/birdnet-go/internal/imageprovider"
+	"github.com/tphakala/birdnet-go/internal/logger"
+	"github.com/tphakala/birdnet-go/internal/privacy"
+	"github.com/tphakala/birdnet-go/internal/securefs"
+	"github.com/tphakala/birdnet-go/internal/spectrogram"
+	"github.com/tphakala/birdnet-go/internal/spectrogram/render"
+	"github.com/tphakala/birdnet-go/internal/spectrogram/soxchrome"
+	"golang.org/x/sync/singleflight"
+	"gorm.io/gorm"
+)
+
+// Non-standard HTTP status codes. Aliased from apicore so this media handler and
+// the analytics handler (still in package api) share one source for the
+// client-closed status.
+const (
+	StatusClientClosedRequest = apicore.StatusClientClosedRequest // Nginx's non-standard status for client closed connection
+)
+
+// Spectrogram size constants - FFT-friendly dimensions. Aliased from apicore so
+// the media renderer here and the detections clip-deletion file matching share
+// one source. Heights are 2^n + 1 so the analysis frame (2*(height-1)) is a power
+// of 2, enabling fast FFT instead of brute-force DFT. Widths are 2x
+// height to maintain ~2:1 aspect ratio.
+const (
+	SpectrogramSizeSm = apicore.SpectrogramSizeSm // height=129, DFT=256
+	SpectrogramSizeMd = apicore.SpectrogramSizeMd // height=257, DFT=512
+	SpectrogramSizeLg = apicore.SpectrogramSizeLg // height=513, DFT=1024 (default render size)
+	SpectrogramSizeXl = apicore.SpectrogramSizeXl // height=1025, DFT=2048
+)
+
+// Audio MIME type constants for consistent handling across endpoints
+const (
+	MimeTypeFLAC = "audio/flac"
+	MimeTypeWAV  = "audio/wav"
+	MimeTypeMP3  = "audio/mpeg"
+	MimeTypeM4A  = "audio/mp4"
+	MimeTypeOGG  = "audio/ogg"
+	MimeTypeAAC  = "audio/aac"
+)
+
+const (
+	headerAcceptRanges = "Accept-Ranges"
+	acceptRangesBytes  = "bytes"
+	requestTimeoutMsg  = "Request timed out"
+)
+
+// Cache duration in seconds for HTTP Cache-Control headers on media responses.
+const (
+	// ImageCacheSeconds is the cache duration for species images in seconds
+	ImageCacheSeconds = 2592000 // 30 days
+
+	// NotFoundCacheSeconds is the cache duration for 404 responses in seconds
+	NotFoundCacheSeconds = 86400 // 24 hours
+
+	// SpectrogramCacheSeconds is the cache duration for spectrograms in seconds
+	SpectrogramCacheSeconds = 2592000 // 30 days
+
+	// ImagePendingRetryAfterSeconds is the Retry-After advertised when a species
+	// image is not cached yet and a background fetch has been scheduled. It is short
+	// because the common case is a fast provider hit; a species queued behind the
+	// provider's rate limiter simply needs more than one retry.
+	ImagePendingRetryAfterSeconds = 5
+)
+
+// isClipNotFoundErr reports whether err indicates the audio clip or its parent
+// detection does not exist. It checks sentinel errors from the v2 repository
+// layer, GORM's record-not-found, and the standard os.ErrNotExist.
+func isClipNotFoundErr(err error) bool {
+	return errors.Is(err, os.ErrNotExist) ||
+		errors.Is(err, gorm.ErrRecordNotFound) ||
+		errors.Is(err, repository.ErrDetectionNotFound) ||
+		errors.Is(err, repository.ErrNoClipPath)
+}
+
+// isValidFilename checks if a filename is valid for use in Content-Disposition header
+func isValidFilename(filename string) bool {
+	// Reject empty, current dir, or root dir references
+	if filename == "" || filename == "." || filename == "/" {
+		return false
+	}
+
+	// Reject filenames with path separators (security check)
+	if strings.ContainsAny(filename, "/\\") {
+		return false
+	}
+
+	// Additional safety: reject control characters and null bytes
+	for _, r := range filename {
+		if r < 32 || r == 127 {
+			return false
+		}
+	}
+
+	return true
+}
+
+// contentDispositionFilename returns the user-facing clip filename advertised
+// by media responses. BirdNET-Go's legacy on-disk naming convention formats
+// clip timestamps in local time but appends a literal Z, which normally means
+// UTC. Keep the stored path unchanged for compatibility while removing that
+// misleading marker from recognized clip timestamps in download filenames.
+func contentDispositionFilename(filename string) string {
+	const timestampLayout = "20060102T150405Z"
+
+	ext := filepath.Ext(filename)
+	stem := strings.TrimSuffix(filename, ext)
+	timestampStem := diskmanager.StripDurationSuffix(stem)
+	timestampEnd := len(timestampStem)
+
+	if timestampEnd < len(timestampLayout) {
+		return filename
+	}
+	timestampStart := timestampEnd - len(timestampLayout)
+	if timestampStart == 0 || stem[timestampStart-1] != '_' {
+		return filename
+	}
+	prefix := timestampStem[:timestampStart-1]
+	confidenceSeparator := strings.LastIndexByte(prefix, '_')
+	if confidenceSeparator < 1 {
+		return filename
+	}
+	confidence := prefix[confidenceSeparator+1:]
+	if len(confidence) < 2 || confidence[len(confidence)-1] != 'p' {
+		return filename
+	}
+	if _, err := strconv.ParseUint(confidence[:len(confidence)-1], 10, 64); err != nil {
+		return filename
+	}
+
+	timestamp := stem[timestampStart:timestampEnd]
+	if _, err := time.ParseInLocation(timestampLayout, timestamp, time.Local); err != nil {
+		return filename
+	}
+
+	return stem[:timestampEnd-1] + stem[timestampEnd:] + ext
+}
+
+// setAudioContentType sets the response Content-Type for a known audio file
+// extension (leading dot, lower-case). Unknown extensions are left for
+// ServeRelativeFile to sniff. Shared by the normal serve path and the
+// alternate-extension fallback so both label the response by the file actually
+// served, not by whatever extension the DB clip_name happened to record.
+func setAudioContentType(ctx echo.Context, ext string) {
+	switch ext {
+	case ".flac":
+		ctx.Response().Header().Set(echo.HeaderContentType, MimeTypeFLAC)
+	case ".wav":
+		ctx.Response().Header().Set(echo.HeaderContentType, MimeTypeWAV)
+	case ".mp3":
+		ctx.Response().Header().Set(echo.HeaderContentType, MimeTypeMP3)
+	case ".m4a":
+		ctx.Response().Header().Set(echo.HeaderContentType, MimeTypeM4A)
+	case ".ogg", ".opus":
+		// go-opus writes Ogg-Opus, so the Ogg container type applies to both.
+		ctx.Response().Header().Set(echo.HeaderContentType, MimeTypeOGG)
+	case ".aac":
+		ctx.Response().Header().Set(echo.HeaderContentType, MimeTypeAAC)
+	default:
+		// Let ServeRelativeFile handle the content type
+	}
+}
+
+// setAudioContentDisposition advertises a safe, user-facing filename while
+// keeping the response inline for browser playback.
+func setAudioContentDisposition(ctx echo.Context, filename string) {
+	if !isValidFilename(filename) {
+		return
+	}
+
+	dispositionFilename := contentDispositionFilename(filename)
+	// QueryEscape provides the conservative percent-encoding needed for an
+	// RFC 5987 filename* value, except that its form-style spaces use '+'.
+	encodedFilename := strings.ReplaceAll(url.QueryEscape(dispositionFilename), "+", "%20")
+	ctx.Response().Header().Set(echo.HeaderContentDisposition, fmt.Sprintf("inline; filename*=UTF-8''%s", encodedFilename))
+}
+
+func clearAudioResponseHeaders(ctx echo.Context) {
+	ctx.Response().Header().Del(echo.HeaderContentType)
+	ctx.Response().Header().Del(echo.HeaderContentDisposition)
+	ctx.Response().Header().Del(headerAcceptRanges)
+}
+
+// AudioNotReadyError carries retry information for audio files that are not yet ready
+type AudioNotReadyError struct {
+	RetryAfter time.Duration
+	Err        error
+}
+
+func (e *AudioNotReadyError) Error() string { return e.Err.Error() }
+func (e *AudioNotReadyError) Unwrap() error { return e.Err }
+
+// Sentinel errors for media operations
+var (
+	// Audio file errors
+	ErrAudioFileNotFound    = errors.NewStd("audio file not found")
+	ErrInvalidAudioPath     = errors.NewStd("invalid audio path")
+	ErrPathTraversalAttempt = errors.NewStd("security error: path attempts to traverse")
+
+	// Generation errors
+	ErrSpectrogramGeneration = errors.NewStd("failed to generate spectrogram")
+
+	// Image errors
+	ErrImageProviderNotAvailable = errors.NewStd("image provider not available")
+
+	// ErrImageNotResolvedYet reports that a species image is being fetched in the
+	// background and is not available yet. It is a transient condition, not a failure.
+	ErrImageNotResolvedYet = errors.NewStd("species image is not resolved yet")
+
+	// Sentinel errors for nilnil cases
+	ErrSpectrogramExists       = errors.NewStd("spectrogram already exists")
+	ErrSpectrogramNotGenerated = errors.NewStd("spectrogram not generated")
+)
+
+// safeFilenamePattern is kept if needed elsewhere, but SecureFS handles validation now
+// var safeFilenamePattern = regexp.MustCompile(`^[\p{L}\p{N}_\-.]+$`)
+
+// Constants for spectrogram generation status
+const (
+	spectrogramStatusExists     = "exists"
+	spectrogramStatusGenerated  = "generated"
+	spectrogramStatusQueued     = "queued"
+	spectrogramStatusGenerating = "generating"
+	spectrogramStatusFailed     = "failed"
+	spectrogramStatusNotStarted = "not_started"
+)
+
+// Reasons a spectrogram is unavailable, reported as "reason" in the status answer and
+// in the data of the 404 image response. They are additive: a client that ignores the
+// field keeps working. See the README "Spectrogram reasons" section for client meaning.
+const (
+	// spectrogramReasonNotGenerated: the source clip is on disk and no render exists yet.
+	spectrogramReasonNotGenerated = "not_generated"
+	// spectrogramReasonSourcePending: the source clip is not on disk but may still be
+	// written (pending export, recent detection, or it did not appear within the wait).
+	spectrogramReasonSourcePending = "source_pending"
+	// spectrogramReasonSourceMissing: the source clip is gone for good. Set only by
+	// sites that evaluate clipGoneForGood.
+	spectrogramReasonSourceMissing = "source_missing"
+	// spectrogramReasonSourceInvalid: the clip exists but cannot be rendered.
+	spectrogramReasonSourceInvalid = "source_invalid"
+	// spectrogramReasonBusy: generation was refused or interrupted by load, a deadline
+	// or cancellation; retry with backoff.
+	spectrogramReasonBusy = "busy"
+	// spectrogramReasonRenderFailed: generation failed for any other reason.
+	spectrogramReasonRenderFailed = "render_failed"
+)
+
+// msgSourceAudioNotFound is the message of the 404 answered for a missing source clip.
+const msgSourceAudioNotFound = "Source audio file not found"
+
+// audioEncodingMaxAge is the maximum age of a temp file to be considered
+// "still encoding". Temp files older than this are likely left behind by an
+// export that was killed before it renamed or removed its temp file, and
+// should not trigger a 503 response.
+const audioEncodingMaxAge = 30 * time.Second
+
+// audioRetryAfterSeconds is the Retry-After header value returned when
+// an audio file is still being encoded.
+const audioRetryAfterSeconds = "2"
+
+// audioWaitTimeout is the maximum time to wait server-side for an audio file
+// that is currently being encoded before returning 503 to the client.
+// This prevents unnecessary client round-trips when encoding finishes quickly.
+const audioWaitTimeout = 5 * time.Second
+
+// audioWaitPollInterval is how often to check if the audio file has appeared
+// during server-side waiting.
+const audioWaitPollInterval = 250 * time.Millisecond
+
+// audioGracePeriod is the maximum time to wait for an audio file to appear
+// when no temp file is visible. This covers the race window where the export
+// hasn't created its temp file yet or has already atomically renamed it.
+const audioGracePeriod = 1 * time.Second
+
+// pendingExportGraceMargin extends a detection's computed capture-ready time to
+// account for the job-queue retry lag and the pickup-to-temp-file gap before the
+// export actually starts encoding. While now is before ReadyAt+margin, a missing clip
+// is treated as legitimately pending (503 + Retry-After) rather than a ghost (404).
+// Once encoding starts, the temp-file branch of handleAudio404WithWait takes over.
+const pendingExportGraceMargin = 60 * time.Second
+
+// pendingRetryAfterCushionSeconds pads the Retry-After hint past the computed ReadyAt
+// so a client that honors it does not come back a hair too early and 404 on a boundary.
+const pendingRetryAfterCushionSeconds = 2
+
+// minRetryAfterSeconds is the floor for any not-ready Retry-After hint.
+const minRetryAfterSeconds = 2
+
+// pendingClipPollInterval is how often the async spectrogram worker polls for a pending
+// (not-yet-written) audio clip to appear while waiting out the Extended Capture deferral
+// window.
+const pendingClipPollInterval = 1 * time.Second
+
+// ClipExtractionRequest represents a request to extract an audio clip.
+type ClipExtractionRequest struct {
+	Start     float64 `json:"start"`
+	End       float64 `json:"end"`
+	Format    string  `json:"format"`
+	Normalize bool    `json:"normalize"`
+	Denoise   string  `json:"denoise"`
+	GainDB    float64 `json:"gain_db"`
+}
+
+// ProcessAudioRequest defines the request body for POST /api/v2/audio/:id/process.
+type ProcessAudioRequest struct {
+	Normalize bool    `json:"normalize"`
+	Denoise   string  `json:"denoise"`
+	GainDB    float64 `json:"gain_db"`
+}
+
+// AudibleBatsRequest defines the request body for POST /api/v2/audio/:id/audible-bats.
+type AudibleBatsRequest struct {
+	// Expansion is the time-expansion factor (5, 10, 16, or 20).
+	Expansion int `json:"expansion"`
+	// Normalize enables loudness normalization applied after time expansion.
+	Normalize bool `json:"normalize"`
+	// GainDB is the volume adjustment in dB applied to the derived clip.
+	GainDB float64 `json:"gain_db"`
+}
+
+// modelTypeBat is the ai_models.model_type value identifying bat-detection
+// models. Audible-bats playback is only offered for these detections.
+const modelTypeBat = "bat"
+
+// RegisterRoutes registers the media domain routes. It is called by the facade
+// in the deterministic initRoutes order, at the same slot the former
+// initMediaRoutes occupied, so the registered route set stays byte-identical.
+//
+// The /media/* routes register on the passed v2 group g (== c.Group). The
+// ID-based routes register directly on c.Echo (the embedded core's Echo
+// instance), preserving the greedy GET /api/v2/audio/:id route documented in
+// internal/api/v2/AGENTS.md: it is registered on the Echo instance (not the
+// group) and catches all /api/v2/audio/* paths. Registering it here, at the
+// media slot, keeps it on c.Echo at the exact same point in initialization.
+func (c *Handler) RegisterRoutes(g *echo.Group) {
+	c.LogInfoIfEnabled("Initializing media routes")
+
+	// Datastore-independent media routes serve from SecureFS / BirdImageCache and do
+	// not touch c.DS, so they register regardless of datastore availability.
+	// Original filename-based routes (keep for backward compatibility if needed, but ensure they use SFS)
+	g.GET("/media/audio/:filename", c.ServeAudioClip)
+	g.GET("/media/spectrogram/:filename", c.ServeSpectrogram)
+
+	// Bird image endpoints
+	g.GET("/media/species-image", c.GetSpeciesImage)
+	g.GET("/media/species-image/info", c.GetSpeciesImageInfo)
+
+	// Proxied bird image endpoints (serve cached files, solve CORS)
+	g.GET("/media/image/:scientific_name", c.ServeSpeciesImageProxy)
+	g.GET("/media/bird-image/:scientific_name", c.ServeSpeciesImageProxy) // backward-compat alias
+
+	// The remaining ID-based media handlers dereference c.DS (clip/model lookups).
+	// Honor the constructor's "datastore disabled" mode (NewWithOptions permits a nil
+	// datastore) by not registering them when there is no datastore, instead of
+	// registering handlers that would panic. The datastore-independent routes
+	// above stay available in that mode.
+	if c.DS == nil {
+		c.LogWarnIfEnabled("Skipping ID-based media routes: datastore is not available")
+		return
+	}
+
+	// ID-based routes using SFS. Registered on c.Echo (not the group); the
+	// GET /api/v2/audio/:id route is greedy and catches all /api/v2/audio/* paths.
+	//
+	// PrivateModeAuth is attached per-route here because these routes live on
+	// c.Echo, not the v2 group, so they do NOT inherit the group-level
+	// c.Group.Use(c.PrivateModeAuth) gate (Echo group middleware wraps only routes
+	// registered through that group). Without it, stored detection audio and
+	// spectrograms are reachable unauthenticated even when Private Mode is enabled
+	// (GHSA-c7jx-552f-94hh). PrivateModeAuth, not AuthMiddleware, is used so these
+	// read routes stay publicly reachable when Private Mode is off, matching the
+	// grouped /media/* aliases that serve the same media through the group.
+	c.Echo.GET("/api/v2/audio/:id", c.ServeAudioByID, c.PrivateModeAuth)
+	c.Echo.GET("/api/v2/spectrogram/:id", c.ServeSpectrogramByID, c.PrivateModeAuth)
+	c.Echo.GET("/api/v2/spectrogram/:id/status", c.GetSpectrogramStatus, c.PrivateModeAuth)
+	c.Echo.POST("/api/v2/spectrogram/:id/generate", c.GenerateSpectrogramByID, c.PrivateModeAuth)
+
+	// Clip extraction (requires authentication)
+	c.Echo.POST("/api/v2/audio/:id/clip", c.ExtractAudioClipByID, c.AuthMiddleware)
+
+	// Audio processing / preview (requires authentication)
+	c.Echo.POST("/api/v2/audio/:id/process", c.ProcessAudioByID, c.AuthMiddleware)
+
+	// Audible bats derived playback (requires authentication)
+	c.Echo.POST("/api/v2/audio/:id/audible-bats", c.AudibleBatsByID, c.AuthMiddleware)
+
+	// Processed spectrogram preview (requires authentication)
+	c.Echo.POST("/api/v2/spectrogram/:id/process", c.ProcessedSpectrogramByID, c.AuthMiddleware)
+
+	// Convenient combined endpoint (redirects to ID-based internally)
+	g.GET("/media/audio", c.ServeAudioByQueryID)
+
+	c.LogInfoIfEnabled("Media routes initialized successfully")
+}
+
+// mediaCacheVisibility returns the Cache-Control visibility token for a served
+// media response: "private" when Private Mode is enabled, otherwise "public".
+// In Private Mode the media is access-controlled, so "private" keeps shared or
+// proxy caches from retaining it and re-serving it to unauthenticated clients
+// (GHSA-c7jx-552f-94hh). Read per request via CurrentSettings() so a hot-reload
+// toggle of Private Mode takes effect without a restart.
+func (c *Handler) mediaCacheVisibility() string {
+	if c.CurrentSettings().Security.PrivateMode {
+		return "private"
+	}
+	return "public"
+}
+
+// setPrivateAudioCacheControl marks an audio response private when Private Mode
+// is enabled so shared/proxy caches never retain access-controlled detection
+// audio, which can contain sensitive ambient speech (GHSA-c7jx-552f-94hh).
+// Audio responses carry no Cache-Control otherwise, so this is a no-op in public
+// mode and preserves the prior behavior; "private" (not "no-store") still lets
+// the requesting browser cache the clip, so playback and seeking are unaffected.
+func (c *Handler) setPrivateAudioCacheControl(ctx echo.Context) {
+	if c.CurrentSettings().Security.PrivateMode {
+		ctx.Response().Header().Set("Cache-Control", "private")
+	}
+}
+
+// translateSecureFSError handles SecureFS errors consistently across handler methods.
+// It checks if the error is already an HTTPError from SecureFS and returns it directly,
+// or maps specific error types to appropriate HTTP status codes.
+func (c *Handler) translateSecureFSError(ctx echo.Context, err error, userMsg string) error {
+	if httpErr, ok := errors.AsType[*echo.HTTPError](err); ok {
+		// If it's already an HTTPError from SecureFS, just pass it through
+		ctx.Logger().Debugf("SecureFS httpErr=%d internal=%v msg=%v",
+			httpErr.Code, httpErr.Internal, httpErr.Message)
+		// Level the log by status code, not by caller intent: this helper is generic
+		// across media routes. A 404 for a not-yet-written or reconcile-ghost clip is
+		// not a server fault, so log it at Info (matching the not-found branch below);
+		// other 4xx are client problems (Warn); only 5xx are genuine failures (Error).
+		// This keeps the high-volume transient extended-capture / encode-race 404s out
+		// of the error stream without hiding real failures.
+		fields := []logger.Field{
+			logger.Error(err),
+			logger.Int("status_code", httpErr.Code),
+			logger.String("path", ctx.Request().URL.Path),
+			logger.String("ip", ctx.RealIP()),
+		}
+		switch {
+		case httpErr.Code >= http.StatusInternalServerError:
+			c.LogErrorIfEnabled("SecureFS returned HTTP error", fields...)
+		case httpErr.Code == http.StatusNotFound:
+			c.LogInfoIfEnabled("SecureFS file not found", fields...)
+		default:
+			c.LogWarnIfEnabled("SecureFS returned HTTP client error", fields...)
+		}
+		return httpErr
+	}
+
+	// Get tunnel info for logging
+	isTunneled, _ := ctx.Get(apicore.CtxKeyIsTunneled).(bool)
+	tunnelProvider, _ := ctx.Get(apicore.CtxKeyTunnelProvider).(string)
+
+	// Check for specific error types and map to appropriate status codes
+	switch {
+	case errors.Is(err, securefs.ErrPathTraversal) || errors.Is(err, ErrPathTraversalAttempt):
+		c.LogWarnIfEnabled("Path traversal attempt detected",
+			logger.Error(err),
+			logger.String("path", ctx.Request().URL.Path),
+			logger.String("ip", ctx.RealIP()),
+			logger.Bool("tunneled", isTunneled),
+			logger.String("tunnel_provider", tunnelProvider),
+		)
+		return c.HandleError(ctx, err, "Invalid file path: attempted path traversal", http.StatusBadRequest)
+	case errors.Is(err, securefs.ErrInvalidPath) || errors.Is(err, ErrInvalidAudioPath):
+		c.LogWarnIfEnabled("Invalid file path provided",
+			logger.Error(err),
+			logger.String("path", ctx.Request().URL.Path),
+			logger.String("ip", ctx.RealIP()),
+			logger.Bool("tunneled", isTunneled),
+			logger.String("tunnel_provider", tunnelProvider),
+		)
+		return c.HandleError(ctx, err, "Invalid file path specification", http.StatusBadRequest)
+	case errors.Is(err, securefs.ErrAccessDenied):
+		c.LogWarnIfEnabled("Access denied to resource",
+			logger.Error(err),
+			logger.String("path", ctx.Request().URL.Path),
+			logger.String("ip", ctx.RealIP()),
+			logger.Bool("tunneled", isTunneled),
+			logger.String("tunnel_provider", tunnelProvider),
+		)
+		return c.HandleError(ctx, err, "Access denied to requested resource", http.StatusForbidden)
+	case errors.Is(err, securefs.ErrNotRegularFile):
+		c.LogWarnIfEnabled("Requested resource is not a regular file",
+			logger.Error(err),
+			logger.String("path", ctx.Request().URL.Path),
+			logger.String("ip", ctx.RealIP()),
+			logger.Bool("tunneled", isTunneled),
+			logger.String("tunnel_provider", tunnelProvider),
+		)
+		return c.HandleError(ctx, err, "Requested resource is not a regular file", http.StatusForbidden)
+	case errors.Is(err, os.ErrNotExist) || errors.Is(err, fs.ErrNotExist) || errors.Is(err, ErrAudioFileNotFound) || errors.Is(err, imageprovider.ErrImageNotFound):
+		c.LogInfoIfEnabled("Resource not found", // Info level as 404 is common
+			logger.Error(err),
+			logger.String("path", ctx.Request().URL.Path),
+			logger.String("ip", ctx.RealIP()),
+			logger.Bool("tunneled", isTunneled),
+			logger.String("tunnel_provider", tunnelProvider),
+		)
+		return c.HandleError(ctx, err, "Resource not found", http.StatusNotFound)
+	case errors.Is(err, context.DeadlineExceeded):
+		c.LogWarnIfEnabled("Request timed out",
+			logger.Error(err),
+			logger.String("path", ctx.Request().URL.Path),
+			logger.String("ip", ctx.RealIP()),
+			logger.Bool("tunneled", isTunneled),
+			logger.String("tunnel_provider", tunnelProvider),
+		)
+		return c.HandleError(ctx, err, requestTimeoutMsg, http.StatusRequestTimeout)
+	case errors.Is(err, context.Canceled):
+		c.LogInfoIfEnabled("Request canceled by client",
+			logger.Error(err),
+			logger.String("path", ctx.Request().URL.Path),
+			logger.String("ip", ctx.RealIP()),
+			logger.Bool("tunneled", isTunneled),
+			logger.String("tunnel_provider", tunnelProvider),
+		)
+		return c.HandleError(ctx, err, "Request was canceled", StatusClientClosedRequest)
+	}
+
+	// For other errors, log as error and use the provided user message with a 500 status
+	c.LogErrorIfEnabled("Unhandled SecureFS/media error",
+		logger.Error(err),
+		logger.String("user_message", userMsg),
+		logger.String("path", ctx.Request().URL.Path),
+		logger.String("ip", ctx.RealIP()),
+		logger.Bool("tunneled", isTunneled),
+		logger.String("tunnel_provider", tunnelProvider),
+	)
+	return c.HandleError(ctx, err, userMsg, http.StatusInternalServerError)
+}
+
+// translateAudioServeError clears headers intended for successful audio
+// responses before translating a terminal serve failure. Clearing first keeps
+// those headers off JSON bodies even when translation commits the response.
+func (c *Handler) translateAudioServeError(ctx echo.Context, err error, userMsg string) error {
+	clearAudioResponseHeaders(ctx)
+	return c.translateSecureFSError(ctx, err, userMsg)
+}
+
+// handleRequestContextError distinguishes a disconnected client from a request
+// deadline. Canceled requests need no response, while server-side deadlines must
+// remain visible as timeout failures.
+func (c *Handler) handleRequestContextError(ctx echo.Context) (bool, error) {
+	requestErr := ctx.Request().Context().Err()
+	switch {
+	case errors.Is(requestErr, context.Canceled):
+		return true, nil
+	case errors.Is(requestErr, context.DeadlineExceeded):
+		return true, c.translateSecureFSError(ctx, requestErr, requestTimeoutMsg)
+	default:
+		return false, nil
+	}
+}
+
+// parseRawParameter parses the raw query parameter for spectrogram generation.
+// It defaults to true for backward compatibility with existing cached spectrograms.
+// Accepts: "true", "false", "1", "0", "t", "f", "yes", "no", "on", "off"
+func parseRawParameter(rawParam string) bool {
+	// Default to true for backward compatibility
+	if rawParam == "" {
+		return true
+	}
+
+	// Normalize the parameter to lowercase for consistent parsing
+	normalizedParam := strings.ToLower(rawParam)
+
+	// First try strconv.ParseBool for standard values
+	if parsedRaw, err := strconv.ParseBool(normalizedParam); err == nil {
+		return parsedRaw
+	}
+
+	// Handle additional common boolean representations
+	switch normalizedParam {
+	case "yes", "on":
+		return true
+	case "no", "off":
+		return false
+	default:
+		// Default to true for invalid values
+		return true
+	}
+}
+
+// findEncodingTempPath looks for an in-progress export temp file for relClipPath
+// and, if a recent one exists, returns its path (relative to the SecureFS root)
+// and true. Exports write to a per-export unique temp file named
+// "<clip>.<pid>.<seq>.temp" (see audiotemp.UniquePath and the native flac, aac,
+// mp3 and opus EncodePCM) that is atomically renamed to the final clip on completion,
+// so the clip's directory is
+// scanned for any matching temp. The pre-fix "<clip>.temp" name is matched too,
+// so a temp written by an older build mid-upgrade is handled. Returning the
+// concrete path lets a waiting caller poll that fixed name with StatRel instead
+// of re-scanning the directory on every tick.
+func (c *Handler) findEncodingTempPath(relClipPath string) (string, bool) {
+	dir := filepath.Dir(relClipPath)
+	entries, err := c.SFS.ReadDirRel(dir)
+	if err != nil {
+		return "", false
+	}
+	base := filepath.Base(relClipPath)
+	for _, entry := range entries {
+		if !isExportTempFor(entry.Name(), base) {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			continue
+		}
+		// Guard against stale temp files from failed exports.
+		if time.Since(info.ModTime()) < audioEncodingMaxAge {
+			return filepath.Join(dir, entry.Name()), true
+		}
+	}
+	return "", false
+}
+
+// isExportTempFor reports whether name is an in-progress export temp file for the
+// clip file named base. It matches the per-export unique form
+// "<base>.<pid>.<seq>.temp" (pid and seq are integers, see audiotemp.UniquePath)
+// and the pre-fix "<base>.temp" form, but NOT unrelated sidecar temps that merely
+// share the prefix and suffix, e.g. a spectrogram's "<base>.png.<pid>.<seq>.temp".
+func isExportTempFor(name, base string) bool {
+	return audiotemp.IsTempFor(name, base)
+}
+
+// audioServeExtensions is the ordered set of containers an exported clip may be
+// written with, most-likely first so findAlternateAudioPath probes
+// deterministically: FLAC and WAV lead (the ultrasonic and default-lossless
+// formats), then the lossy containers. Also the accepted set for the serve
+// fallback.
+//
+//nolint:gochecknoglobals // immutable lookup table
+var audioServeExtensions = []string{".flac", ".wav", ".opus", ".m4a", ".mp3", ".ogg", ".aac"}
+
+// findAlternateAudioPath looks for a completed clip that shares relClipPath's base
+// name but carries a different known audio extension. The DB clip_name and the
+// file on disk normally agree, because the exporter writes the stored name. A
+// row written by an older version, or a manual rename, can still point at a
+// container the file was not written in; serving the actual file beats a 404.
+// It probes the fixed candidate names directly (no directory listing), so it is
+// O(1) per extension and deterministic on the ordered set.
+// Temp files are handled separately (findEncodingTempPath) and the original,
+// already-missing extension is skipped.
+func (c *Handler) findAlternateAudioPath(relClipPath string) (string, bool) {
+	base := filepath.Base(relClipPath)
+	origExt := strings.ToLower(filepath.Ext(base))
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	if stem == "" {
+		return "", false
+	}
+	dir := filepath.Dir(relClipPath)
+	for _, ext := range audioServeExtensions {
+		if ext == origExt {
+			continue
+		}
+		candidate := filepath.Join(dir, stem+ext)
+		if info, err := c.SFS.StatRel(candidate); err == nil && !info.IsDir() {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+// isAudioBeingEncoded reports whether a recent in-progress export temp file
+// exists for relClipPath. Callers that then wait for the clip should use
+// findEncodingTempPath directly so they can poll the temp's fixed name with
+// StatRel rather than re-scanning the directory each tick.
+func (c *Handler) isAudioBeingEncoded(relClipPath string) bool {
+	_, ok := c.findEncodingTempPath(relClipPath)
+	return ok
+}
+
+// writeAudioNotReady writes a 503 Service Unavailable response with a Retry-After
+// header for a clip that is not yet on disk. It deliberately bypasses HandleError:
+// HandleError logs "API Error" at ERROR and, for any status >= 500 (which includes
+// 503), reports to Sentry and raises a PriorityHigh notification-bell entry. A clip
+// that is still encoding or still scheduled for export will appear on its own, so this
+// is expected backpressure, not a bug; routing it through HandleError would spam the
+// error log, Sentry, and the bell. The JSON body is identical to HandleError's because
+// both build it via NewErrorResponse. Callers log the condition at Debug themselves.
+func (c *Handler) writeAudioNotReady(ctx echo.Context, err error, message string, retryAfterSeconds int) error {
+	// These handlers write a JSON response, so discard any audio headers set by
+	// the initial serve attempt before committing it.
+	clearAudioResponseHeaders(ctx)
+	ctx.Response().Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+	return ctx.JSON(http.StatusServiceUnavailable,
+		c.NewErrorResponse(err, message, http.StatusServiceUnavailable))
+}
+
+// handleAudioNotReady returns a 503 Service Unavailable response with a
+// Retry-After header, indicating that the audio file is still being encoded.
+func (c *Handler) handleAudioNotReady(ctx echo.Context) error {
+	return c.writeAudioNotReady(ctx, errAudioFileNotReady, "Audio file is still being processed, please retry", minRetryAfterSeconds)
+}
+
+// handleAudioPending returns a 503 + Retry-After for a clip whose export is scheduled
+// but not yet started (Extended Capture deferring the write until the capture tail is
+// recorded). The Retry-After hint is sized to the remaining time until ReadyAt plus a
+// small cushion, floored at minRetryAfterSeconds. Logged at Debug only: the clip is
+// still being produced, so this must not reach the error log, Sentry, or the bell.
+func (c *Handler) handleAudioPending(ctx echo.Context, readyAt time.Time, logFields ...logger.Field) error {
+	retryAfter := minRetryAfterSeconds
+	if remaining := time.Until(readyAt); remaining > 0 {
+		retryAfter = int(remaining.Seconds()) + pendingRetryAfterCushionSeconds
+	}
+	retryAfter = max(retryAfter, minRetryAfterSeconds)
+
+	c.LogDebugIfEnabled("Audio clip export pending",
+		append([]logger.Field{
+			logger.Time("ready_at", readyAt),
+			logger.Int("retry_after", retryAfter),
+		}, logFields...)...)
+
+	return c.writeAudioNotReady(ctx, errAudioFileNotReady, "Audio clip is scheduled for export and not yet available", retryAfter)
+}
+
+// waitForAudioFile polls for an audio file to appear on disk while encoding
+// is in progress. It returns true if the file became available within the
+// timeout, false if encoding is still ongoing or the temp file disappeared.
+// This reduces 503 responses by waiting server-side instead of requiring
+// the client to retry.
+func (c *Handler) waitForAudioFile(ctx echo.Context, relClipPath, tempPath string) bool {
+	waitCtx, cancel := context.WithTimeout(ctx.Request().Context(), c.audioWaitDuration())
+	defer cancel()
+
+	ticker := time.NewTicker(audioWaitPollInterval)
+	defer ticker.Stop()
+	if c.audioWaitStartedHook != nil {
+		c.audioWaitStartedHook()
+	}
+
+	for {
+		// Check for the file before waiting. This avoids a race condition where
+		// the file appears after the last tick but before the timeout.
+		if _, err := c.SFS.StatRel(relClipPath); err == nil {
+			return true
+		}
+		// If the temp file is gone (or went stale, i.e. a failed export left it
+		// behind), encoding has finished or failed. Poll the concrete temp path
+		// with a cheap StatRel (no directory re-scan); re-check the final file to
+		// handle the TOCTOU race where encoding completed (atomic rename) between
+		// the two StatRel calls.
+		if info, err := c.SFS.StatRel(tempPath); err != nil || time.Since(info.ModTime()) >= audioEncodingMaxAge {
+			_, err := c.SFS.StatRel(relClipPath)
+			return err == nil
+		}
+
+		// Wait for the next event.
+		select {
+		case <-waitCtx.Done():
+			// Timeout or client disconnect - final check in case file appeared
+			// between the last tick and the deadline.
+			_, err := c.SFS.StatRel(relClipPath)
+			return err == nil
+		case <-ticker.C:
+			// Loop to check again.
+		}
+	}
+}
+
+// waitForAudioFileGrace performs a brief poll for an audio file to appear
+// when no temp file is visible. This handles the race condition where the
+// detection DB record is committed but the export hasn't created its temp file
+// yet, or has already atomically renamed it to the final path.
+// Returns true if the file appeared within the grace period.
+func (c *Handler) waitForAudioFileGrace(ctx echo.Context, relClipPath string) bool {
+	// Check immediately to avoid waiting one full poll interval when the file
+	// appears right after the initial 404.
+	if _, err := c.SFS.StatRel(relClipPath); err == nil {
+		return true
+	}
+	if c.audioWaitStartedHook != nil {
+		c.audioWaitStartedHook()
+	}
+
+	graceCtx, cancel := context.WithTimeout(ctx.Request().Context(), audioGracePeriod)
+	defer cancel()
+
+	ticker := time.NewTicker(audioWaitPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-graceCtx.Done():
+			// Final check before giving up
+			_, err := c.SFS.StatRel(relClipPath)
+			return err == nil
+		case <-ticker.C:
+			if _, err := c.SFS.StatRel(relClipPath); err == nil {
+				return true
+			}
+		}
+	}
+}
+
+// isRecentClipCompletion reports whether a detection whose capture completed at
+// endTime is recent enough that its audio clip may still be encoding. A zero
+// endTime is treated as recent (unknown age -> fail-safe: keep waiting) so a
+// missing timestamp never suppresses the grace wait for a genuinely live encode.
+// Recency is keyed on completion time (Note.EndTime), shared with the reconcile
+// crawler via diskmanager.ClipRecencyWindow.
+func isRecentClipCompletion(endTime time.Time) bool {
+	return endTime.IsZero() || time.Since(endTime) < diskmanager.ClipRecencyWindow
+}
+
+// noteCaptureTimes returns the detection's capture begin and completion times
+// (Note.BeginTime, Note.EndTime), or zero times if they cannot be determined (nil
+// datastore, lookup error, or unset). It is only called on the 404 slow path, so the
+// extra lookup does not affect normal audio serves. EndTime feeds the grace-poll
+// recency decision; both feed the pending-export window via
+// conf.Settings.DetectionCaptureWindow.
+func (c *Handler) noteCaptureTimes(noteID string) (begin, end time.Time) {
+	if c.DS == nil {
+		return time.Time{}, time.Time{}
+	}
+	note, err := c.DS.Get(noteID)
+	if err != nil {
+		// Fail-safe: on a lookup error, return zero times so the caller treats the clip
+		// as having no pending window (falls back to the grace/404 path). Log at Debug so
+		// the swallowed error is still diagnosable without noising the error stream.
+		c.LogDebugIfEnabled("Could not resolve note capture times for pending-clip check",
+			logger.String("note_id", noteID),
+			logger.Error(err))
+		return time.Time{}, time.Time{}
+	}
+	return note.BeginTime, note.EndTime
+}
+
+// pendingExportWindow resolves the window in which the clip of a detection captured from
+// begin to end may still be written by a deferred (Extended Capture) export: readyAt is
+// when the capture was ready and deadline is readyAt plus pendingExportGraceMargin. ok is
+// false when no capture window applies (unknown times, or Extended Capture is off). Every
+// "export may still be pending" decision goes through it, so the audio and spectrogram
+// endpoints cannot disagree about the window.
+func (c *Handler) pendingExportWindow(begin, end time.Time) (readyAt, deadline time.Time, ok bool) {
+	win, ok := c.CurrentSettings().DetectionCaptureWindow(begin, end)
+	if !ok {
+		return time.Time{}, time.Time{}, false
+	}
+	return win.ReadyAt, win.ReadyAt.Add(pendingExportGraceMargin), true
+}
+
+// captureTimes memoizes noteCaptureTimes for one request, so the pre-check and the error
+// path of the same spectrogram request share a single datastore lookup.
+type captureTimes struct {
+	begin, end time.Time
+	loaded     bool
+}
+
+// captureTimesOnce returns the capture times of noteID, looking them up on first use.
+func (c *Handler) captureTimesOnce(ct *captureTimes, noteID string) (begin, end time.Time) {
+	if !ct.loaded {
+		ct.begin, ct.end = c.noteCaptureTimes(noteID)
+		ct.loaded = true
+	}
+	return ct.begin, ct.end
+}
+
+// clipGoneForGood reports whether the clip at relAudioPath, for a detection captured
+// from begin to end, can no longer appear: the answer is true only when no export can
+// still be writing it. It mirrors the no-wait 404 branch of handleAudio404WithWait, so
+// "gone" here implies GET /audio/:id answers 404 without waiting for the same times and
+// settings. A false answer means the clip may still be written (or is served from
+// another extension) and callers keep their wait. The checks run cheapest first:
+//   - inside ReadyAt plus pendingExportGraceMargin an Extended Capture export may be
+//     deferred, so the clip is pending;
+//   - a recent or unknown completion time (isRecentClipCompletion; zero counts as
+//     recent) may still be encoding or racing the rename;
+//   - a clip under another known extension is served by the audio endpoint, so it is
+//     not gone;
+//   - a fresh export temp file means encoding is in progress.
+func (c *Handler) clipGoneForGood(relAudioPath string, begin, end time.Time) bool {
+	if _, deadline, ok := c.pendingExportWindow(begin, end); ok && time.Now().Before(deadline) {
+		return false
+	}
+	if isRecentClipCompletion(end) {
+		return false
+	}
+	if _, found := c.findAlternateAudioPath(relAudioPath); found {
+		return false
+	}
+	if _, encoding := c.findEncodingTempPath(relAudioPath); encoding {
+		return false
+	}
+	return true
+}
+
+// unrenderedSourceReason explains why a clip without a render cannot be rendered yet,
+// for the status answer: not_generated when the source is on disk, source_missing when
+// it is absent and clipGoneForGood, source_pending when it is absent but may still be
+// written. It returns "" when the source state cannot be determined (a stat error other
+// than not-exist), so the reason is omitted rather than guessed.
+func (c *Handler) unrenderedSourceReason(relAudioPath string, begin, end time.Time) string {
+	_, err := c.SFS.StatRel(relAudioPath)
+	switch {
+	case err == nil:
+		return spectrogramReasonNotGenerated
+	case !errors.Is(err, os.ErrNotExist):
+		return ""
+	case c.clipGoneForGood(relAudioPath, begin, end):
+		return spectrogramReasonSourceMissing
+	default:
+		return spectrogramReasonSourcePending
+	}
+}
+
+// handleAudio404WithWait handles a 404 error for an audio file that may still be
+// encoding. It checks for an active temp file and waits for encoding to complete,
+// then falls back to a brief grace period for the race window where the export
+// hasn't created its temp file yet or already renamed it. Returns nil if the file
+// was served or a 503 pending answer was written, or the original/translated
+// error otherwise.
+func (c *Handler) handleAudio404WithWait(ctx echo.Context, relClipPath string, originalErr error, detectionBeginTime, detectionEndTime time.Time, logFields ...logger.Field) error {
+	// A completed clip whose stored name drifted from the file on disk (a row from
+	// an older version, or a manual rename) is served from its actual path rather
+	// than 404'd. The exporter writes the stored name, so this is the safety net
+	// for such rows only. The Content-Type and
+	// Content-Disposition the caller set from the stored extension are rewritten to
+	// match the file actually served; the 404 above did not commit the response, so
+	// these still take effect.
+	if altPath, ok := c.findAlternateAudioPath(relClipPath); ok {
+		setAudioContentType(ctx, strings.ToLower(filepath.Ext(altPath)))
+		setAudioContentDisposition(ctx, filepath.Base(altPath))
+		if serveErr := c.SFS.ServeRelativeFile(ctx, altPath); serveErr == nil {
+			c.LogInfoIfEnabled("Served audio clip from an alternate extension after clip_name mismatch", logFields...)
+			return nil
+		}
+		// A file StatRel just confirmed, failing to serve, is a race (deleted under
+		// us) or a permission error. Restore the headers for the originally
+		// requested clip before falling through, so a later serve of the original
+		// file in the recovery flow below is not mislabeled with the alternate's
+		// type or filename.
+		setAudioContentType(ctx, strings.ToLower(filepath.Ext(relClipPath)))
+		setAudioContentDisposition(ctx, filepath.Base(relClipPath))
+	}
+
+	if tempPath, encoding := c.findEncodingTempPath(relClipPath); encoding {
+		// Wait server-side for the file to appear instead of immediately
+		// returning 503, reducing unnecessary client round-trips. Pass the
+		// concrete temp path so the wait loop polls it directly.
+		if c.waitForAudioFile(ctx, relClipPath, tempPath) {
+			// File appeared - serve it now
+			if retryErr := c.SFS.ServeRelativeFile(ctx, relClipPath); retryErr != nil {
+				return c.translateAudioServeError(ctx, retryErr, "Failed to serve audio clip after encoding completed")
+			}
+			c.LogInfoIfEnabled("Successfully served audio clip after waiting for encoding", logFields...)
+			return nil
+		}
+		// Distinguish "still encoding" from "encoder exited/failed".
+		if c.isAudioBeingEncoded(relClipPath) {
+			return c.handleAudioNotReady(ctx)
+		}
+		// Temp file disappeared and final file is still missing -
+		// encoding failed, fall back to normal error translation.
+		return c.translateAudioServeError(ctx, originalErr, "Failed to serve audio clip due to an unexpected error")
+	}
+
+	// No temp file yet, but the export may be legitimately pending: for an
+	// Extended Capture detection the DB note and SSE broadcast go out immediately while
+	// the clip write is deferred until the capture tail is recorded (the job queue
+	// retries until then). If we are still inside that window (ReadyAt + margin), return
+	// 503 + Retry-After so the client comes back once the clip lands, instead of a 404
+	// that reads as data loss. This returns immediately (no wait loop), so it does not
+	// pin the worker. Once encoding actually starts, the temp-file branch above handles
+	// it. Filename-based serves pass zero times, so ok is false and this is skipped.
+	if readyAt, deadline, ok := c.pendingExportWindow(detectionBeginTime, detectionEndTime); ok && time.Now().Before(deadline) {
+		return c.handleAudioPending(ctx, readyAt, logFields...)
+	}
+
+	// No temp file visible. For a detection whose capture completed long ago,
+	// skip the grace wait entirely and return 404 now: no export is in flight
+	// (the temp-file check above already ruled that out), so the file is a
+	// pre-reconcile ghost, not a live encode. Waiting would only pin an HTTP
+	// worker for the full grace period, and a page full of such ghosts would pin
+	// one worker each. Recent (or unknown-age) detections still get the brief
+	// grace wait for the export race window.
+	if !isRecentClipCompletion(detectionEndTime) {
+		return c.translateAudioServeError(ctx, originalErr, "Failed to serve audio clip due to an unexpected error")
+	}
+
+	// Brief grace wait for the race window where the export hasn't created its
+	// temp file yet or already renamed it.
+	if c.waitForAudioFileGrace(ctx, relClipPath) {
+		if retryErr := c.SFS.ServeRelativeFile(ctx, relClipPath); retryErr != nil {
+			return c.translateAudioServeError(ctx, retryErr, "Failed to serve audio clip after grace wait")
+		}
+		c.LogInfoIfEnabled("Successfully served audio clip after grace wait", logFields...)
+		return nil
+	}
+
+	// The detection finished recently and no encode is visible yet, so the export may
+	// still be queued: answer 503 + Retry-After (like the pending window above) instead
+	// of a 404 that clients read as a clip that is gone for good. An unknown completion
+	// time cannot be judged (filename-based serves), so it keeps the plain 404.
+	if !detectionEndTime.IsZero() {
+		c.LogDebugIfEnabled("Audio clip still missing after the grace wait for a recent detection", logFields...)
+		return c.handleAudioNotReady(ctx)
+	}
+
+	return c.translateAudioServeError(ctx, originalErr, "Failed to serve audio clip due to an unexpected error")
+}
+
+// ServeAudioClip serves an audio clip file by filename using SecureFS
+func (c *Handler) ServeAudioClip(ctx echo.Context) error {
+	filename := ctx.Param("filename")
+	if filename == "" {
+		c.LogErrorIfEnabled("Missing filename parameter for ServeAudioClip",
+			logger.String("path", ctx.Request().URL.Path),
+			logger.String("ip", ctx.RealIP()),
+		)
+		return c.HandleError(ctx, fmt.Errorf("missing filename"), "Filename parameter is required", http.StatusBadRequest)
+	}
+
+	c.LogInfoIfEnabled("Serving audio clip by filename",
+		logger.String("filename", filename),
+		logger.String("path", ctx.Request().URL.Path),
+		logger.String("ip", ctx.RealIP()),
+	)
+
+	// Normalize and validate the path using the common helper
+	normalizedFilename, err := c.normalizeAndValidatePathWithLogger(filename, c.APILogger)
+	if err != nil {
+		c.LogWarnIfEnabled("Invalid file path detected",
+			logger.String("original_filename", filename),
+			logger.Error(err),
+			logger.String("path", ctx.Request().URL.Path),
+			logger.String("ip", ctx.RealIP()),
+		)
+		return c.HandleError(ctx, err, "Invalid file path", http.StatusBadRequest)
+	}
+
+	setAudioContentDisposition(ctx, filepath.Base(normalizedFilename))
+
+	// In Private Mode, keep shared/proxy caches from retaining this clip.
+	c.setPrivateAudioCacheControl(ctx)
+
+	// Serve the file using SecureFS. It handles path validation and serves the file.
+	// ServeRelativeFile is expected to return appropriate echo.HTTPErrors (400, 404, 500).
+	err = c.SFS.ServeRelativeFile(ctx, normalizedFilename)
+
+	if err != nil {
+		// Check if this is a 404 for a file that's still being exported.
+		// The detection DB record is committed before audio export completes, so the
+		// frontend may request the file before it exists on disk.
+		if httpErr, ok := errors.AsType[*echo.HTTPError](err); ok && httpErr.Code == http.StatusNotFound {
+			// Filename-based serving has no note ID to resolve capture times, so pass
+			// zero times (unknown -> no pending window, keep the grace wait, fail-safe).
+			err = c.handleAudio404WithWait(ctx, normalizedFilename, err, time.Time{}, time.Time{},
+				logger.String("filename", filename),
+				logger.String("path", ctx.Request().URL.Path),
+				logger.String("ip", ctx.RealIP()),
+			)
+		} else {
+			// Error logging is handled within translateSecureFSError.
+			return c.translateAudioServeError(ctx, err, "Failed to serve audio clip due to an unexpected error")
+		}
+		return err
+	}
+
+	c.LogInfoIfEnabled("Successfully served audio clip by filename",
+		logger.String("filename", filename),
+		logger.String("path", ctx.Request().URL.Path),
+		logger.String("ip", ctx.RealIP()),
+	)
+
+	// If err is nil, ServeRelativeFile handled the response successfully
+	return nil
+}
+
+// ServeAudioByID serves an audio clip file based on note ID using SecureFS
+func (c *Handler) ServeAudioByID(ctx echo.Context) error {
+	// Defense in depth: initMediaRoutes skips registering this handler when the
+	// datastore is disabled, but guard the c.DS dereference below anyway.
+	if err := c.RequireDatastore(ctx); err != nil {
+		return err
+	}
+
+	noteID := ctx.Param("id")
+	if noteID == "" {
+		return c.HandleError(ctx, fmt.Errorf("missing ID"), "Note ID is required", http.StatusBadRequest)
+	}
+
+	// Validate that the ID is numeric to prevent wildcard route collisions
+	// (e.g., /api/v2/audio/level or /api/v2/audio/stream matching this route)
+	if _, err := strconv.ParseUint(noteID, 10, 64); err != nil {
+		return c.HandleError(ctx, fmt.Errorf("invalid note ID: %s", noteID), "Note ID must be a numeric value", http.StatusBadRequest)
+	}
+
+	clipPath, err := c.DS.GetNoteClipPath(noteID)
+	if err != nil {
+		// Check if error is due to record not found
+		if isClipNotFoundErr(err) {
+			return c.HandleError(ctx, err, "No audio clip available for this note", http.StatusNotFound)
+		}
+		return c.HandleError(ctx, err, "Failed to get clip path for note", http.StatusInternalServerError)
+	}
+
+	if clipPath == "" {
+		return c.HandleError(ctx, fmt.Errorf("no audio file found"), "No audio clip available for this note", http.StatusNotFound)
+	}
+
+	// Normalize and validate the path using the common helper
+	normalizedClipPath, err := c.normalizeAndValidatePathWithLogger(clipPath, c.APILogger)
+	if err != nil {
+		return c.HandleError(ctx, err, "Invalid clip path", http.StatusBadRequest)
+	}
+
+	// Extract the original filename and extension
+	originalFilename := filepath.Base(clipPath)
+	ext := strings.ToLower(filepath.Ext(originalFilename))
+
+	// Set proper Content-Type for audio files BEFORE ServeRelativeFile.
+	// This ensures Safari recognizes the file as audio.
+	setAudioContentType(ctx, ext)
+
+	// Set Content-Disposition as inline to enable playback in browser.
+	// Use filename* for proper UTF-8 filename encoding.
+	setAudioContentDisposition(ctx, originalFilename)
+
+	// Ensure Accept-Ranges header is set for iOS Safari.
+	ctx.Response().Header().Set(headerAcceptRanges, acceptRangesBytes)
+
+	// In Private Mode, keep shared/proxy caches from retaining this clip.
+	c.setPrivateAudioCacheControl(ctx)
+
+	// Serve the file using SecureFS.
+	err = c.SFS.ServeRelativeFile(ctx, normalizedClipPath)
+	if err != nil {
+		if httpErr, ok := errors.AsType[*echo.HTTPError](err); ok && httpErr.Code == http.StatusNotFound {
+			// Capture times drive the pending-export and ghost decisions. They are
+			// looked up here on the 404 slow path only.
+			begin, end := c.noteCaptureTimes(noteID)
+			err = c.handleAudio404WithWait(ctx, normalizedClipPath, err, begin, end,
+				logger.String("note_id", noteID),
+				logger.String("path", ctx.Request().URL.Path),
+				logger.String("ip", ctx.RealIP()),
+			)
+		} else {
+			return c.translateAudioServeError(ctx, err, "Failed to serve audio clip due to an unexpected error")
+		}
+		return err
+	}
+
+	return nil
+}
+
+// processedAudioFormat is the format the process and processed-spectrogram
+// endpoints encode to. Neither takes a format from the request: both produce a
+// WAV. It is the transcode's output, which is what a transcode failure needs to
+// report, not necessarily the endpoint's own response type (the spectrogram
+// endpoint goes on to render a PNG from it; its operation tag says which is
+// which). Named rather than inlined so the log field cannot silently disagree
+// with the format it describes.
+const processedAudioFormat = audioformat.WAV
+
+// logTranscodeFailure records the output encoder for the format being produced and the validated request
+// parameters that shaped it. HandleError cannot: handleErrorInternal logs a
+// fixed field set and does not surface an EnhancedError's Context, so without
+// this line a transcode that fails only for one format, or only with a filter
+// chain attached, is invisible in the log file.
+//
+// encoder names the output encoder even when the failure came from decoding or processing, so it does not prove that encoder ran:
+// it identifies the format being produced, whichever stage failed.
+//
+// The error is scrubbed rather than logged raw, matching what apicore does to
+// the same value a statement later. A decoder error can wrap the source file's
+// path, which carries the operator's account name and directory layout; emitting
+// it here unscrubbed would defeat the redaction HandleError performs on the
+// identical error.
+//
+// One helper rather than copies: every transcode entry point in this file fails
+// the same way and needs the same fields, and a further one added later has an
+// obvious thing to call.
+func (c *Handler) logTranscodeFailure(noteID, operation, format string, filters transcode.Filters, err error) {
+	// 4 unconditional fields, the operation, plus the 3 filter fields.
+	fields := make([]logger.Field, 0, 8)
+	fields = append(fields,
+		logger.String("note_id", noteID),
+		logger.String("encoder", transcode.EncoderTag(format)),
+		logger.String("format", format),
+		logger.String("error", privacy.ScrubMessage(err.Error())),
+	)
+	// No active filter means the request asked for no FILTER processing; the
+	// transcode itself still ran. That distinction is the answer to "did a filter
+	// cause this", so the fields are omitted rather than logged as three zero
+	// values, which would read as "filters were configured and were all off".
+	if filters.Active() {
+		fields = append(fields,
+			logger.Float64("gain_db", filters.GainDB),
+			logger.Bool("normalize", filters.Normalize),
+			logger.String("denoise", filters.Denoise))
+	}
+	fields = append(fields, logger.String("operation", operation))
+	c.LogErrorIfEnabled("Audio transcode failed", fields...)
+}
+
+// gainRangeMessage is the 400 message for a gain_db outside the accepted range.
+func gainRangeMessage() string {
+	return fmt.Sprintf("Gain must be between -%.0f and %.0f dB", transcode.MaxGainDB, transcode.MaxGainDB)
+}
+
+// expansionFactorMessage is the 400 message for an unsupported time expansion.
+func expansionFactorMessage() string {
+	factors := transcode.BatExpansionFactors()
+	labels := make([]string, len(factors))
+	for i, f := range factors {
+		labels[i] = strconv.Itoa(f)
+	}
+	last := len(labels) - 1
+	return "Time expansion must be " + strings.Join(labels[:last], ", ") + ", or " + labels[last]
+}
+
+// transcodeStatus maps a transcode error to the HTTP status and user message it
+// deserves. Unsupported, undecodable and oversized sources and ranges holding no
+// audio are properties of the stored file or the request, not server faults, so
+// they answer 422 like the other "Source audio ..." cases. ok is false for
+// anything else, which the caller reports as a 500.
+func transcodeStatus(err error) (status int, message string, ok bool) {
+	switch {
+	case errors.Is(err, transcode.ErrUnsupportedSource):
+		return http.StatusUnprocessableEntity, "Source audio format is not supported for on-demand processing", true
+	case errors.Is(err, transcode.ErrTruncatedSource):
+		// Before ErrUndecodableSource, which a truncated source also wraps, so the
+		// more specific message wins.
+		return http.StatusUnprocessableEntity, "Source audio is shorter than its header declares", true
+	case errors.Is(err, transcode.ErrUndecodableSource):
+		return http.StatusUnprocessableEntity, "Source audio could not be decoded", true
+	case errors.Is(err, transcode.ErrAudioTooLong):
+		return http.StatusUnprocessableEntity, "Audio is too long for on-demand processing", true
+	case errors.Is(err, transcode.ErrEmptyRange):
+		return http.StatusUnprocessableEntity, "Requested range contains no audio", true
+	case errors.Is(err, transcode.ErrBelowMinimumRate):
+		return http.StatusUnprocessableEntity, fmt.Sprintf("Source audio must be at least %d Hz for audible bats mode", audioformat.MinBatSampleRate), true
+	case errors.Is(err, transcode.ErrInvalidRequest):
+		return http.StatusBadRequest, "Invalid processing parameters", true
+	}
+	return 0, "", false
+}
+
+// msgSpectrogramSourceTooShort is the 422 message for a clip holding too little audio
+// for one spectrogram column.
+const msgSpectrogramSourceTooShort = "Source audio is too short for a spectrogram"
+
+// spectrogramSourceStatus maps a failure caused by the stored clip itself to the
+// HTTP status and user message it deserves: everything transcodeStatus knows, plus
+// the renderer's "too little audio" sentinels. All of them are properties of the
+// file's bytes, so retrying cannot change the outcome and the answer is 422.
+// render.ErrInvalidOptions is deliberately absent: the parse sites reject every
+// request value that could cause it, so what remains is a server fault. A not-ready
+// error is not answered here even when it wraps one of these causes (the probe
+// wraps ErrUndecodableSource), because the clip may still be written and the client
+// should retry.
+func spectrogramSourceStatus(err error) (status int, message string, ok bool) {
+	if isSpectrogramNotReady(err) {
+		return 0, "", false
+	}
+	if status, message, ok = transcodeStatus(err); ok {
+		return status, message, true
+	}
+	if errors.Is(err, render.ErrEmptyClip) || errors.Is(err, render.ErrNoColumns) {
+		return http.StatusUnprocessableEntity, msgSpectrogramSourceTooShort, true
+	}
+	return 0, "", false
+}
+
+// isSpectrogramNotReady reports whether err means the clip may still be written, so
+// the client should retry. That includes a clip the generator found changed since
+// readiness (spectrogram.ErrSourceChanged), which it reports before the handler
+// wraps it as not-ready.
+func isSpectrogramNotReady(err error) bool {
+	return errors.Is(err, errAudioFileNotReady) ||
+		errors.Is(err, errAudioFileIncomplete) ||
+		errors.Is(err, spectrogram.ErrSourceChanged)
+}
+
+// isSpectrogramSourceFailure reports whether spectrogramSourceStatus answers err.
+func isSpectrogramSourceFailure(err error) bool {
+	_, _, ok := spectrogramSourceStatus(err)
+	return ok
+}
+
+// spectrogramFailureReason classifies a failed generation into one of the
+// spectrogramReason* values. The order matters: a not-ready error can wrap a source
+// failure, so it is checked first. A source that was not on disk after the wait is
+// source_pending, never source_missing: only the sites that evaluate clipGoneForGood
+// may say source_missing, and a clip that was waited for may still appear. An
+// os.ErrNotExist wrapped in ErrSpectrogramGeneration is the rendered PNG missing after
+// generation, which is a render failure, not a source one.
+func spectrogramFailureReason(err error) string {
+	switch {
+	case isSpectrogramNotReady(err),
+		errors.Is(err, ErrAudioFileNotFound),
+		errors.Is(err, os.ErrNotExist) && !errors.Is(err, ErrSpectrogramGeneration):
+		return spectrogramReasonSourcePending
+	case isSpectrogramSourceFailure(err):
+		return spectrogramReasonSourceInvalid
+	case spectrogram.IsOperationalError(err):
+		return spectrogramReasonBusy
+	default:
+		return spectrogramReasonRenderFailed
+	}
+}
+
+// transcodeError turns a failed transcode into the HTTP response. A disconnected
+// client or an expired request deadline is answered by handleRequestContextError;
+// otherwise the failure is logged and answered per transcodeStatus, falling back
+// to a 500 with fallbackMsg for faults of the server itself.
+func (c *Handler) transcodeError(ctx echo.Context, noteID, operation, format string, filters transcode.Filters, err error, fallbackMsg string) error {
+	if handled, contextErr := c.handleRequestContextError(ctx); handled {
+		return contextErr
+	}
+	c.logTranscodeFailure(noteID, operation, format, filters, err)
+	if status, message, ok := transcodeStatus(err); ok {
+		return c.HandleError(ctx, err, message, status)
+	}
+	return c.HandleError(ctx, err, fallbackMsg, http.StatusInternalServerError)
+}
+
+// ExtractAudioClipByID extracts a time range from an audio clip and returns the
+// re-encoded segment. Requires authentication.
+//
+// POST /api/v2/audio/:id/clip
+// Body: {"start": 1.5, "end": 4.2, "format": "mp3"}
+func (c *Handler) ExtractAudioClipByID(ctx echo.Context) error {
+	// Defense in depth: initMediaRoutes skips registering this handler when the
+	// datastore is disabled, but guard the c.DS dereference below anyway.
+	if err := c.RequireDatastore(ctx); err != nil {
+		return err
+	}
+
+	noteID := ctx.Param("id")
+	if noteID == "" {
+		return c.HandleError(ctx, fmt.Errorf("missing ID"), "Note ID is required", http.StatusBadRequest)
+	}
+
+	// Parse and validate request body
+	var req ClipExtractionRequest
+	if err := ctx.Bind(&req); err != nil {
+		return c.HandleError(ctx, err, "Invalid request body", http.StatusBadRequest)
+	}
+
+	if req.Start < 0 {
+		return c.HandleError(ctx, fmt.Errorf("start must be >= 0, got %f", req.Start),
+			"Start time must be non-negative", http.StatusBadRequest)
+	}
+	if req.End <= req.Start {
+		return c.HandleError(ctx, fmt.Errorf("end (%f) must be > start (%f)", req.End, req.Start),
+			"End time must be greater than start time", http.StatusBadRequest)
+	}
+	if req.End-req.Start > transcode.MaxClipDurationSec {
+		return c.HandleError(ctx, fmt.Errorf("clip duration (%.1fs) exceeds maximum (%ds)", req.End-req.Start, transcode.MaxClipDurationSec),
+			"Clip duration too long", http.StatusBadRequest)
+	}
+	if !transcode.IsSupportedClipFormat(req.Format) {
+		return c.HandleError(ctx, fmt.Errorf("unsupported format: %s", req.Format),
+			"Unsupported audio format", http.StatusBadRequest)
+	}
+	if !transcode.IsValidDenoisePreset(req.Denoise) {
+		return c.HandleError(ctx, fmt.Errorf("invalid denoise preset: %q", req.Denoise),
+			"Invalid denoise preset", http.StatusBadRequest)
+	}
+	if !transcode.IsValidGainDB(req.GainDB) {
+		return c.HandleError(ctx, fmt.Errorf("gain_db out of range: %f", req.GainDB),
+			gainRangeMessage(), http.StatusBadRequest)
+	}
+
+	// Resolve clip path from datastore
+	clipPath, err := c.DS.GetNoteClipPath(noteID)
+	if err != nil {
+		if isClipNotFoundErr(err) {
+			return c.HandleError(ctx, err, "No audio clip available for this note", http.StatusNotFound)
+		}
+		return c.HandleError(ctx, err, "Failed to get clip path for note", http.StatusInternalServerError)
+	}
+
+	if clipPath == "" {
+		return c.HandleError(ctx, fmt.Errorf("no audio file found"), "No audio clip available for this note", http.StatusNotFound)
+	}
+
+	// Normalize and validate path via SecureFS (same pattern as ServeAudioByID)
+	normalizedPath, err := c.normalizeAndValidatePathWithLogger(clipPath, c.APILogger)
+	if err != nil {
+		return c.HandleError(ctx, err, "Invalid clip path", http.StatusBadRequest)
+	}
+
+	// Resolve to absolute path within SecureFS base directory
+	absolutePath := filepath.Join(c.SFS.BaseDir(), normalizedPath)
+
+	// Check if file exists using SecureFS (handle encoding-in-progress same as ServeAudioByID)
+	if _, statErr := c.SFS.StatRel(normalizedPath); statErr != nil {
+		if c.isAudioBeingEncoded(normalizedPath) {
+			return c.handleAudioNotReady(ctx)
+		}
+		return c.HandleError(ctx, statErr, "Audio clip not found", http.StatusNotFound)
+	}
+
+	// Acquire semaphore (limit concurrent extractions)
+	select {
+	case clipExtractionSemaphore <- struct{}{}:
+		defer func() { <-clipExtractionSemaphore }()
+	default:
+		return c.HandleError(ctx, fmt.Errorf("extraction queue full"),
+			"Server busy, try again later", http.StatusServiceUnavailable)
+	}
+
+	tmpDir, err := transcode.ProcessingTempDir(c.SFS.BaseDir())
+	if err != nil {
+		return c.HandleError(ctx, err, "Failed to create temp directory", http.StatusInternalServerError)
+	}
+
+	filters := transcode.Filters{Normalize: req.Normalize, Denoise: req.Denoise, GainDB: req.GainDB}
+
+	// Extract clip
+	clipData, err := transcode.ExtractClip(ctx.Request().Context(), &transcode.ClipOptions{
+		InputPath: absolutePath,
+		Start:     req.Start,
+		End:       req.End,
+		Format:    req.Format,
+		Filters:   filters,
+		TempDir:   tmpDir,
+	})
+	if err != nil {
+		return c.transcodeError(ctx, noteID, "media_clip_transcode_failed", req.Format,
+			filters, err, "Failed to extract audio clip")
+	}
+
+	// Set response headers
+	mimeType := clipMIMEType(req.Format)
+	ctx.Response().Header().Set("Content-Type", mimeType)
+
+	filename := fmt.Sprintf("clip_%.1f-%.1f.%s", req.Start, req.End, clipFileExtension(req.Format))
+	ctx.Response().Header().Set("Content-Disposition",
+		fmt.Sprintf("attachment; filename*=UTF-8''%s", url.QueryEscape(filename)))
+
+	return ctx.Blob(http.StatusOK, mimeType, clipData)
+}
+
+// clipMIMEType returns the MIME type for a clip extraction format.
+func clipMIMEType(format string) string {
+	switch format {
+	case audioformat.WAV:
+		return MimeTypeWAV
+	case audioformat.FLAC:
+		return MimeTypeFLAC
+	case audioformat.MP3:
+		return MimeTypeMP3
+	case audioformat.AAC:
+		return MimeTypeM4A
+	case audioformat.Opus:
+		return MimeTypeOGG
+	default:
+		return "application/octet-stream"
+	}
+}
+
+// clipFileExtension returns the file extension for a clip extraction format. It
+// follows the stored-clip extensions except for Opus, which is delivered in an
+// Ogg container.
+func clipFileExtension(format string) string {
+	if format == audioformat.Opus {
+		return "ogg"
+	}
+	return audioformat.FileExtension(format)
+}
+
+// ProcessAudioByID applies audio processing filters to a detection's audio clip
+// and returns the processed audio as WAV for browser preview.
+//
+// POST /api/v2/audio/:id/process
+// Body: {"normalize": true, "denoise": "medium", "gain_db": 6.0}
+func (c *Handler) ProcessAudioByID(ctx echo.Context) error {
+	// Defense in depth: initMediaRoutes skips registering this handler when the
+	// datastore is disabled, but guard the c.DS dereference below anyway.
+	if err := c.RequireDatastore(ctx); err != nil {
+		return err
+	}
+
+	noteID := ctx.Param("id")
+	if noteID == "" {
+		return c.HandleError(ctx, fmt.Errorf("missing ID"), "Note ID is required", http.StatusBadRequest)
+	}
+
+	var req ProcessAudioRequest
+	if err := ctx.Bind(&req); err != nil {
+		return c.HandleError(ctx, err, "Invalid request body", http.StatusBadRequest)
+	}
+
+	// Validate denoise preset and gain range
+	if !transcode.IsValidDenoisePreset(req.Denoise) {
+		return c.HandleError(ctx, fmt.Errorf("invalid denoise preset: %q", req.Denoise),
+			"Invalid denoise preset", http.StatusBadRequest)
+	}
+	if !transcode.IsValidGainDB(req.GainDB) {
+		return c.HandleError(ctx, fmt.Errorf("gain_db out of range: %f", req.GainDB),
+			gainRangeMessage(), http.StatusBadRequest)
+	}
+
+	// Resolve clip path (reuse same pattern as existing handlers like ServeAudioByID)
+	clipPath, err := c.DS.GetNoteClipPath(noteID)
+	if err != nil {
+		if isClipNotFoundErr(err) {
+			return c.HandleError(ctx, err, "No audio clip available", http.StatusNotFound)
+		}
+		return c.HandleError(ctx, err, "Failed to get clip path", http.StatusInternalServerError)
+	}
+	if clipPath == "" {
+		return c.HandleError(ctx, fmt.Errorf("no audio file found"), "No audio clip available", http.StatusNotFound)
+	}
+
+	normalizedPath, err := c.normalizeAndValidatePathWithLogger(clipPath, c.APILogger)
+	if err != nil {
+		return c.HandleError(ctx, err, "Invalid clip path", http.StatusBadRequest)
+	}
+	absolutePath := filepath.Join(c.SFS.BaseDir(), normalizedPath)
+
+	if _, statErr := c.SFS.StatRel(normalizedPath); statErr != nil {
+		return c.HandleError(ctx, statErr, "Audio clip not found", http.StatusNotFound)
+	}
+
+	// Check cache
+	filters := transcode.Filters{
+		Normalize: req.Normalize,
+		Denoise:   req.Denoise,
+		GainDB:    req.GainDB,
+	}
+	cacheKey := processingCacheKey(noteID, req.Normalize, req.Denoise, req.GainDB)
+	if c.processingCache != nil {
+		if cached := c.processingCache.get(cacheKey); cached != nil {
+			return ctx.Blob(http.StatusOK, MimeTypeWAV, cached)
+		}
+	}
+
+	// Acquire semaphore (non-blocking, returns 503 if full)
+	select {
+	case c.processingSemaphore <- struct{}{}:
+		defer func() { <-c.processingSemaphore }()
+	default:
+		return c.HandleError(ctx, fmt.Errorf("processing queue full"),
+			"Server busy, try again later", http.StatusServiceUnavailable)
+	}
+
+	wavData, err := transcode.ProcessToWAV(ctx.Request().Context(), absolutePath, filters)
+	if err != nil {
+		return c.transcodeError(ctx, noteID, "media_processed_audio_failed", processedAudioFormat,
+			filters, err, "Failed to process audio")
+	}
+
+	// Cache the result (non-fatal on failure)
+	if c.processingCache != nil {
+		if err := c.processingCache.put(cacheKey, wavData); err != nil {
+			c.LogAPIRequest(ctx, logger.LogLevelWarn, "Failed to cache processed audio",
+				logger.String("cache_key", cacheKey),
+				logger.Error(err),
+			)
+		}
+	}
+
+	return ctx.Blob(http.StatusOK, MimeTypeWAV, wavData)
+}
+
+// resolveBatClipFile confirms noteID refers to a bat detection and returns the
+// absolute, validated path to its source audio clip, following the same
+// path-resolution pattern as ProcessAudioByID. When ok is false it has already
+// written the HTTP error response and the caller must return respErr unchanged
+// (respErr is nil once the JSON error body is written successfully).
+func (c *Handler) resolveBatClipFile(ctx echo.Context, noteID string) (absolutePath string, ok bool, respErr error) {
+	// Audible-bats playback only applies to bat detections.
+	modelType, err := c.DS.GetNoteModelType(noteID)
+	if err != nil {
+		if isClipNotFoundErr(err) {
+			return "", false, c.HandleError(ctx, err, "Detection not found", http.StatusNotFound)
+		}
+		return "", false, c.HandleError(ctx, err, "Failed to resolve detection model type", http.StatusInternalServerError)
+	}
+	if modelType != modelTypeBat {
+		return "", false, c.HandleError(ctx, fmt.Errorf("model type %q is not a bat model", modelType),
+			"Audible bats mode is only available for bat detections", http.StatusBadRequest)
+	}
+
+	// Resolve and validate clip path (same pattern as ProcessAudioByID).
+	clipPath, err := c.DS.GetNoteClipPath(noteID)
+	if err != nil {
+		if isClipNotFoundErr(err) {
+			return "", false, c.HandleError(ctx, err, "No audio clip available", http.StatusNotFound)
+		}
+		return "", false, c.HandleError(ctx, err, "Failed to get clip path", http.StatusInternalServerError)
+	}
+	if clipPath == "" {
+		return "", false, c.HandleError(ctx, fmt.Errorf("no audio file found"), "No audio clip available", http.StatusNotFound)
+	}
+	normalizedPath, err := c.normalizeAndValidatePathWithLogger(clipPath, c.APILogger)
+	if err != nil {
+		return "", false, c.HandleError(ctx, err, "Invalid clip path", http.StatusBadRequest)
+	}
+	absolutePath = filepath.Join(c.SFS.BaseDir(), normalizedPath)
+	if _, statErr := c.SFS.StatRel(normalizedPath); statErr != nil {
+		return "", false, c.HandleError(ctx, statErr, "Audio clip not found", http.StatusNotFound)
+	}
+	return absolutePath, true, nil
+}
+
+// AudibleBatsByID generates a derived "audible bats" review clip from a bat
+// detection's full audio. The ultrasonic clip is time-expanded (slowed and
+// pitched down) into the human hearing range and resampled to 48 kHz, then
+// optionally loudness-normalized (after conversion) and gain-adjusted. The
+// result is returned as WAV for browser playback and cached ephemerally; the
+// original recording and AI pipeline are never touched. Requires authentication.
+//
+// POST /api/v2/audio/:id/audible-bats
+// Body: {"expansion": 10, "normalize": true, "gain_db": 6.0}
+func (c *Handler) AudibleBatsByID(ctx echo.Context) error {
+	// Defense in depth: RegisterRoutes skips registering this handler when the
+	// datastore is disabled, but guard the c.DS dereferences below anyway.
+	if err := c.RequireDatastore(ctx); err != nil {
+		return err
+	}
+
+	noteID := ctx.Param("id")
+	if noteID == "" {
+		return c.HandleError(ctx, fmt.Errorf("missing ID"), "Note ID is required", http.StatusBadRequest)
+	}
+	if _, err := strconv.ParseUint(noteID, 10, 64); err != nil {
+		return c.HandleError(ctx, fmt.Errorf("invalid note ID: %s", noteID), "Note ID must be a numeric value", http.StatusBadRequest)
+	}
+
+	var req AudibleBatsRequest
+	if err := ctx.Bind(&req); err != nil {
+		return c.HandleError(ctx, err, "Invalid request body", http.StatusBadRequest)
+	}
+	if !transcode.IsValidBatExpansionFactor(req.Expansion) {
+		return c.HandleError(ctx, fmt.Errorf("invalid expansion factor: %d", req.Expansion),
+			expansionFactorMessage(), http.StatusBadRequest)
+	}
+	if !transcode.IsValidGainDB(req.GainDB) {
+		return c.HandleError(ctx, fmt.Errorf("gain_db out of range: %f", req.GainDB),
+			gainRangeMessage(), http.StatusBadRequest)
+	}
+
+	// Confirm this is a bat detection and resolve its validated source clip path.
+	// When ok is false the helper has already written the HTTP error response.
+	absolutePath, ok, respErr := c.resolveBatClipFile(ctx, noteID)
+	if !ok {
+		return respErr
+	}
+
+	// Serve from the ephemeral cache when available.
+	cacheKey := audibleBatsCacheKey(noteID, req.Expansion, req.Normalize, req.GainDB)
+	if c.processingCache != nil {
+		if cached := c.processingCache.get(cacheKey); cached != nil {
+			ctx.Response().Header().Set("Cache-Control", "no-store")
+			return ctx.Blob(http.StatusOK, MimeTypeWAV, cached)
+		}
+	}
+
+	// Limit concurrent processing (non-blocking, returns 503 if full).
+	select {
+	case c.processingSemaphore <- struct{}{}:
+		defer func() { <-c.processingSemaphore }()
+	default:
+		return c.HandleError(ctx, fmt.Errorf("processing queue full"),
+			"Server busy, try again later", http.StatusServiceUnavailable)
+	}
+
+	// Full-clip time expansion + 48 kHz resample (all-or-nothing; no
+	// detection-window clipping), then normalization (after conversion) and gain.
+	filters := transcode.Filters{Normalize: req.Normalize, GainDB: req.GainDB}
+	wavData, err := transcode.AudibleBats(ctx.Request().Context(), absolutePath, req.Expansion, filters)
+	if err != nil {
+		return c.transcodeError(ctx, noteID, "media_audible_bats_failed", processedAudioFormat,
+			filters, err, "Failed to generate audible bats audio")
+	}
+
+	// Cache the result (non-fatal on failure).
+	if c.processingCache != nil {
+		if err := c.processingCache.put(cacheKey, wavData); err != nil {
+			c.LogAPIRequest(ctx, logger.LogLevelWarn, "Failed to cache audible bats audio",
+				logger.String("cache_key", cacheKey),
+				logger.Error(err),
+			)
+		}
+	}
+
+	ctx.Response().Header().Set("Cache-Control", "no-store")
+	return ctx.Blob(http.StatusOK, MimeTypeWAV, wavData)
+}
+
+// ProcessedSpectrogramByID generates a spectrogram from processed (denoised/normalized) audio.
+// It processes the audio first, writes to a temp file, generates a spectrogram from it,
+// and returns the PNG image. The result is ephemeral (not cached to disk).
+//
+// POST /api/v2/spectrogram/:id/process
+// Body: {"normalize": true, "denoise": "medium", "gain_db": 0}
+// Query: same as GET /api/v2/spectrogram/:id (size, raw, legacy width). A width outside
+// 100..2000 answers 400 before any processing; a clip that cannot be processed or
+// rendered answers 422.
+func (c *Handler) ProcessedSpectrogramByID(ctx echo.Context) error {
+	// Defense in depth: initMediaRoutes skips registering this handler when the
+	// datastore is disabled, but guard the c.DS dereference below anyway.
+	if err := c.RequireDatastore(ctx); err != nil {
+		return err
+	}
+
+	noteID := ctx.Param("id")
+	if noteID == "" {
+		return c.HandleError(ctx, fmt.Errorf("missing ID"), "Note ID is required", http.StatusBadRequest)
+	}
+
+	var req ProcessAudioRequest
+	if err := ctx.Bind(&req); err != nil {
+		return c.HandleError(ctx, err, "Invalid request body", http.StatusBadRequest)
+	}
+
+	// If no processing requested, redirect to the normal spectrogram endpoint
+	if !req.Normalize && req.Denoise == "" && req.GainDB == 0 {
+		return c.ServeSpectrogramByID(ctx)
+	}
+
+	// Validate inputs
+	if !transcode.IsValidDenoisePreset(req.Denoise) {
+		return c.HandleError(ctx, fmt.Errorf("invalid denoise preset: %q", req.Denoise),
+			"Invalid denoise preset", http.StatusBadRequest)
+	}
+	if !transcode.IsValidGainDB(req.GainDB) {
+		return c.HandleError(ctx, fmt.Errorf("gain_db out of range: %f", req.GainDB),
+			gainRangeMessage(), http.StatusBadRequest)
+	}
+
+	// Reject an out-of-range legacy width before any processing work.
+	params, err := c.parseSpectrogramParameters(ctx)
+	if err != nil {
+		return c.HandleError(ctx, err, msgInvalidSpectrogramWidth, http.StatusBadRequest)
+	}
+
+	// Resolve clip path
+	clipPath, err := c.DS.GetNoteClipPath(noteID)
+	if err != nil {
+		if isClipNotFoundErr(err) {
+			return c.HandleError(ctx, err, "No audio clip available", http.StatusNotFound)
+		}
+		return c.HandleError(ctx, err, "Failed to get clip path", http.StatusInternalServerError)
+	}
+	if clipPath == "" {
+		return c.HandleError(ctx, fmt.Errorf("no audio file found"), "No audio clip available", http.StatusNotFound)
+	}
+
+	normalizedPath, err := c.normalizeAndValidatePathWithLogger(clipPath, c.APILogger)
+	if err != nil {
+		return c.HandleError(ctx, err, "Invalid clip path", http.StatusBadRequest)
+	}
+	absolutePath := filepath.Join(c.SFS.BaseDir(), normalizedPath)
+
+	if _, statErr := c.SFS.StatRel(normalizedPath); statErr != nil {
+		return c.HandleError(ctx, statErr, "Audio clip not found", http.StatusNotFound)
+	}
+
+	// Acquire processing semaphore
+	select {
+	case c.processingSemaphore <- struct{}{}:
+		defer func() { <-c.processingSemaphore }()
+	default:
+		return c.HandleError(ctx, fmt.Errorf("processing queue full"),
+			"Server busy, try again later", http.StatusServiceUnavailable)
+	}
+
+	// Create temp directory inside SecureFS root for processed files
+	tmpDir, err := transcode.ProcessingTempDir(c.SFS.BaseDir())
+	if err != nil {
+		return c.HandleError(ctx, err, "Failed to create temp directory", http.StatusInternalServerError)
+	}
+
+	// Process the audio in memory, then hand the renderer a WAV file with a
+	// correct header.
+	filters := transcode.Filters{
+		Normalize: req.Normalize,
+		Denoise:   req.Denoise,
+		GainDB:    req.GainDB,
+	}
+	wavData, err := transcode.ProcessToWAV(ctx.Request().Context(), absolutePath, filters)
+	if err != nil {
+		return c.transcodeError(ctx, noteID, "media_processed_spectrogram_failed", processedAudioFormat,
+			filters, err, "Failed to process audio")
+	}
+	tmpFile, err := os.CreateTemp(tmpDir, "processed-*.wav")
+	if err != nil {
+		return c.HandleError(ctx, err, "Failed to create temp file", http.StatusInternalServerError)
+	}
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	_, writeErr := tmpFile.Write(wavData)
+	if closeErr := tmpFile.Close(); writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
+		return c.HandleError(ctx, writeErr, "Failed to write processed audio", http.StatusInternalServerError)
+	}
+
+	// Generate spectrogram from processed audio into another temp file
+	tmpSpectrogramFile, err := os.CreateTemp(tmpDir, "spectrogram-*.png")
+	if err != nil {
+		return c.HandleError(ctx, err, "Failed to create temp spectrogram file", http.StatusInternalServerError)
+	}
+	tmpSpectrogramPath := tmpSpectrogramFile.Name()
+	_ = tmpSpectrogramFile.Close()
+	defer func() { _ = os.Remove(tmpSpectrogramPath) }()
+
+	// Resolve frequency profile from detection's model type (the helper logs a
+	// warning and falls back to the bird profile when the lookup fails).
+	profileOpt := spectrogram.WithFrequencyProfile(c.resolveDetectionFrequencyProfile(noteID))
+
+	if err := c.spectrogramGenerator.GenerateFromFile(ctx.Request().Context(), tmpPath, tmpSpectrogramPath, params.width, params.raw, profileOpt); err != nil {
+		if handled, contextErr := c.handleRequestContextError(ctx); handled {
+			return contextErr
+		}
+		if status, message, ok := spectrogramSourceStatus(err); ok {
+			return c.HandleError(ctx, err, message, status)
+		}
+		return c.HandleError(ctx, err, "Failed to generate spectrogram", http.StatusInternalServerError)
+	}
+
+	// Read the generated spectrogram and return it
+	pngData, err := os.ReadFile(tmpSpectrogramPath)
+	if err != nil {
+		return c.HandleError(ctx, err, "Failed to read spectrogram", http.StatusInternalServerError)
+	}
+
+	// No cache - processed spectrograms are ephemeral previews
+	ctx.Response().Header().Set("Cache-Control", "no-store")
+	return ctx.Blob(http.StatusOK, "image/png", pngData)
+}
+
+// spectrogramHTTPError handles common spectrogram generation errors and converts them to appropriate HTTP responses
+func (c *Handler) spectrogramHTTPError(ctx echo.Context, err error) error {
+	switch {
+	case isSpectrogramNotReady(err):
+		// Audio file is not ready yet - client should retry. Prefer a dynamic retry
+		// duration from validation when available, else the default. Emitted via the
+		// non-reporting 503 path (not HandleError) so this expected "still encoding"
+		// backpressure does not spam the error log, Sentry, and the notification bell.
+		secs := spectrogramRetryAfterSecondsInt
+		if anr, ok := errors.AsType[*AudioNotReadyError](err); ok && anr.RetryAfter > 0 {
+			secs = int(math.Ceil(anr.RetryAfter.Seconds()))
+		}
+		return c.writeAudioNotReady(ctx, err, "Audio file is still being processed, please retry", secs)
+	case errors.Is(err, ErrAudioFileNotFound) || errors.Is(err, os.ErrNotExist):
+		// The source audio file does not exist (after the wait, or the rendered PNG is
+		// missing after generation). Not a server fault, so no error-level report.
+		return c.writeSpectrogramNotFound(ctx, err, spectrogramFailureReason(err))
+	case errors.Is(err, ErrInvalidAudioPath) || errors.Is(err, ErrPathTraversalAttempt):
+		// Handle path traversal or invalid path errors
+		return c.HandleError(ctx, err, "Invalid audio file path specified", http.StatusBadRequest)
+	case errors.Is(err, context.DeadlineExceeded):
+		return c.HandleError(ctx, err, "Spectrogram generation timed out", http.StatusRequestTimeout)
+	case errors.Is(err, context.Canceled):
+		// Use StatusClientClosedRequest (non-standard, but common for Nginx)
+		return c.HandleError(ctx, err, "Spectrogram generation canceled by client", StatusClientClosedRequest)
+	default:
+		if status, message, ok := spectrogramSourceStatus(err); ok {
+			// The clip cannot be rendered as it stands: unsupported, damaged, too long or
+			// too short. Not a server fault.
+			return c.HandleError(ctx, err, message, status)
+		}
+		// Default to internal server error for other generation failures
+		return c.HandleError(ctx, err, "Failed to generate spectrogram", http.StatusInternalServerError)
+	}
+}
+
+// Bounds of the legacy ?width= spectrogram parameter. The minimum comes from the
+// renderer so the two cannot drift apart.
+const (
+	minLegacySpectrogramWidth = soxchrome.MinWidth
+	maxLegacySpectrogramWidth = 2000
+)
+
+// msgInvalidSpectrogramWidth is the 400 message for a legacy width outside the bounds.
+var msgInvalidSpectrogramWidth = fmt.Sprintf("Spectrogram width must be between %d and %d pixels",
+	minLegacySpectrogramWidth, maxLegacySpectrogramWidth)
+
+// errInvalidSpectrogramWidth marks a legacy width parameter outside the supported bounds.
+var errInvalidSpectrogramWidth = errors.NewStd("spectrogram width out of range")
+
+// spectrogramRateParam is the query parameter carrying the clip sample rate (Hz)
+// the client labels its frequency axis with.
+const spectrogramRateParam = "sr"
+
+// spectrogramParameters holds parsed query parameters for spectrogram requests.
+// This struct is reusable across multiple endpoints.
+type spectrogramParameters struct {
+	width        int    // Pixel width for spectrogram
+	sizeStr      string // Size parameter value (for URL generation)
+	raw          bool   // Whether to generate raw spectrogram without axes
+	style        string // Visual style preset (from settings, used in filename to prevent stale cache)
+	dynamicRange string // Dynamic range in dB (from settings, used in filename to prevent stale cache)
+	overlayRate  int    // Clip sample rate (Hz) the client labels its axis with; > 0 selects exact-render-only serving, 0 when absent or invalid
+}
+
+// parseSpectrogramParameters extracts and validates spectrogram parameters from the request.
+// This is a reusable helper used by multiple endpoints. It returns an error wrapping
+// errInvalidSpectrogramWidth when the legacy width parameter is an integer outside
+// [minLegacySpectrogramWidth, maxLegacySpectrogramWidth]; callers answer 400.
+//
+// Parameters:
+//   - size: Spectrogram size - "md" (514px), "lg" (1026px), "xl" (2050px). Never rejected;
+//     an unknown value falls back to the default.
+//   - width: Legacy parameter for custom width (100-2000px). Ignored if 'size' is present.
+//     A value that is not an integer is ignored like an unknown size.
+//   - raw: Whether to generate raw spectrogram without axes/legends
+//   - sr: Clip sample rate in Hz that the client draws its frequency axis from. A
+//     positive integer makes the endpoint serve only the exact current render of the
+//     clip and never a substitute; anything else is ignored.
+//
+// Style and dynamic range are read from settings (not query params) because they are
+// global settings that affect the visual appearance of all spectrograms. Including them
+// in the filename prevents serving stale cached spectrograms when these settings change.
+func (c *Handler) parseSpectrogramParameters(ctx echo.Context) (spectrogramParameters, error) {
+	spec := c.CurrentSettings().Realtime.Dashboard.Spectrogram
+	params := spectrogramParameters{
+		width:        SpectrogramSizeLg, // Default width (lg) - single render size for all contexts
+		sizeStr:      ctx.QueryParam("size"),
+		raw:          parseRawParameter(ctx.QueryParam("raw")),
+		style:        spec.Style,
+		dynamicRange: spec.DynamicRange,
+	}
+	if rate, err := strconv.Atoi(ctx.QueryParam(spectrogramRateParam)); err == nil && rate > 0 {
+		params.overlayRate = rate
+	}
+
+	// Parse size parameter
+	if params.sizeStr != "" {
+		if validWidth, err := spectrogram.SizeToPixels(params.sizeStr); err == nil {
+			params.width = validWidth
+		}
+		// Invalid size parameter falls back to width parameter or default
+	}
+
+	// Legacy width parameter support (only if size not specified)
+	widthStr := ctx.QueryParam("width")
+	if widthStr != "" && params.sizeStr == "" {
+		if parsedWidth, err := strconv.Atoi(widthStr); err == nil {
+			if parsedWidth < minLegacySpectrogramWidth || parsedWidth > maxLegacySpectrogramWidth {
+				return params, fmt.Errorf("%w: %d", errInvalidSpectrogramWidth, parsedWidth)
+			}
+			params.width = parsedWidth
+		}
+	}
+
+	return params, nil
+}
+
+// validateNoteIDAndGetClipPath validates the note ID parameter and retrieves the clip path.
+// Returns the noteID and clipPath, or an error if validation fails. A failure writes its
+// error response itself, except for a note that exists but has no audio clip (the
+// repository's ErrNoClipPath, or an empty clip path): that returns an error matching
+// errNoClipForNote without writing a response, so the caller can still serve a kept
+// spectrogram or write the 404 with writeNoClip404.
+func (c *Handler) validateNoteIDAndGetClipPath(ctx echo.Context) (noteID, clipPath string, err error) {
+	// Defense in depth: initMediaRoutes already skips registering the ID-based media
+	// handlers when the datastore is disabled, but guard the c.DS dereference below
+	// anyway.
+	if err = c.RequireDatastore(ctx); err != nil {
+		return
+	}
+
+	noteID = ctx.Param("id")
+	if noteID == "" {
+		c.LogErrorIfEnabled("Missing note ID for spectrogram request",
+			logger.String("path", ctx.Request().URL.Path),
+			logger.String("ip", ctx.RealIP()))
+		err = fmt.Errorf("missing ID")
+		_ = c.HandleError(ctx, err, "Note ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Validate that the ID is numeric to prevent wildcard route collisions
+	if _, parseErr := strconv.ParseUint(noteID, 10, 64); parseErr != nil {
+		c.LogErrorIfEnabled("Non-numeric note ID for spectrogram request",
+			logger.String("note_id", noteID),
+			logger.String("path", ctx.Request().URL.Path),
+			logger.String("ip", ctx.RealIP()))
+		err = fmt.Errorf("invalid note ID: %s", noteID)
+		_ = c.HandleError(ctx, err, "Note ID must be a numeric value", http.StatusBadRequest)
+		return
+	}
+
+	clipPath, err = c.DS.GetNoteClipPath(noteID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNoClipPath) {
+			// The note exists but has no audio. Not an error response yet: the
+			// caller decides, since a kept spectrogram may still be served.
+			err = &noClipForNoteError{cause: err}
+			return
+		}
+		c.LogErrorIfEnabled("Failed to get clip path from database",
+			logger.String("note_id", noteID),
+			logger.Error(err),
+			logger.String("path", ctx.Request().URL.Path),
+			logger.String("ip", ctx.RealIP()))
+		if isClipNotFoundErr(err) {
+			_ = c.HandleError(ctx, err, "No audio clip available for this note", http.StatusNotFound)
+			return
+		}
+		_ = c.HandleError(ctx, err, "Failed to get clip path for note", http.StatusInternalServerError)
+		return
+	}
+
+	if clipPath == "" {
+		err = &noClipForNoteError{cause: fmt.Errorf("no audio file found for note %s", noteID)}
+		return
+	}
+
+	return
+}
+
+// handleUserRequestedMode handles spectrogram serving in user-requested mode.
+// Returns true if the request was handled (either success or error response sent).
+// When the exact spectrogram is missing and the audio file is gone too, it serves an
+// existing render of the clip (serveExistingRender) instead of the "not generated"
+// response, since generating from missing audio cannot succeed.
+func (c *Handler) handleUserRequestedMode(ctx echo.Context, noteID, clipPath string, params spectrogramParameters, freqSuffix string) (bool, error) {
+	// Normalize and validate the audio path
+	relAudioPath, err := c.resolveClipRel(clipPath)
+
+	if err == nil {
+		// Build spectrogram path
+		_, _, _, relSpectrogramPath := buildSpectrogramPaths(relAudioPath, params.width, params.raw, params.style, params.dynamicRange, freqSuffix)
+
+		// Check if spectrogram already exists and is non-empty
+		if statInfo, statErr := c.SFS.StatRel(relSpectrogramPath); statErr == nil && statInfo.Size() > 0 {
+			// Spectrogram exists, serve it with cache headers
+			c.LogDebugIfEnabled("Serving existing spectrogram in user-requested mode",
+				logger.String("note_id", noteID),
+				logger.String("spectrogram_path", relSpectrogramPath),
+				logger.String("path", ctx.Request().URL.Path),
+				logger.String("ip", ctx.RealIP()))
+
+			if serveErr := c.serveSpectrogramFile(ctx, relSpectrogramPath); serveErr != nil {
+				return true, c.translateSecureFSError(ctx, serveErr, msgServeSpectrogramFailed)
+			}
+			return true, nil
+		}
+
+		// The audio is gone (retention or an external delete not yet reflected in
+		// the database): serve an existing render of this clip rather than offering
+		// to generate one from audio that no longer exists.
+		if _, audioErr := c.SFS.StatRel(relAudioPath); errors.Is(audioErr, os.ErrNotExist) {
+			if served, serveErr := c.serveExistingRender(ctx, noteID, relAudioPath, params, freqSuffix); served {
+				return true, serveErr
+			}
+		}
+	}
+
+	// Spectrogram doesn't exist in user-requested mode - return 404 with helpful message
+	c.LogDebugIfEnabled("Spectrogram not found in user-requested mode",
+		logger.String("note_id", noteID),
+		logger.String("mode", conf.SpectrogramModeUserRequested),
+		logger.String("path", ctx.Request().URL.Path),
+		logger.String("ip", ctx.RealIP()))
+
+	return c.returnSpectrogramNotGeneratedError(ctx)
+}
+
+// returnSpectrogramNotGeneratedError returns a standardized 404 response for user-requested mode
+// when a spectrogram hasn't been generated yet.
+func (c *Handler) returnSpectrogramNotGeneratedError(ctx echo.Context) (bool, error) {
+	// Return JSON response with mode information using standard v2 error envelope.
+	// Flow: <img> element's onerror handler triggers -> frontend makes fetch() call to same URL
+	// -> this JSON response is parsed by frontend -> mode field triggers UI to show "Generate" button
+	// Note: The <img> element doesn't parse this JSON; the error handler's fetch() call does.
+	errorResp := c.NewErrorResponse(
+		fmt.Errorf("spectrogram not generated"),
+		"Spectrogram has not been generated yet. Click 'Generate Spectrogram' to create it.",
+		http.StatusNotFound)
+
+	// Log the error with structured logging
+	c.LogErrorIfEnabled("Spectrogram not generated",
+		logger.String("correlation_id", errorResp.CorrelationID),
+		logger.String("mode", conf.SpectrogramModeUserRequested),
+		logger.String("path", ctx.Request().URL.Path),
+		logger.String("ip", ctx.RealIP()))
+
+	// Return standard error response with mode in data field (API v2 envelope)
+	// Mode is placed in data object to maintain envelope consistency
+	return true, writeNotFoundWithData(ctx, errorResp, map[string]any{
+		"mode": conf.SpectrogramModeUserRequested,
+	})
+}
+
+// writeNotFoundWithData writes a 404 in the API v2 error envelope with data as its
+// "data" object.
+func writeNotFoundWithData(ctx echo.Context, errorResp *apicore.ErrorResponse, data map[string]any) error {
+	return ctx.JSON(http.StatusNotFound, map[string]any{
+		"error":          errorResp.Error,
+		"message":        errorResp.Message,
+		"code":           errorResp.Code,
+		"correlation_id": errorResp.CorrelationID,
+		"data":           data,
+	})
+}
+
+// writeSpectrogramNotFound answers 404 "Source audio file not found" with the reason in
+// data.reason, so a client that can read the body can tell a clip that is gone for good
+// (source_missing) from one that may still appear (source_pending). A missing source is
+// not a server fault, so it is logged at Debug, like writeAudioNotReady.
+func (c *Handler) writeSpectrogramNotFound(ctx echo.Context, err error, reason string) error {
+	errorResp := c.NewErrorResponse(err, msgSourceAudioNotFound, http.StatusNotFound)
+	c.LogDebugIfEnabled("Spectrogram source audio not found",
+		logger.String("correlation_id", errorResp.CorrelationID),
+		logger.String("reason", reason),
+		logger.String("path", ctx.Request().URL.Path),
+		logger.String("ip", ctx.RealIP()))
+	return writeNotFoundWithData(ctx, errorResp, map[string]any{"reason": reason})
+}
+
+// serveGoneSourceSpectrogram answers a by-ID spectrogram request without the audio wait
+// when the source clip is gone for good (clipGoneForGood): it serves a kept render of
+// the clip if there is one, else 404 with data.reason "source_missing". handled is
+// false, with nothing written, whenever the request needs the normal path: the path is
+// invalid, the clip is on disk (or its stat failed for another reason), the exact render
+// already exists (the generate fast path serves it), or the clip may still be written.
+// The datastore is touched only after the cheap file checks pass.
+func (c *Handler) serveGoneSourceSpectrogram(ctx echo.Context, noteID, clipPath string, params spectrogramParameters, freqSuffix string, times *captureTimes) (handled bool, err error) {
+	relAudioPath, pathErr := c.normalizeAndValidatePath(clipPath)
+	if pathErr != nil {
+		return false, nil //nolint:nilerr // not handled here: the normal path answers the invalid path as before
+	}
+	if _, statErr := c.SFS.StatRel(relAudioPath); !errors.Is(statErr, os.ErrNotExist) {
+		return false, nil
+	}
+	_, _, _, exact := buildSpectrogramPaths(relAudioPath, params.width, params.raw, params.style, params.dynamicRange, freqSuffix)
+	if info, statErr := c.SFS.StatRel(exact); statErr == nil && info.Mode().IsRegular() && info.Size() > 0 {
+		return false, nil
+	}
+	begin, end := c.captureTimesOnce(times, noteID)
+	if !c.clipGoneForGood(relAudioPath, begin, end) {
+		return false, nil
+	}
+	if served, serveErr := c.serveExistingRender(ctx, noteID, relAudioPath, params, freqSuffix); served {
+		return true, serveErr
+	}
+	return true, c.writeSpectrogramNotFound(ctx, ErrAudioFileNotFound, spectrogramReasonSourceMissing)
+}
+
+// handleAutoPreRenderMode handles spectrogram generation and serving in auto/prerender modes.
+func (c *Handler) handleAutoPreRenderMode(ctx echo.Context, noteID, clipPath string, params spectrogramParameters, freqSuffix string, extraOpts ...spectrogram.GenerateOption) error {
+	// A clip that can no longer appear is answered at once, without the audio wait.
+	var times captureTimes
+	if handled, goneErr := c.serveGoneSourceSpectrogram(ctx, noteID, clipPath, params, freqSuffix, &times); handled {
+		return goneErr
+	}
+
+	// Auto or prerender mode - generate on-demand if needed
+	generationStart := time.Now()
+	spectrogramPath, err := c.generateSpectrogram(ctx.Request().Context(), clipPath, params.width, params.raw, params.style, params.dynamicRange, freqSuffix, extraOpts...)
+	generationDuration := time.Since(generationStart)
+
+	if err != nil {
+		// Common log fields for both operational and genuine errors
+		logFields := []logger.Field{
+			logger.String("note_id", noteID),
+			logger.String("clip_path", clipPath),
+			logger.Error(err),
+			logger.Int64("duration_ms", generationDuration.Milliseconds()),
+			logger.String("path", ctx.Request().URL.Path),
+			logger.String("ip", ctx.RealIP()),
+		}
+
+		switch {
+		case spectrogram.IsOperationalError(err):
+			// Expected operational events (context canceled, timeout, etc.)
+			c.LogDebugIfEnabled("Spectrogram generation canceled or interrupted", logFields...)
+		case errors.Is(err, ErrAudioFileNotFound):
+			// The source clip is not on disk. If an Extended Capture export for this note
+			// is still pending, tell the client to retry (503 + Retry-After) rather than
+			// 404; the clip will land shortly. Emitted via the non-reporting path so it
+			// does not spam the error log, Sentry, or the bell. Otherwise the clip is
+			// genuinely missing (a reconcile ghost): Warn (not Error), and fall through to
+			// the 404 from spectrogramHTTPError.
+			begin, end := c.captureTimesOnce(&times, noteID)
+			if readyAt, deadline, ok := c.pendingExportWindow(begin, end); ok && time.Now().Before(deadline) {
+				return c.handleAudioPending(ctx, readyAt, logFields...)
+			}
+			// Retention may have removed the audio between its file deletion and its
+			// database update; serve a kept render of this clip when there is one.
+			if relClipPath, relErr := c.resolveClipRel(clipPath); relErr == nil {
+				if served, serveErr := c.serveExistingRender(ctx, noteID, relClipPath, params, freqSuffix); served {
+					return serveErr
+				}
+			}
+			c.LogWarnIfEnabled("Spectrogram generation skipped: source audio clip not available", logFields...)
+		case isSpectrogramNotReady(err):
+			// Still being written; the 503 below tells the client to retry.
+			c.LogDebugIfEnabled("Spectrogram generation deferred: audio clip not ready", logFields...)
+		case isSpectrogramSourceFailure(err):
+			c.LogWarnIfEnabled("Spectrogram generation skipped: source audio cannot be rendered", logFields...)
+		default:
+			// Unexpected failures (unreadable clip, render bug, etc.)
+			c.LogErrorIfEnabled("Spectrogram generation failed", logFields...)
+		}
+		return c.spectrogramHTTPError(ctx, err)
+	}
+
+	c.LogDebugIfEnabled("Spectrogram path determined",
+		logger.String("note_id", noteID),
+		logger.String("spectrogram_path", spectrogramPath),
+		logger.Int64("duration_ms", generationDuration.Milliseconds()),
+		logger.String("path", ctx.Request().URL.Path),
+		logger.String("ip", ctx.RealIP()))
+
+	// Serve the generated spectrogram using SecureFS with long-lived cache headers
+	serveStart := time.Now()
+	err = c.serveSpectrogramFile(ctx, spectrogramPath)
+	serveDuration := time.Since(serveStart)
+
+	if err != nil {
+		c.LogErrorIfEnabled("Failed to serve spectrogram file",
+			logger.String("note_id", noteID),
+			logger.String("spectrogram_path", spectrogramPath),
+			logger.Error(err),
+			logger.Int64("serve_duration_ms", serveDuration.Milliseconds()),
+			logger.String("path", ctx.Request().URL.Path),
+			logger.String("ip", ctx.RealIP()))
+		return c.translateSecureFSError(ctx, err, msgServeSpectrogramFailed)
+	}
+
+	c.LogDebugIfEnabled("Spectrogram served successfully",
+		logger.String("note_id", noteID),
+		logger.String("spectrogram_path", spectrogramPath),
+		logger.Int64("serve_duration_ms", serveDuration.Milliseconds()),
+		logger.Int64("total_duration_ms", time.Since(generationStart).Milliseconds()),
+		logger.String("path", ctx.Request().URL.Path),
+		logger.String("ip", ctx.RealIP()))
+	return nil
+}
+
+// ServeSpectrogramByID serves a spectrogram image based on note ID using SecureFS
+//
+// Route: GET /api/v2/spectrogram/:id
+//
+// Query Parameters:
+//   - size: Spectrogram size - "md" (514px), "lg" (1026px), "xl" (2050px)
+//     Default: "lg"
+//   - width: Legacy parameter for custom width (100-2000px). Ignored if 'size' is present.
+//     An integer outside that range answers 400.
+//   - raw: Whether to generate raw spectrogram without axes/legends
+//     Default: true (for backward compatibility with cached spectrograms)
+//     Accepts: "true", "false", "1", "0", "t", "f", "yes", "no", "on", "off"
+//   - sr: Clip sample rate in Hz the client draws its frequency axis from. A positive
+//     integer makes the endpoint serve only the exact current render of the clip:
+//     where only a substitute (for example an older render at another frequency
+//     range) exists, it answers 404 instead. Invalid or absent values are ignored.
+//     If the detection's model type cannot be looked up, an sr request answers 503
+//     with Retry-After rather than rendering with a guessed profile.
+//
+// Response Format:
+// The response format varies based on the spectrogram generation mode setting and availability.
+// Clients MUST check Content-Type header to handle the response correctly.
+//
+// 1. Success - Spectrogram exists (Auto/Prerender Mode or already generated):
+//   - Content-Type: image/png
+//   - Body: Binary PNG image data
+//   - Status: 200 OK
+//
+// 2. Error - User-Requested Mode (spectrogram not generated):
+//   - Content-Type: application/json
+//   - Status: 404 Not Found
+//   - Body (API v2 envelope):
+//     {
+//     "error": "spectrogram not generated",
+//     "message": "Spectrogram has not been generated yet. Click 'Generate Spectrogram' to create it.",
+//     "code": 404,
+//     "correlation_id": "abc12345",
+//     "data": {
+//     "mode": "user-requested"
+//     }
+//     }
+//
+// 3. Error - source audio clip missing (Auto/Prerender Mode, no render of the clip kept):
+//   - Content-Type: application/json
+//   - Status: 404 Not Found
+//   - Body (API v2 envelope):
+//     {
+//     "error": "...",
+//     "message": "Source audio file not found",
+//     "code": 404,
+//     "correlation_id": "abc12345",
+//     "data": {
+//     "reason": "source_missing"
+//     }
+//     }
+//   - data.reason is "source_missing" when the clip can no longer appear (the detection
+//     completed more than diskmanager.ClipRecencyWindow ago, no export is pending or
+//     encoding); the request is then answered at once. While the clip may still be
+//     written, the request first waits up to audioWaitTimeout and then answers with
+//     reason "source_pending" (or 503 with Retry-After when an export is pending).
+//   - The same 404 and message carry reason "render_failed" when the rendered image is
+//     missing after generation.
+//
+// IMPORTANT: Clients must check Content-Type header to determine response format:
+//   - image/png: Binary image data (display image)
+//   - application/json: Error response (handle error, show generate button if data.mode=user-requested,
+//     stop retrying if data.reason=source_missing)
+//
+// TODO: Consider adding a dedicated endpoint or format query parameter for cleaner API design:
+//
+//	Option A: GET /api/v2/spectrogram/:id/info - Returns JSON metadata including mode and status
+//	Option B: GET /api/v2/spectrogram/:id?format=json - Explicit format parameter
+//
+// This would eliminate Content-Type-based response type detection and provide a cleaner separation
+// between image serving and metadata/status queries.
+//
+// The raw parameter defaults to true to maintain compatibility with existing cached
+// spectrograms from the legacy UI, which generated raw spectrograms by default.
+//
+// Detections whose audio was removed by retention but whose spectrogram was kept have no
+// clip path; for those, and for a clip whose audio file is gone before the database caught
+// up, an existing render of the clip is served (see serveRetainedSpectrogram) and nothing
+// is generated.
+func (c *Handler) ServeSpectrogramByID(ctx echo.Context) error {
+	// Validate note ID and get clip path
+	noteID, clipPath, err := c.validateNoteIDAndGetClipPath(ctx)
+	if err != nil {
+		if errors.Is(err, errNoClipForNote) {
+			// Retention may have removed the audio but kept a spectrogram render.
+			return c.serveRetainedSpectrogram(ctx, noteID, err)
+		}
+		return err // Error already handled and logged
+	}
+
+	// Parse query parameters
+	params, err := c.parseSpectrogramParameters(ctx)
+	if err != nil {
+		return c.HandleError(ctx, err, msgInvalidSpectrogramWidth, http.StatusBadRequest)
+	}
+
+	// Resolve frequency profile from detection's model type. The same profile drives
+	// both the generation effects (profileOpt) and the cache filename token
+	// (freqSuffix) so a bat render never collides with a bird-profile PNG. The helper
+	// logs a warning and falls back to the bird profile when the lookup fails. A
+	// request that carries sr is the exception: its client labels the axis from the
+	// clip rate, so a guessed bird render would be cached under the wrong token and
+	// mislabelled. It gets a retryable 503 instead.
+	var profile spectrogram.FrequencyProfile
+	if params.overlayRate > 0 {
+		var lookupErr error
+		if profile, lookupErr = c.lookupFrequencyProfile(noteID); lookupErr != nil {
+			return c.writeProfileUnavailable(ctx, noteID, lookupErr)
+		}
+	} else {
+		profile = c.resolveDetectionFrequencyProfile(noteID)
+	}
+	profileOpt := spectrogram.WithFrequencyProfile(profile)
+	freqSuffix := spectrogram.ProfileSuffix(profile)
+
+	// Log request details
+	c.LogDebugIfEnabled("Spectrogram requested by ID",
+		logger.String("note_id", noteID),
+		logger.String("clip_path", clipPath),
+		logger.Int("width", params.width),
+		logger.Bool("raw", params.raw),
+		logger.String("size_param", params.sizeStr),
+		logger.String("freq_suffix", freqSuffix),
+		logger.String("path", ctx.Request().URL.Path),
+		logger.String("ip", ctx.RealIP()))
+
+	// Check spectrogram generation mode
+	spectrogramMode := c.CurrentSettings().Realtime.Dashboard.Spectrogram.GetMode()
+
+	// Handle user-requested mode
+	if spectrogramMode == conf.SpectrogramModeUserRequested {
+		handled, err := c.handleUserRequestedMode(ctx, noteID, clipPath, params, freqSuffix)
+		if handled {
+			return err
+		}
+	}
+
+	// Handle auto or prerender mode
+	return c.handleAutoPreRenderMode(ctx, noteID, clipPath, params, freqSuffix, profileOpt)
+}
+
+// ServeAudioByQueryID serves an audio clip using query parameter for ID
+func (c *Handler) ServeAudioByQueryID(ctx echo.Context) error {
+	noteID := ctx.QueryParam("id")
+	if noteID == "" {
+		return c.HandleError(ctx, fmt.Errorf("missing ID"), "Note ID is required as query parameter", http.StatusBadRequest)
+	}
+
+	// Delegate to the ID handler
+	ctx.SetParamNames("id")
+	ctx.SetParamValues(noteID)
+	return c.ServeAudioByID(ctx)
+}
+
+// ServeSpectrogram serves a spectrogram image by filename using SecureFS
+//
+// Route: GET /media/spectrogram/:filename
+//
+// Query Parameters:
+//   - size: Spectrogram size - "md" (514px), "lg" (1026px), "xl" (2050px)
+//     Default: "lg"
+//   - width: Legacy parameter for custom width (100-2000px). Ignored if 'size' is present.
+//     An integer outside that range answers 400.
+//   - raw: Whether to generate raw spectrogram without axes/legends
+//     Default: true (for backward compatibility with cached spectrograms)
+//     Accepts: "true", "false", "1", "0", "t", "f", "yes", "no", "on", "off"
+//
+// The raw parameter defaults to true to maintain compatibility with existing cached
+// spectrograms from the legacy UI, which generated raw spectrograms by default.
+func (c *Handler) ServeSpectrogram(ctx echo.Context) error {
+	filename := ctx.Param("filename")
+
+	params, err := c.parseSpectrogramParameters(ctx)
+	if err != nil {
+		return c.HandleError(ctx, err, msgInvalidSpectrogramWidth, http.StatusBadRequest)
+	}
+
+	// Pass the request context for cancellation/timeout. This filename route has no
+	// note/model context, so it always renders with the default bird profile (empty
+	// frequency suffix).
+	spectrogramPath, err := c.generateSpectrogram(ctx.Request().Context(), filename, params.width, params.raw, params.style, params.dynamicRange, "")
+	if err != nil {
+		return c.spectrogramHTTPError(ctx, err)
+	}
+
+	// Serve the generated spectrogram using SecureFS with cache headers
+	if err = c.serveSpectrogramFile(ctx, spectrogramPath); err != nil {
+		return c.translateSecureFSError(ctx, err, msgServeSpectrogramFailed)
+	}
+	return nil
+}
+
+// GetSpectrogramStatus returns the generation status of a spectrogram
+//
+// Route: GET /api/v2/spectrogram/:id/status
+//
+// Response Format (API v2 envelope):
+//
+//	{
+//	  "data": {
+//	    "status": "not_started|queued|generating|generated|failed|exists",
+//	    "queuePosition": 0,  // Position in queue (0 if not queued)
+//	    "startedAt": "2025-10-20T...",  // When generation started (if in progress)
+//	    "message": "Additional status information",
+//	    "reason": "not_generated|source_pending|source_missing|source_invalid|busy|render_failed"
+//	  },
+//	  "error": "",
+//	  "message": "Status retrieved successfully"
+//	}
+//
+// Status Values:
+//   - "not_started": Spectrogram generation has not been requested
+//   - "queued": Waiting in queue for generation slot
+//   - "generating": Currently being generated
+//   - "generated": Successfully generated (in queue cache)
+//   - "failed": Generation failed
+//   - "exists": Already exists on disk
+//
+// "reason" is present only when known, on "not_started" and "failed" answers:
+//   - "not_generated": (not_started) the source clip is on disk and no render exists
+//   - "source_pending": the source clip is not on disk but may still be written, or did
+//     not appear within the wait; retry later
+//   - "source_missing": the source clip is gone for good (see clipGoneForGood); stop
+//   - "source_invalid": (failed) the clip cannot be rendered; stop
+//   - "busy": (failed) generation was refused or interrupted by load, a deadline or
+//     cancellation; retry with backoff
+//   - "render_failed": (failed) any other generation failure
+//
+// A legacy width query value outside 100..2000 answers 400. It answers 503 with
+// Retry-After when the detection's model type cannot be looked up, rather than
+// checking for a file under a guessed profile.
+func (c *Handler) GetSpectrogramStatus(ctx echo.Context) error {
+	// Defense in depth: initMediaRoutes already skips registering this handler when the
+	// datastore is disabled, but guard the c.DS dereferences below anyway.
+	if err := c.RequireDatastore(ctx); err != nil {
+		return err
+	}
+
+	noteID := ctx.Param("id")
+	if noteID == "" {
+		return c.HandleError(ctx, fmt.Errorf("missing ID"), "Note ID is required", http.StatusBadRequest)
+	}
+
+	// Validate that the ID is numeric to prevent wildcard route collisions
+	if _, err := strconv.ParseUint(noteID, 10, 64); err != nil {
+		return c.HandleError(ctx, fmt.Errorf("invalid note ID: %s", noteID), "Note ID must be a numeric value", http.StatusBadRequest)
+	}
+
+	// Parse query parameters using shared helper
+	params, err := c.parseSpectrogramParameters(ctx)
+	if err != nil {
+		return c.HandleError(ctx, err, msgInvalidSpectrogramWidth, http.StatusBadRequest)
+	}
+
+	// Check queue status first (most volatile state). The in-memory queue is keyed
+	// by an immutable identifier (note ID + visual params), independent of the live
+	// Realtime.Audio.Export.Path, so an in-flight job is found even if the export
+	// path changed since it was enqueued. This deliberately runs before the
+	// export-path-dependent on-disk resolution below.
+	queueKey := buildSpectrogramQueueKey(noteID, params.width, params.raw, params.style, params.dynamicRange)
+	if statusValue, existsInQueue := spectrogramQueue.Load(queueKey); existsInQueue {
+		// Type-safe cast with check
+		status, ok := statusValue.(*SpectrogramQueueStatus)
+		if !ok {
+			getSpectrogramLogger().Error("Invalid queue status type",
+				logger.String("key", queueKey),
+				logger.String("type", fmt.Sprintf("%T", statusValue)))
+			return c.HandleError(ctx, fmt.Errorf("invalid queue status type for key %s", queueKey),
+				"Invalid status data type", http.StatusInternalServerError)
+		}
+		return ctx.JSON(http.StatusOK, map[string]any{
+			"data":    status.Get(), // Thread-safe snapshot
+			"error":   "",
+			"message": "Spectrogram generation status retrieved",
+		})
+	}
+
+	// Not in queue: fall back to an on-disk existence check at the current export
+	// path. Look the detection up only here (this also validates the note exists ->
+	// 404); an active poll takes the queue path above and never touches the DB.
+	detection, err := c.DS.Get(noteID)
+	if err != nil {
+		return c.HandleError(ctx, err, "Detection not found", http.StatusNotFound)
+	}
+
+	// The on-disk file is legitimately path-derived (Export.Path controls where it is
+	// stored), so this resolution uses the live settings snapshot.
+	audioPath := detection.ClipName
+	clipsPrefix := c.CurrentSettings().Realtime.Audio.Export.Path
+	normalizedPath := apicore.NormalizeClipPath(audioPath, clipsPrefix)
+	relAudioPath, err := c.SFS.ValidateRelativePath(normalizedPath)
+	if err != nil {
+		// Path validation failed - return not_started status
+		return ctx.JSON(http.StatusOK, map[string]any{
+			"data": map[string]any{
+				"status":        spectrogramStatusNotStarted,
+				"queuePosition": 0,
+				"message":       "Invalid audio path",
+			},
+			"error":   "",
+			"message": "Spectrogram generation not started",
+		})
+	}
+
+	// Resolve the profile token only after the queue miss (this path is about to stat
+	// the disk anyway), so queue-hit polls stay free of a model-type lookup.
+	// A failed lookup answers 503 rather than checking for a file under a guessed profile.
+	profile, lookupErr := c.lookupFrequencyProfile(noteID)
+	if lookupErr != nil {
+		return c.writeProfileUnavailable(ctx, noteID, lookupErr)
+	}
+	freqSuffix := spectrogram.ProfileSuffix(profile)
+	_, _, _, relSpectrogramPath := buildSpectrogramPaths(relAudioPath, params.width, params.raw, params.style, params.dynamicRange, freqSuffix)
+
+	// Check if file exists and is non-empty
+	if statInfo, err := c.SFS.StatRel(relSpectrogramPath); err == nil && statInfo.Size() > 0 {
+		return ctx.JSON(http.StatusOK, map[string]any{
+			"data": map[string]any{
+				"status":        spectrogramStatusExists,
+				"queuePosition": 0,
+				"message":       "Spectrogram already exists",
+			},
+			"error":   "",
+			"message": "Spectrogram exists on disk",
+		})
+	}
+
+	// Not in queue and doesn't exist on disk. The reason says whether the source clip
+	// is on disk, may still be written, or is gone, so clients can stop retrying.
+	data := map[string]any{
+		"status":        spectrogramStatusNotStarted,
+		"queuePosition": 0,
+		"message":       "Spectrogram generation not started",
+	}
+	if reason := c.unrenderedSourceReason(relAudioPath, detection.BeginTime, detection.EndTime); reason != "" {
+		data["reason"] = reason
+	}
+	return ctx.JSON(http.StatusOK, map[string]any{
+		"data":    data,
+		"error":   "",
+		"message": "Spectrogram not yet generated",
+	})
+}
+
+// runAsyncSpectrogramGeneration is the background worker spawned by
+// GenerateSpectrogramByID. It waits out any pending Extended Capture clip export before
+// generating, then records the outcome in the queue status and logs it: a clip that is
+// still being written at Debug, a clip that cannot be rendered at Warn, anything else at
+// Error. It is extracted from the handler so the handler stays under the
+// cognitive-complexity budget.
+func (c *Handler) runAsyncSpectrogramGeneration(noteID, clipPath, relAudioPath, queueKey string, params spectrogramParameters, freqSuffix string, profile spectrogram.FrequencyProfile) {
+	defer func() {
+		if r := recover(); r != nil {
+			if queueKey != "" {
+				failedStatus := &SpectrogramQueueStatus{}
+				failedStatus.Fail(spectrogramReasonRenderFailed, "Generation failed")
+				spectrogramQueue.Store(queueKey, failedStatus)
+				time.AfterFunc(failedStatusRetentionTime, func() {
+					deleteFailedStatusIfUnchanged(queueKey, failedStatus)
+				})
+			}
+			c.LogErrorIfEnabled("Panic in async spectrogram generation",
+				logger.String("note_id", noteID),
+				logger.Any("panic", r))
+		}
+	}()
+
+	// Generation runs on its own c.Context()-derived budget inside
+	// generateSpectrogramFromRel; bgCtx here bounds the caller-side wait and the
+	// pending-clip wait. If the source clip is not on disk yet, an Extended Capture
+	// export may still be writing its tail: resolve the export-ready window (one DS
+	// lookup, only on this cold path), extend the budget past it, and wait for the clip
+	// (bounded, cancellable on shutdown) before generating, instead of failing on a
+	// missing file. The lookup and wait are skipped when the clip already exists.
+	genTimeout := spectrogramGenerationTimeout
+	var pendingDeadline time.Time
+	if _, statErr := c.SFS.StatRel(relAudioPath); statErr != nil {
+		begin, end := c.noteCaptureTimes(noteID)
+		// A clip that cannot appear any more is reported at once instead of after the
+		// audio wait; a clip that may still be written takes the unchanged path below.
+		if errors.Is(statErr, os.ErrNotExist) && c.clipGoneForGood(relAudioPath, begin, end) {
+			c.failGoneSourceGeneration(noteID, clipPath, queueKey, statErr)
+			return
+		}
+		if _, deadline, ok := c.pendingExportWindow(begin, end); ok {
+			pendingDeadline = deadline
+			if extra := time.Until(pendingDeadline); extra > 0 {
+				genTimeout += extra
+			}
+		}
+	}
+
+	bgCtx, cancel := context.WithTimeout(c.Context(), genTimeout)
+	defer cancel()
+
+	if !pendingDeadline.IsZero() && time.Now().Before(pendingDeadline) {
+		if queueKey != "" {
+			c.updateQueueStatus(queueKey, spectrogramStatusQueued, 0, "Waiting for audio capture to complete")
+		}
+		waitStart := time.Now()
+		landed := c.waitForPendingClip(bgCtx, relAudioPath, pendingDeadline, pendingClipPollInterval)
+		getSpectrogramLogger().Debug("Waited for pending clip export before generating",
+			logger.String("note_id", noteID),
+			logger.String("relative_audio_path", relAudioPath),
+			logger.Bool("clip_landed", landed),
+			logger.Int64("waited_ms", time.Since(waitStart).Milliseconds()),
+			logger.Time("deadline", pendingDeadline))
+	}
+
+	profileOpt := spectrogram.WithFrequencyProfile(profile)
+
+	spectrogramPath, err := c.generateSpectrogramFromRel(bgCtx, relAudioPath, clipPath, queueKey, params.width, params.raw, params.style, params.dynamicRange, freqSuffix, profileOpt)
+	if err != nil {
+		if queueKey != "" {
+			c.failQueueStatus(queueKey, spectrogramFailureReason(err), "Generation failed")
+		}
+
+		logFields := []logger.Field{
+			logger.String("note_id", noteID),
+			logger.String("clip_path", clipPath),
+			logger.Error(err),
+		}
+		switch {
+		case spectrogram.IsOperationalError(err):
+			c.LogDebugIfEnabled("Async spectrogram generation canceled or interrupted", logFields...)
+		case errors.Is(err, ErrAudioFileNotFound):
+			// The source clip never landed within the pending window (extended-capture
+			// export abandoned on restart, or a reconcile ghost). Expected and
+			// self-describing, so Warn, not Error.
+			c.LogWarnIfEnabled("Async spectrogram generation skipped: audio clip not available", logFields...)
+		case isSpectrogramNotReady(err):
+			c.LogDebugIfEnabled("Async spectrogram generation deferred: audio clip not ready", logFields...)
+		case isSpectrogramSourceFailure(err):
+			c.LogWarnIfEnabled("Async spectrogram generation skipped: source audio cannot be rendered", logFields...)
+		default:
+			c.LogErrorIfEnabled("Async spectrogram generation failed", logFields...)
+		}
+		return
+	}
+
+	c.LogInfoIfEnabled("Async spectrogram generated successfully",
+		logger.String("note_id", noteID),
+		logger.String("spectrogram_path", spectrogramPath))
+}
+
+// failGoneSourceGeneration records a by-ID generation as failed with source_missing
+// because the clip cannot appear any more, starts the retention of the failed entry so
+// the status poll sees it, and logs at Warn like the after-wait path does.
+func (c *Handler) failGoneSourceGeneration(noteID, clipPath, queueKey string, statErr error) {
+	if queueKey != "" {
+		c.failQueueStatus(queueKey, spectrogramReasonSourceMissing, msgSourceAudioNotFound)
+		c.cleanupQueueStatus(queueKey)
+	}
+	c.LogWarnIfEnabled("Async spectrogram generation skipped: audio clip not available",
+		logger.String("note_id", noteID),
+		logger.String("clip_path", clipPath),
+		logger.Error(statErr))
+}
+
+// GenerateSpectrogramByID triggers spectrogram generation for a specific detection
+//
+// Route: POST /api/v2/spectrogram/:id/generate
+//
+// This endpoint is designed for "user-requested" mode where spectrograms are only
+// generated when explicitly requested by the user clicking a button in the UI.
+//
+// Query Parameters:
+//   - size: Spectrogram size - "md" (514px), "lg" (1026px), "xl" (2050px)
+//     Default: "lg"
+//   - raw: Whether to generate raw spectrogram without axes/legends
+//     Default: true (for backward compatibility)
+//
+// Response Format (API v2 envelope), for 200 when the spectrogram already exists:
+//
+//	{
+//	  "data": {
+//	    "status": "exists",
+//	    "path": "/api/v2/spectrogram/:id?raw=true"
+//	  },
+//	  "error": "",
+//	  "message": "Spectrogram already exists"
+//	}
+//
+// A 202 carries the queue status in "data"; poll the status endpoint for progress.
+// A generation failure is reported through the status endpoint, not by this handler.
+// That includes a source clip that is gone: the request still answers 202 and the
+// status endpoint then reports "failed" with reason "source_missing".
+//
+// HTTP Status Codes:
+//   - 200 OK: spectrogram already exists
+//   - 202 Accepted: generation queued or already in progress
+//   - 400 Bad Request: legacy width outside 100..2000
+//   - 404 Not Found: the detection has no audio clip
+//   - 503 Service Unavailable: the detection's model type could not be looked up
+//     (includes Retry-After header); nothing is queued or written
+func (c *Handler) GenerateSpectrogramByID(ctx echo.Context) error {
+	// Validate note ID and get clip path using shared helper
+	noteID, clipPath, err := c.validateNoteIDAndGetClipPath(ctx)
+	if err != nil {
+		if errors.Is(err, errNoClipForNote) {
+			return c.writeNoClip404(ctx, noteID, err)
+		}
+		return err // Error already handled and logged
+	}
+
+	// Parse query parameters using shared helper
+	params, err := c.parseSpectrogramParameters(ctx)
+	if err != nil {
+		return c.HandleError(ctx, err, msgInvalidSpectrogramWidth, http.StatusBadRequest)
+	}
+
+	// Log request details
+	c.LogDebugIfEnabled("Spectrogram generation requested by user",
+		logger.String("note_id", noteID),
+		logger.String("clip_path", clipPath),
+		logger.Int("width", params.width),
+		logger.Bool("raw", params.raw),
+		logger.String("size_param", params.sizeStr),
+		logger.String("path", ctx.Request().URL.Path),
+		logger.String("ip", ctx.RealIP()))
+
+	// Check if spectrogram already exists (fast path)
+	// Also compute the immutable queue key for status tracking
+	clipsPrefix := c.CurrentSettings().Realtime.Audio.Export.Path
+	normalizedPath := apicore.NormalizeClipPath(clipPath, clipsPrefix)
+	relAudioPath, err := c.SFS.ValidateRelativePath(normalizedPath)
+	if err != nil {
+		// Path validation failed - return error immediately before spawning goroutine
+		c.LogErrorIfEnabled("Invalid audio path for spectrogram generation",
+			logger.String("note_id", noteID),
+			logger.String("clip_path", clipPath),
+			logger.String("normalized_path", normalizedPath),
+			logger.Error(err))
+		return c.HandleError(ctx, err, "Invalid audio path", http.StatusBadRequest)
+	}
+
+	// Resolve the detection's frequency profile up front: it feeds both the cache
+	// filename/queue-key token (so a bat render does not collide with a bird PNG)
+	// and the generation options threaded into the async worker below. A failed
+	// lookup answers 503 instead of guessing: nothing is queued or written under a
+	// wrong profile.
+	profile, lookupErr := c.lookupFrequencyProfile(noteID)
+	if lookupErr != nil {
+		return c.writeProfileUnavailable(ctx, noteID, lookupErr)
+	}
+	freqSuffix := spectrogram.ProfileSuffix(profile)
+
+	// Build the spectrogram path (for the on-disk existence check) and the immutable
+	// queue key. The queue key is derived from the note ID and visual params, not the
+	// export-path-derived path, so GetSpectrogramStatus finds this in-flight job even
+	// if Realtime.Audio.Export.Path changes after enqueue.
+	_, _, _, relSpectrogramPath := buildSpectrogramPaths(relAudioPath, params.width, params.raw, params.style, params.dynamicRange, freqSuffix)
+	queueKey := buildSpectrogramQueueKey(noteID, params.width, params.raw, params.style, params.dynamicRange)
+
+	// Check if file already exists on disk and is non-empty
+	if statInfo, err := c.SFS.StatRel(relSpectrogramPath); err == nil && statInfo.Size() > 0 {
+		// Already exists, return immediately with generated status
+		queryParams := url.Values{}
+		sizeParam := params.sizeStr
+		if sizeParam == "" {
+			switch params.width {
+			case SpectrogramSizeSm:
+				sizeParam = "sm"
+			case SpectrogramSizeMd:
+				sizeParam = "md"
+			case SpectrogramSizeLg:
+				sizeParam = "lg"
+			case SpectrogramSizeXl:
+				sizeParam = "xl"
+			default:
+				sizeParam = "lg"
+			}
+		}
+		queryParams.Set("size", sizeParam)
+		queryParams.Set("raw", strconv.FormatBool(params.raw))
+		spectrogramURL := fmt.Sprintf("/api/v2/spectrogram/%s?%s", url.PathEscape(noteID), queryParams.Encode())
+
+		return ctx.JSON(http.StatusOK, map[string]any{
+			"data": map[string]any{
+				"status": spectrogramStatusExists,
+				"path":   spectrogramURL,
+			},
+			"error":   "",
+			"message": "Spectrogram already exists",
+		})
+	}
+
+	// Check if generation is already in progress (prevents spawning duplicate goroutines)
+	if statusValue, exists := spectrogramQueue.Load(queueKey); exists {
+		if status, ok := statusValue.(*SpectrogramQueueStatus); ok {
+			currentStatus := status.GetStatus()
+			if currentStatus == spectrogramStatusQueued || currentStatus == spectrogramStatusGenerating {
+				return ctx.JSON(http.StatusAccepted, map[string]any{
+					"data":    status.Get(),
+					"error":   "",
+					"message": "Generation already in progress",
+				})
+			}
+		}
+	}
+
+	// Initialize queue status BEFORE spawning goroutine (prevents "not_started" flicker)
+	c.initializeQueueStatus(queueKey)
+
+	// Snapshot the queued status BEFORE the worker starts (a gone clip fails the worker
+	// within microseconds, and the 202 body must keep saying queued). If we initialized
+	// queue status, return it; otherwise return a generic queued response.
+	responseData := map[string]any{
+		"status":        spectrogramStatusQueued,
+		"queuePosition": 0,
+		"message":       "Generation queued",
+	}
+	if queueKey != "" {
+		if statusValue, exists := spectrogramQueue.Load(queueKey); exists {
+			if status, ok := statusValue.(*SpectrogramQueueStatus); ok {
+				responseData = status.Get()
+			}
+		}
+	}
+
+	// Start async generation in background with proper cleanup and panic recovery.
+	// Track goroutine lifecycle for graceful shutdown. The body lives in a named method
+	// to keep this request handler's cognitive complexity in check.
+	c.Go(func() {
+		c.runAsyncSpectrogramGeneration(noteID, clipPath, relAudioPath, queueKey, params, freqSuffix, profile)
+	})
+
+	// Return 202 Accepted immediately - client should poll status endpoint
+	return ctx.JSON(http.StatusAccepted, map[string]any{
+		"data":    responseData,
+		"error":   "",
+		"message": "Generation request accepted. Poll /api/v2/spectrogram/:id/status for progress.",
+	})
+}
+
+// maxConcurrentSpectrograms limits concurrent spectrogram generations to the number of CPU cores.
+// This adapts automatically to the deployment hardware - 4 on Raspberry Pi 4/5, fewer on Pi Zero/3,
+// more on multi-core desktops - preventing CPU contention while utilizing available resources.
+// Memory is bounded separately: the native renderer's generator holds a byte budget
+// that makes renders of very long clips take turns (spectrogram.Generator).
+var maxConcurrentSpectrograms = runtime.NumCPU()
+
+// semaphoreAcquireTimeout is the maximum time to wait for a semaphore slot before timing out
+const semaphoreAcquireTimeout = 30 * time.Second
+
+// spectrogramRetryAfterSecondsInt is the default suggested retry delay in seconds for
+// spectrogram 503 responses when audio files are not yet ready, used by the
+// non-reporting not-ready emitter.
+const spectrogramRetryAfterSecondsInt = 2
+
+// Spectrogram generation timing and cache constants
+const (
+	spectrogramGenerationTimeout = 5 * time.Minute  // Max time for async spectrogram generation
+	spectrogramRetryDelay        = 2 * time.Second  // Default retry delay for validation errors
+	failedStatusRetentionTime    = 30 * time.Second // How long to retain failed statuses for polling
+	spectrogramVerifyRetries     = 3                // Number of verification retries after generation
+	spectrogramVerifyBaseDelay   = 50               // Base delay in milliseconds for verification retries
+)
+
+// maxConcurrentClipExtractions limits concurrent clip extractions to prevent CPU exhaustion.
+const maxConcurrentClipExtractions = 2
+
+var clipExtractionSemaphore = make(chan struct{}, maxConcurrentClipExtractions)
+
+var (
+	spectrogramSemaphore = make(chan struct{}, maxConcurrentSpectrograms)
+	spectrogramGroup     singleflight.Group // Prevents duplicate generations
+
+	// Track spectrogram generation queue status
+	// Using sync.Map for lock-free concurrent access (fixes race condition with multiple browsers)
+	spectrogramQueue sync.Map // map[string]*SpectrogramQueueStatus
+)
+
+// SpectrogramQueueStatus tracks the status of a spectrogram generation request
+// Thread-safe: uses internal mutex to prevent race conditions during concurrent updates
+type SpectrogramQueueStatus struct {
+	mu            sync.RWMutex
+	status        string    // "queued", "generating", "generated", "failed", "exists", "not_started"
+	queuePosition int       // Position in queue (0 if generating/generated)
+	startedAt     time.Time // When generation started
+	message       string    // Additional status message
+	reason        string    // spectrogramReason* value for a failed status, empty otherwise
+}
+
+// Update atomically updates all fields
+// Only sets startedAt when transitioning to "generating" state to preserve accurate timing
+func (s *SpectrogramQueueStatus) Update(status string, queuePos int, message string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Capture previous status to detect state transitions
+	previousStatus := s.status
+
+	// Update fields
+	s.status = status
+	s.queuePosition = queuePos
+	s.message = message
+	s.reason = "" // any transition clears a stale failure reason
+
+	// Only set startedAt when transitioning into "generating" state
+	// This preserves accurate generation start time across multiple updates
+	if status == spectrogramStatusGenerating &&
+		(previousStatus != spectrogramStatusGenerating || s.startedAt.IsZero()) {
+		s.startedAt = time.Now()
+	}
+}
+
+// Fail atomically marks the status failed with the given spectrogramReason* value and
+// message.
+func (s *SpectrogramQueueStatus) Fail(reason, message string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status = spectrogramStatusFailed
+	s.queuePosition = 0
+	s.message = message
+	s.reason = reason
+}
+
+// Get returns a snapshot of the current status (safe for JSON marshaling). The
+// "reason" key is present only when a reason is known, so queued and generating
+// snapshots are unchanged.
+func (s *SpectrogramQueueStatus) Get() map[string]any {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	snapshot := map[string]any{
+		"status":        s.status,
+		"queuePosition": s.queuePosition,
+		"startedAt":     s.startedAt,
+		"message":       s.message,
+	}
+	if s.reason != "" {
+		snapshot["reason"] = s.reason
+	}
+	return snapshot
+}
+
+// GetStatus returns just the status string (thread-safe)
+func (s *SpectrogramQueueStatus) GetStatus() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.status
+}
+
+// getSpectrogramLogger returns a module-scoped logger for spectrogram generation operations.
+// This ensures consistent structured logging across all spectrogram-related code.
+func getSpectrogramLogger() logger.Logger {
+	return logger.Global().Module("spectrogram")
+}
+
+// resolveDetectionFrequencyProfile resolves a detection's spectrogram frequency
+// profile from its model type, defaulting to the bird profile when the model
+// type cannot be looked up. Do not use it where a wrong profile would be persisted
+// or reported; use lookupFrequencyProfile there.
+func (c *Handler) resolveDetectionFrequencyProfile(noteID string) spectrogram.FrequencyProfile {
+	profile, err := c.lookupFrequencyProfile(noteID)
+	if err != nil {
+		c.LogWarnIfEnabled("GetNoteModelType failed, defaulting to bird profile",
+			logger.String("note_id", noteID),
+			logger.Error(err))
+	}
+	return profile
+}
+
+// lookupFrequencyProfile returns the frequency profile for a detection's model type.
+// On a failed lookup it returns the bird profile together with the error, so a
+// caller that must not render with a guessed profile can refuse.
+func (c *Handler) lookupFrequencyProfile(noteID string) (spectrogram.FrequencyProfile, error) {
+	modelType, err := c.DS.GetNoteModelType(noteID)
+	return spectrogram.ProfileForModelType(modelType), err
+}
+
+// msgSpectrogramProfileUnavailable is the 503 message returned when a detection's
+// model type cannot be looked up and the request must not guess a profile.
+const msgSpectrogramProfileUnavailable = "Spectrogram profile is not available yet, please retry"
+
+// writeProfileUnavailable answers a retryable 503 with Retry-After when the model
+// type lookup failed and the caller must not render or report under a guessed
+// profile. It logs at Debug only, so a transient database error does not reach the
+// error log, Sentry or the notification bell. Used by the by-ID serve (sr requests),
+// generate and status handlers.
+func (c *Handler) writeProfileUnavailable(ctx echo.Context, noteID string, err error) error {
+	c.LogDebugIfEnabled("Model type lookup failed, not guessing the spectrogram profile",
+		logger.String("note_id", noteID),
+		logger.Error(err))
+	return c.writeAudioNotReady(ctx, err, msgSpectrogramProfileUnavailable, minRetryAfterSeconds)
+}
+
+// buildSpectrogramPaths constructs the spectrogram file paths from the audio path and parameters.
+// It returns the base filename, audio directory, spectrogram filename, and full relative spectrogram path.
+//
+// The style and dynamicRange parameters are embedded in the filename to prevent serving
+// stale cached spectrograms when visual settings change. For backward compatibility,
+// the default style ("default") and default dynamic range ("100"/empty) produce the same
+// filename format as before (no style/DR suffix).
+func buildSpectrogramPaths(relAudioPath string, width int, raw bool, style, dynamicRange, freqSuffix string) (relBaseFilename, relAudioDir, spectrogramFilename, relSpectrogramPath string) {
+	// Get the base filename and directory relative to the secure root
+	relBaseFilename = strings.TrimSuffix(filepath.Base(relAudioPath), filepath.Ext(relAudioPath))
+	relAudioDir = filepath.Dir(relAudioPath)
+
+	// Build style suffix for non-default visual settings.
+	// Default style ("default" or empty) and default dynamic range ("100" or empty)
+	// produce no suffix for backward compatibility with existing cached spectrograms.
+	styleSuffix := buildStyleSuffix(style, dynamicRange)
+
+	// Append the frequency-profile token (e.g. "bat-v3") so renders made with a
+	// non-default profile get a distinct filename and do not collide with an
+	// existing bird-profile PNG. Bird (empty token) keeps the legacy filename.
+	if freqSuffix != "" {
+		styleSuffix += "-" + freqSuffix
+	}
+
+	// Generate spectrogram filename with style suffix
+	if raw {
+		// Raw spectrograms use format: filename_1026px.png (default) or filename_1026px-scientific_dark.png
+		spectrogramFilename = fmt.Sprintf("%s_%dpx%s.png", relBaseFilename, width, styleSuffix)
+	} else {
+		// Spectrograms with legends: filename_1026px-legend.png (default) or filename_1026px-scientific_dark-legend.png
+		spectrogramFilename = fmt.Sprintf("%s_%dpx%s-legend.png", relBaseFilename, width, styleSuffix)
+	}
+
+	// Since we're constructing the spectrogram path from an already-validated audio path
+	// and appending a simple formatted filename, we can safely construct the path without
+	// re-validating. The path components are all known to be safe.
+	relSpectrogramPath = filepath.Join(relAudioDir, spectrogramFilename)
+
+	return relBaseFilename, relAudioDir, spectrogramFilename, relSpectrogramPath
+}
+
+// buildStyleSuffix returns a filename suffix encoding visual style settings.
+// Returns empty string for default settings (backward compatibility).
+// Examples: "" (default), "-scientific_dark", "-scientific_dark-dr80"
+func buildStyleSuffix(style, dynamicRange string) string {
+	isDefaultStyle := style == "" || style == conf.SpectrogramStyleDefault
+	isDefaultDR := dynamicRange == "" || dynamicRange == conf.SpectrogramDynamicRangeStandard
+
+	if isDefaultStyle && isDefaultDR {
+		return ""
+	}
+
+	var suffix string
+	if !isDefaultStyle {
+		suffix = "-" + style
+	}
+	if !isDefaultDR {
+		suffix += "-dr" + dynamicRange
+	}
+	return suffix
+}
+
+// buildSpectrogramKey generates a consistent unique key for spectrogram queue management.
+// This key is used to track generation status across POST /generate and GET /status endpoints.
+// Format: "path:width:raw" (e.g., "clips/2025/01/audio_123.wav:400:true")
+func buildSpectrogramKey(relSpectrogramPath string, width int, raw bool) string {
+	return fmt.Sprintf("%s:%d:%t", relSpectrogramPath, width, raw)
+}
+
+// buildSpectrogramQueueKey builds the in-memory queue key used to track spectrogram
+// generation status for the by-ID endpoints. Unlike buildSpectrogramKey it is derived
+// from the immutable note ID and the visual parameters, never from the export-path-derived
+// spectrogram path. This keeps GenerateSpectrogramByID (enqueue), the async worker, and
+// GetSpectrogramStatus (poll) agreeing on the same key even if Realtime.Audio.Export.Path
+// changes mid-flight: Export.Path only controls where the file is stored, not the
+// artifact's identity, so it must not influence the queue key. The style suffix is reused
+// from buildStyleSuffix so two requests that map to the same on-disk file share one queue
+// entry (default style and dynamic range produce no suffix, just like the on-disk filename).
+// Format: "noteID:width:raw<styleSuffix>" (e.g. "42:1026:true" or "42:1026:true-scientific_dark").
+// The frequency profile is intentionally omitted: a note has a single model type, so the
+// (note ID + visual params) key already identifies one logical artifact. Keeping the profile
+// out of the key lets GetSpectrogramStatus answer queue hits without a model-type lookup.
+func buildSpectrogramQueueKey(noteID string, width int, raw bool, style, dynamicRange string) string {
+	return fmt.Sprintf("%s:%d:%t%s", noteID, width, raw, buildStyleSuffix(style, dynamicRange))
+}
+
+// normalizeAndValidatePath handles path normalization and validation
+func (c *Handler) normalizeAndValidatePath(audioPath string) (string, error) {
+	// Pass nil since spectrogram context has its own logging via getSpectrogramLogger()
+	return c.normalizeAndValidatePathWithLogger(audioPath, nil)
+}
+
+// normalizeAndValidatePathWithLogger is a reusable helper for path normalization and validation.
+// It combines the common pattern of:
+// 1. Getting the clips prefix from settings
+// 2. Normalizing the path
+// 3. Checking for empty/invalid results
+// 4. Validating with SecureFS
+//
+// This reduces duplication across the codebase where this pattern is used.
+func (c *Handler) normalizeAndValidatePathWithLogger(audioPath string, log logger.Logger) (string, error) {
+	clipsPrefix := c.CurrentSettings().Realtime.Audio.Export.Path
+	normalizedPath := apicore.NormalizeClipPath(audioPath, clipsPrefix)
+
+	if log != nil && normalizedPath != audioPath {
+		log.Debug("Normalized audio path",
+			logger.String("original_path", audioPath),
+			logger.String("normalized_path", normalizedPath),
+			logger.String("clips_prefix", clipsPrefix))
+	}
+
+	if normalizedPath == "" {
+		if log != nil {
+			log.Warn("Invalid audio path detected",
+				logger.String("original_path", audioPath),
+				logger.String("clips_prefix", clipsPrefix))
+		}
+		return "", fmt.Errorf("%w: empty normalized path", ErrInvalidAudioPath)
+	}
+
+	relAudioPath, err := c.SFS.ValidateRelativePath(normalizedPath)
+	if err != nil {
+		if errors.Is(err, securefs.ErrPathTraversal) {
+			return "", fmt.Errorf("%w: %w", ErrPathTraversalAttempt, err)
+		}
+		return "", fmt.Errorf("%w: %w", ErrInvalidAudioPath, err)
+	}
+
+	return relAudioPath, nil
+}
+
+// checkSpectrogramExists performs fast path check for existing spectrogram
+func (c *Handler) checkSpectrogramExists(relSpectrogramPath, queueKey string, start time.Time) (bool, error) {
+	getSpectrogramLogger().Debug("Fast path check: checking if spectrogram exists",
+		logger.String("queue_key", queueKey),
+		logger.String("relative_spectrogram_path", relSpectrogramPath))
+
+	// Build absolute path for direct filesystem check
+	absSpectrogramPath := filepath.Join(c.SFS.BaseDir(), relSpectrogramPath)
+
+	// Try direct filesystem check first (more reliable)
+	if statInfo, err := os.Stat(absSpectrogramPath); err == nil {
+		if statInfo.Size() == 0 {
+			// Remove 0-byte spectrogram left by a failed/interrupted generation
+			getSpectrogramLogger().Warn("Removing 0-byte spectrogram file",
+				logger.String("queue_key", queueKey),
+				logger.String("abs_path", absSpectrogramPath))
+			_ = os.Remove(absSpectrogramPath)
+		} else {
+			getSpectrogramLogger().Debug("Fast path HIT via direct check: spectrogram already exists",
+				logger.String("queue_key", queueKey),
+				logger.String("abs_path", absSpectrogramPath),
+				logger.Int64("file_size", statInfo.Size()),
+				logger.Any("mod_time", statInfo.ModTime()),
+				logger.Int64("total_duration_ms", time.Since(start).Milliseconds()))
+			return true, nil
+		}
+	}
+
+	// Fallback to SecureFS check (for consistency with security model)
+	if statInfo, err := c.SFS.StatRel(relSpectrogramPath); err == nil {
+		if statInfo.Size() == 0 {
+			// Remove 0-byte spectrogram left by a failed/interrupted generation
+			getSpectrogramLogger().Warn("Removing 0-byte spectrogram file (SecureFS)",
+				logger.String("queue_key", queueKey))
+			_ = os.Remove(absSpectrogramPath)
+		} else {
+			getSpectrogramLogger().Debug("Fast path HIT via SecureFS: spectrogram already exists",
+				logger.String("queue_key", queueKey),
+				logger.Int64("file_size", statInfo.Size()),
+				logger.Any("mod_time", statInfo.ModTime()),
+				logger.Int64("total_duration_ms", time.Since(start).Milliseconds()))
+			return true, nil
+		}
+	} else if !os.IsNotExist(err) {
+		getSpectrogramLogger().Debug("Fast path: unexpected error checking existing spectrogram",
+			logger.String("queue_key", queueKey),
+			logger.Error(err))
+	} else {
+		getSpectrogramLogger().Debug("Fast path MISS: spectrogram does not exist",
+			logger.String("queue_key", queueKey),
+			logger.String("abs_path", absSpectrogramPath))
+	}
+
+	return false, nil
+}
+
+// updateQueueStatus updates the spectrogram generation queue status (thread-safe)
+func (c *Handler) updateQueueStatus(queueKey, status string, queuePos int, message string) {
+	// Using sync.Map for lock-free lookups + struct mutex for safe updates
+	if statusValue, exists := spectrogramQueue.Load(queueKey); exists {
+		if queueStatus, ok := statusValue.(*SpectrogramQueueStatus); ok {
+			queueStatus.Update(status, queuePos, message) // Thread-safe update
+		} else {
+			getSpectrogramLogger().Error("Invalid queue status type in update",
+				logger.String("key", queueKey),
+				logger.String("type", fmt.Sprintf("%T", statusValue)))
+		}
+	}
+}
+
+// failQueueStatus marks the queue entry for queueKey failed with a reason (thread-safe).
+// Like updateQueueStatus it does nothing when the entry is absent.
+func (c *Handler) failQueueStatus(queueKey, reason, message string) {
+	if statusValue, exists := spectrogramQueue.Load(queueKey); exists {
+		if queueStatus, ok := statusValue.(*SpectrogramQueueStatus); ok {
+			queueStatus.Fail(reason, message)
+		} else {
+			getSpectrogramLogger().Error("Invalid queue status type in fail",
+				logger.String("key", queueKey),
+				logger.String("type", fmt.Sprintf("%T", statusValue)))
+		}
+	}
+}
+
+// waitForPendingClip polls for a not-yet-written audio clip to appear on disk, up to
+// deadline, returning true if it appeared. Unlike waitForAudioFileCtx (a short fixed
+// wait for the export race), this covers the longer Extended Capture deferral
+// window, so it is only called from the async generation goroutine, which holds no HTTP
+// worker. It returns promptly on ctx cancellation (shutdown) so it never hangs a tracked
+// goroutine. pollInterval is a parameter so tests can drive it with a short real interval.
+func (c *Handler) waitForPendingClip(ctx context.Context, relAudioPath string, deadline time.Time, pollInterval time.Duration) bool {
+	// Fast path: already present.
+	if _, err := c.SFS.StatRel(relAudioPath); err == nil {
+		return true
+	}
+
+	waitCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-waitCtx.Done():
+			// Final check in case the clip landed between the last tick and the deadline.
+			_, err := c.SFS.StatRel(relAudioPath)
+			return err == nil
+		case <-ticker.C:
+			if _, err := c.SFS.StatRel(relAudioPath); err == nil {
+				return true
+			}
+		}
+	}
+}
+
+// checkAudioFileExists verifies the audio file exists
+func (c *Handler) checkAudioFileExists(relAudioPath string) error {
+	getSpectrogramLogger().Debug("Checking if audio file exists",
+		logger.String("relative_audio_path", relAudioPath))
+
+	audioStat, err := c.SFS.StatRel(relAudioPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			getSpectrogramLogger().Debug("Audio file does not exist",
+				logger.String("relative_audio_path", relAudioPath),
+				logger.Error(err))
+			return fmt.Errorf("%w: %w (path: %s)", ErrAudioFileNotFound, err, relAudioPath)
+		}
+		getSpectrogramLogger().Debug("Error checking audio file",
+			logger.String("relative_audio_path", relAudioPath),
+			logger.Error(err))
+		return fmt.Errorf("error checking audio file '%s': %w", relAudioPath, err)
+	}
+	getSpectrogramLogger().Debug("Audio file exists",
+		logger.String("relative_audio_path", relAudioPath),
+		logger.Int64("size_bytes", audioStat.Size()),
+		logger.String("mod_time", audioStat.ModTime().Format(time.DateTime)))
+	return nil
+}
+
+// audioWaitDuration is the server-side wait for an audio clip that is still being
+// written. Production leaves audioWaitTimeoutOverride at zero and uses audioWaitTimeout;
+// tests inject a short timeout to exercise the timeout paths without the full wait.
+func (c *Handler) audioWaitDuration() time.Duration {
+	if c.audioWaitTimeoutOverride > 0 {
+		return c.audioWaitTimeoutOverride
+	}
+	return audioWaitTimeout
+}
+
+// waitForAudioFileCtx polls for an audio file to appear on disk, using a context
+// for cancellation. This covers the race window where the detection DB record is
+// committed and SSE is broadcast before the async SaveAudioAction writes the file.
+// It uses the same timeout and poll interval as the audio serving wait logic
+// (audioWaitTimeout / audioWaitPollInterval); audioWaitTimeoutOverride, zero in
+// production, shortens the timeout for tests.
+// Returns nil if the file appeared, or the original not-found error otherwise.
+func (c *Handler) waitForAudioFileCtx(ctx context.Context, relAudioPath string) error {
+	// Immediate check - avoid waiting if file already exists.
+	if _, err := c.SFS.StatRel(relAudioPath); err == nil {
+		return nil
+	}
+
+	waitStart := time.Now()
+	waitCtx, cancel := context.WithTimeout(ctx, c.audioWaitDuration())
+	defer cancel()
+
+	ticker := time.NewTicker(audioWaitPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-waitCtx.Done():
+			// Final check before giving up - the file may have appeared
+			// between the last tick and the deadline.
+			if _, err := c.SFS.StatRel(relAudioPath); err == nil {
+				getSpectrogramLogger().Debug("Audio file appeared after waiting",
+					logger.String("relative_audio_path", relAudioPath),
+					logger.Int64("waited_ms", time.Since(waitStart).Milliseconds()))
+				return nil
+			}
+			// Distinguish a genuine "file never appeared" from a canceled/timed-out
+			// PARENT context (shutdown, client disconnect, or the generation deadline):
+			// waitCtx.Done() fires for both, but only the local audioWaitTimeout means
+			// the clip is actually missing. Returning the context error keeps callers
+			// from misclassifying an operational cancellation as ErrAudioFileNotFound
+			// (which would log the shutdown at Warn instead of Debug).
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			getSpectrogramLogger().Debug("Audio file did not appear within wait timeout",
+				logger.String("relative_audio_path", relAudioPath),
+				logger.Duration("timeout", c.audioWaitDuration()),
+				logger.Int64("waited_ms", time.Since(waitStart).Milliseconds()))
+			return fmt.Errorf("%w: %w (path: %s)", ErrAudioFileNotFound, os.ErrNotExist, relAudioPath)
+		case <-ticker.C:
+			if _, err := c.SFS.StatRel(relAudioPath); err == nil {
+				getSpectrogramLogger().Debug("Audio file appeared after waiting",
+					logger.String("relative_audio_path", relAudioPath),
+					logger.Int64("waited_ms", time.Since(waitStart).Milliseconds()))
+				return nil
+			}
+		}
+	}
+}
+
+// initializeQueueStatus initializes the queue tracking for a spectrogram request
+// Optimized to minimize lock hold time - calculation done outside lock, only write is locked
+func (c *Handler) initializeQueueStatus(queueKey string) {
+	// Step 1: Calculate queue position OUTSIDE the lock to minimize contention
+	currentSlotsInUse := len(spectrogramSemaphore)
+
+	// Log current semaphore state for debugging
+	getSpectrogramLogger().Debug("Checking semaphore availability",
+		logger.String("queue_key", queueKey),
+		logger.Int("current_slots_in_use", currentSlotsInUse),
+		logger.Int("max_concurrent", maxConcurrentSpectrograms),
+		logger.Bool("semaphore_full", currentSlotsInUse >= maxConcurrentSpectrograms))
+
+	var queuePosition int
+	if currentSlotsInUse >= maxConcurrentSpectrograms {
+		// All slots are taken, need to count waiting requests
+		// Use sync.Map.Range for lock-free iteration
+		waitingCount := 0
+		spectrogramQueue.Range(func(key, value any) bool {
+			if status, ok := value.(*SpectrogramQueueStatus); ok {
+				if status.GetStatus() == spectrogramStatusQueued {
+					waitingCount++
+				}
+			}
+			return true // continue iteration
+		})
+		queuePosition = waitingCount + 1
+	} else {
+		// Slot is available, will run immediately
+		queuePosition = 0
+	}
+
+	// Step 2: Create and store status in sync.Map (lock-free operation)
+	status := &SpectrogramQueueStatus{}
+	status.Update(spectrogramStatusQueued, queuePosition, "Waiting for generation slot")
+	spectrogramQueue.Store(queueKey, status)
+}
+
+// cleanupQueueStatus removes the queue entry for a spectrogram request
+// Failed statuses are retained briefly (30s) so polling clients can see the error
+func (c *Handler) cleanupQueueStatus(queueKey string) {
+	// Check if this is a failed status that should be retained temporarily
+	if statusValue, ok := spectrogramQueue.Load(queueKey); ok {
+		if status, ok := statusValue.(*SpectrogramQueueStatus); ok {
+			if status.GetStatus() == spectrogramStatusFailed {
+				// Keep failed status for a brief period so clients can poll and see the error,
+				// then delete only the original failed entry (a retry may re-enqueue a fresh,
+				// active entry under the same key within the window; see deleteFailedStatusIfUnchanged).
+				time.AfterFunc(failedStatusRetentionTime, func() {
+					deleteFailedStatusIfUnchanged(queueKey, statusValue)
+				})
+				return
+			}
+		}
+	}
+
+	// For non-failed statuses (success, exists, etc.), delete immediately
+	spectrogramQueue.Delete(queueKey)
+}
+
+// deleteFailedStatusIfUnchanged removes a retained failed queue entry after its TTL,
+// but only if the same entry is still present. CompareAndDelete guards against a retry
+// that re-enqueued the same key within the retention window: that retry stores a fresh,
+// active entry, and this stale timer must not delete it (which would send polling clients
+// back to "not_started" mid-generation).
+func deleteFailedStatusIfUnchanged(queueKey string, original any) {
+	if spectrogramQueue.CompareAndDelete(queueKey, original) {
+		getSpectrogramLogger().Debug("Cleaned up failed spectrogram status after TTL",
+			logger.String("queue_key", queueKey))
+	}
+}
+
+// acquireSemaphoreSlot acquires a semaphore slot for spectrogram generation
+// With timeout handling to prevent indefinite blocking
+func (c *Handler) acquireSemaphoreSlot(ctx context.Context, queueKey string) error {
+	slotsInUseBeforeAcquire := len(spectrogramSemaphore)
+	availableSlots := maxConcurrentSpectrograms - slotsInUseBeforeAcquire
+
+	getSpectrogramLogger().Debug("Attempting to acquire semaphore slot",
+		logger.String("queue_key", queueKey),
+		logger.Int("slots_in_use", slotsInUseBeforeAcquire),
+		logger.Int("slots_available", availableSlots),
+		logger.Int("max_concurrent", maxConcurrentSpectrograms))
+
+	// Add explicit timeout for semaphore acquisition
+	waitStart := time.Now()
+	timeoutCtx, cancel := context.WithTimeout(ctx, semaphoreAcquireTimeout)
+	defer cancel()
+
+	select {
+	case spectrogramSemaphore <- struct{}{}:
+		// Successfully acquired a slot
+		slotsInUseAfterAcquire := len(spectrogramSemaphore)
+		slotsStillAvailable := maxConcurrentSpectrograms - slotsInUseAfterAcquire
+
+		getSpectrogramLogger().Debug("Semaphore slot acquired successfully",
+			logger.String("queue_key", queueKey),
+			logger.Int("slots_now_in_use", slotsInUseAfterAcquire),
+			logger.Int("slots_still_available", slotsStillAvailable),
+			logger.Int("max_concurrent", maxConcurrentSpectrograms),
+			logger.Int64("waited_ms", time.Since(waitStart).Milliseconds()))
+
+		c.updateQueueStatus(queueKey, spectrogramStatusGenerating, 0, "Generating spectrogram")
+		return nil
+
+	case <-timeoutCtx.Done():
+		err := timeoutCtx.Err()
+		if err == context.DeadlineExceeded {
+			getSpectrogramLogger().Warn("Timeout waiting for semaphore slot",
+				logger.String("queue_key", queueKey),
+				logger.Int("timeout_seconds", int(semaphoreAcquireTimeout.Seconds())),
+				logger.Int("slots_in_use", len(spectrogramSemaphore)),
+				logger.Int64("waited_ms", time.Since(waitStart).Milliseconds()))
+			c.failQueueStatus(queueKey, spectrogramReasonBusy, "Request timeout - server busy, please retry")
+			return fmt.Errorf("timeout waiting for generation slot: %w", err)
+		}
+
+		getSpectrogramLogger().Debug("Context canceled while waiting for semaphore",
+			logger.String("queue_key", queueKey),
+			logger.Error(err),
+			logger.Int64("waited_ms", time.Since(waitStart).Milliseconds()))
+
+		c.failQueueStatus(queueKey, spectrogramReasonBusy, "Generation canceled")
+		return err
+	}
+}
+
+// performSpectrogramGeneration executes the actual spectrogram generation logic
+func (c *Handler) performSpectrogramGeneration(ctx context.Context, relSpectrogramPath, absAudioPath, absSpectrogramPath, queueKey string, width int, raw bool, extraOpts ...spectrogram.GenerateOption) (any, error) {
+	// Fast path inside the group - now race-free
+	getSpectrogramLogger().Debug("Inside singleflight group, double-checking if spectrogram exists",
+		logger.String("queue_key", queueKey))
+
+	// Try direct filesystem check first (more reliable)
+	if statInfo, err := os.Stat(absSpectrogramPath); err == nil {
+		if statInfo.Size() > 0 {
+			getSpectrogramLogger().Debug("Spectrogram already exists via direct check (race condition avoided)",
+				logger.String("abs_spectrogram_path", absSpectrogramPath),
+				logger.String("queue_key", queueKey))
+			return spectrogramStatusExists, nil
+		}
+		// 0-byte file: remove and regenerate
+		getSpectrogramLogger().Warn("Removing 0-byte spectrogram before regeneration",
+			logger.String("abs_spectrogram_path", absSpectrogramPath))
+		_ = os.Remove(absSpectrogramPath)
+	}
+
+	// Fallback to SecureFS check
+	if statInfo, err := c.SFS.StatRel(relSpectrogramPath); err == nil {
+		if statInfo.Size() > 0 {
+			getSpectrogramLogger().Debug("Spectrogram already exists via SecureFS (race condition avoided)",
+				logger.String("spectrogram_path", relSpectrogramPath),
+				logger.String("queue_key", queueKey))
+			return spectrogramStatusExists, nil
+		}
+		// 0-byte file: remove and regenerate
+		getSpectrogramLogger().Warn("Removing 0-byte spectrogram before regeneration (SecureFS)",
+			logger.String("spectrogram_path", relSpectrogramPath))
+		_ = os.Remove(absSpectrogramPath)
+	} else if !os.IsNotExist(err) {
+		getSpectrogramLogger().Debug("Error checking existing spectrogram in singleflight",
+			logger.String("spectrogram_path", relSpectrogramPath),
+			logger.Error(err))
+		return nil, fmt.Errorf("error checking for existing spectrogram '%s': %w", relSpectrogramPath, err)
+	}
+
+	getSpectrogramLogger().Debug("Starting actual spectrogram generation (file does not exist)",
+		logger.String("queue_key", queueKey),
+		logger.String("abs_audio_path", absAudioPath),
+		logger.String("abs_spectrogram_path", absSpectrogramPath),
+		logger.Int("width", width),
+		logger.Bool("raw", raw))
+
+	// Note: Directory creation is handled by the shared generator
+
+	// Log when we're about to start actual generation
+	getSpectrogramLogger().Info("Starting spectrogram render",
+		logger.String("queue_key", queueKey),
+		logger.Int("semaphore_slots_in_use", len(spectrogramSemaphore)),
+		logger.Int("max_slots", maxConcurrentSpectrograms))
+
+	if err := c.renderSpectrogram(ctx, absAudioPath, absSpectrogramPath, queueKey, width, raw, extraOpts...); err != nil {
+		return nil, err
+	}
+
+	getSpectrogramLogger().Info("Completed spectrogram render",
+		logger.String("queue_key", queueKey),
+		logger.Int("semaphore_slots_in_use", len(spectrogramSemaphore)),
+		logger.Int("max_slots", maxConcurrentSpectrograms))
+
+	// Verify the spectrogram file exists with retries for filesystem sync delays
+	if err := c.verifySpectrogramFile(absSpectrogramPath, relSpectrogramPath); err != nil {
+		return nil, err
+	}
+
+	return spectrogramStatusGenerated, nil
+}
+
+// verifySpectrogramFile checks that a spectrogram file exists with retries for filesystem sync delays.
+// It tries direct filesystem and SecureFS checks with exponential backoff.
+func (c *Handler) verifySpectrogramFile(absPath, relPath string) error {
+	var statErr error
+	for i := range spectrogramVerifyRetries {
+		// Try direct filesystem check first (more reliable for newly created files)
+		if statInfo, err := os.Stat(absPath); err == nil {
+			if statInfo.Size() == 0 {
+				getSpectrogramLogger().Warn("Generated spectrogram is 0 bytes, removing",
+					logger.String("abs_spectrogram_path", absPath), logger.Int("attempt", i+1))
+				_ = os.Remove(absPath)
+				statErr = fmt.Errorf("generated spectrogram is 0 bytes")
+				break
+			}
+			getSpectrogramLogger().Debug("Spectrogram verified via direct filesystem check",
+				logger.String("abs_spectrogram_path", absPath), logger.Int("attempt", i+1))
+			return nil
+		} else if !os.IsNotExist(err) {
+			statErr = err
+			break // Unexpected error, don't retry
+		}
+
+		// Try SecureFS check (may work better after delay)
+		var statInfo os.FileInfo
+		statInfo, statErr = c.SFS.StatRel(relPath)
+		if statErr == nil {
+			if statInfo.Size() == 0 {
+				getSpectrogramLogger().Warn("Generated spectrogram is 0 bytes (SecureFS), removing",
+					logger.String("rel_spectrogram_path", relPath), logger.Int("attempt", i+1))
+				_ = os.Remove(absPath)
+				statErr = fmt.Errorf("generated spectrogram is 0 bytes")
+				break
+			}
+			getSpectrogramLogger().Debug("Spectrogram verified via SecureFS",
+				logger.String("rel_spectrogram_path", relPath), logger.Int("attempt", i+1))
+			return nil
+		}
+		if !os.IsNotExist(statErr) {
+			break // Unexpected error, don't retry
+		}
+
+		if i < spectrogramVerifyRetries-1 {
+			time.Sleep(time.Duration((i+1)*spectrogramVerifyBaseDelay) * time.Millisecond)
+			getSpectrogramLogger().Debug("Retrying spectrogram verification",
+				logger.String("abs_path", absPath), logger.String("rel_path", relPath), logger.Int("retry_attempt", i+1))
+		}
+	}
+
+	// Final direct check as last resort
+	if _, finalErr := os.Stat(absPath); finalErr == nil {
+		getSpectrogramLogger().Info("Spectrogram found via final direct check after SecureFS failed",
+			logger.String("abs_spectrogram_path", absPath))
+		return nil
+	}
+
+	getSpectrogramLogger().Error("Generated spectrogram missing after successful command",
+		logger.String("rel_spectrogram_path", relPath), logger.String("abs_spectrogram_path", absPath), logger.Any("securefs_error", statErr))
+	return fmt.Errorf("%w: spectrogram file missing after generation: %w", ErrSpectrogramGeneration, statErr)
+}
+
+// renderSpectrogram renders a spectrogram with the shared generator and logs a failure at the level its kind deserves
+func (c *Handler) renderSpectrogram(ctx context.Context, absAudioPath, absSpectrogramPath, queueKey string, width int, raw bool, extraOpts ...spectrogram.GenerateOption) error {
+	generationStart := time.Now()
+
+	getSpectrogramLogger().Debug("Starting spectrogram generation via shared generator",
+		logger.String("queue_key", queueKey),
+		logger.String("abs_audio_path", absAudioPath),
+		logger.Int("width", width),
+		logger.Bool("raw", raw))
+
+	if err := c.spectrogramGenerator.GenerateFromFile(ctx, absAudioPath, absSpectrogramPath, width, raw, extraOpts...); err != nil {
+		// Check if this is an expected operational error (context canceled, interrupted render)
+		// These are normal events during shutdown, timeout, or resource management
+		switch {
+		case spectrogram.IsOperationalError(err):
+			// Log at Debug level for expected operational events
+			getSpectrogramLogger().Debug("Spectrogram generation canceled or interrupted",
+				logger.String("queue_key", queueKey),
+				logger.Error(err),
+				logger.Int64("duration_ms", time.Since(generationStart).Milliseconds()),
+				logger.String("abs_audio_path", absAudioPath),
+				logger.String("abs_spectrogram_path", absSpectrogramPath))
+		case isSpectrogramNotReady(err):
+			getSpectrogramLogger().Debug("Spectrogram generation deferred: audio clip not ready",
+				logger.String("queue_key", queueKey),
+				logger.Error(err),
+				logger.String("abs_audio_path", absAudioPath))
+		case isSpectrogramSourceFailure(err):
+			getSpectrogramLogger().Warn("Spectrogram generation skipped: source audio cannot be rendered",
+				logger.String("queue_key", queueKey),
+				logger.Error(err),
+				logger.String("abs_audio_path", absAudioPath))
+		default:
+			// Log at Error level for unexpected failures
+			getSpectrogramLogger().Error("Spectrogram generation failed",
+				logger.String("queue_key", queueKey),
+				logger.Error(err),
+				logger.Int64("duration_ms", time.Since(generationStart).Milliseconds()),
+				logger.String("abs_audio_path", absAudioPath),
+				logger.String("abs_spectrogram_path", absSpectrogramPath))
+		}
+		return err
+	}
+
+	getSpectrogramLogger().Debug("Spectrogram generation completed via shared generator",
+		logger.String("queue_key", queueKey),
+		logger.String("abs_audio_path", absAudioPath),
+		logger.Int64("generation_duration_ms", time.Since(generationStart).Milliseconds()))
+	return nil
+}
+
+// generateSpectrogram creates a spectrogram image for the given audio file path (relative to SecureFS root).
+// It accepts a context for cancellation and timeout.
+// It returns the relative path to the generated spectrogram, suitable for use with c.SFS.ServeFile.
+// Optimized: Fast path check happens before expensive audio validation.
+//
+// It normalizes audioPath against the live Realtime.Audio.Export.Path and then
+// delegates to generateSpectrogramFromRel. Callers that have already validated
+// the relative path at a request boundary (e.g. GenerateSpectrogramByID) must
+// call generateSpectrogramFromRel directly and thread that path in, so the queue
+// key cannot drift if Export.Path changes mid-flight.
+func (c *Handler) generateSpectrogram(ctx context.Context, audioPath string, width int, raw bool, style, dynamicRange, freqSuffix string, extraOpts ...spectrogram.GenerateOption) (string, error) {
+	// Step 1: Normalize and validate path
+	relAudioPath, err := c.normalizeAndValidatePath(audioPath)
+	if err != nil {
+		return "", err
+	}
+	// Serve-flow callers pass an empty queueKey on purpose: generateSpectrogramFromRel
+	// falls back to the path-based key for both queue tracking and singleflight
+	// coalescing, so their failures (including a not-ready 503) never show as failed
+	// on the by-ID status, which reads only the note-ID-based key.
+	return c.generateSpectrogramFromRel(ctx, relAudioPath, audioPath, "", width, raw, style, dynamicRange, freqSuffix, extraOpts...)
+}
+
+// generateSpectrogramFromRel generates a spectrogram for an already normalized,
+// SecureFS-validated relative audio path. It derives the on-disk spectrogram path
+// purely from relAudioPath, so callers that resolved that path at a request boundary
+// get a stable on-disk location regardless of later Realtime.Audio.Export.Path changes.
+//
+// The in-memory queue is tracked under queueKey. By-ID callers pass an immutable,
+// note-ID-derived key (buildSpectrogramQueueKey) so GenerateSpectrogramByID (enqueue),
+// this worker, and GetSpectrogramStatus (poll) agree on the same entry even if
+// Export.Path changes mid-flight. An empty queueKey falls back to the path-based
+// buildSpectrogramKey, which is also used as the singleflight coalescing key so that
+// concurrent requests for the same on-disk file still share one generation pass.
+// audioPath is retained only for log and error context. After a fresh render with a
+// non-empty freqSuffix it also removes, best-effort, the default-profile file and the
+// files of any token that suffix supersedes (spectrogram.SupersededSuffixesForToken).
+func (c *Handler) generateSpectrogramFromRel(ctx context.Context, relAudioPath, audioPath, queueKey string, width int, raw bool, style, dynamicRange, freqSuffix string, extraOpts ...spectrogram.GenerateOption) (string, error) {
+	start := time.Now()
+	getSpectrogramLogger().Debug("Spectrogram generation requested",
+		logger.String("audio_path", audioPath),
+		logger.String("relative_audio_path", relAudioPath),
+		logger.Int("width", width),
+		logger.Bool("raw", raw),
+		logger.String("style", style),
+		logger.String("dynamic_range", dynamicRange),
+		logger.String("request_time", start.Format(time.DateTime)))
+
+	// Step 2: Calculate spectrogram paths early (needed for fast path check)
+	relBaseFilename, relAudioDir, spectrogramFilename, relSpectrogramPath := buildSpectrogramPaths(relAudioPath, width, raw, style, dynamicRange, freqSuffix)
+
+	getSpectrogramLogger().Debug("Spectrogram path constructed",
+		logger.String("audio_path", audioPath),
+		logger.String("audio_ext", filepath.Ext(relAudioPath)),
+		logger.String("base_filename", relBaseFilename),
+		logger.String("audio_dir", relAudioDir),
+		logger.String("spectrogram_filename", spectrogramFilename),
+		logger.String("relative_spectrogram_path", relSpectrogramPath),
+		logger.Int("width", width),
+		logger.Bool("raw", raw))
+
+	// singleflightKey coalesces concurrent generations of the same on-disk file and is
+	// always path-based so by-ID and serve-flow requests for one file share a pass.
+	// queueKey tracks status: by-ID callers pass an immutable note-ID-based key; others
+	// fall back to the path-based key (no external status poller in that case).
+	singleflightKey := buildSpectrogramKey(relSpectrogramPath, width, raw)
+	if queueKey == "" {
+		queueKey = singleflightKey
+	}
+
+	// Step 3: Fast path - Check if spectrogram already exists (cheap os.Stat, OK before singleflight)
+	exists, err := c.checkSpectrogramExists(relSpectrogramPath, queueKey, start)
+	if err != nil {
+		return "", err
+	}
+	if exists {
+		return relSpectrogramPath, nil
+	}
+
+	// Absolute paths needed for generation
+	absAudioPath := filepath.Join(c.SFS.BaseDir(), relAudioPath)
+	absSpectrogramPath := filepath.Join(c.SFS.BaseDir(), relSpectrogramPath)
+
+	// Track this request in the queue
+	c.initializeQueueStatus(queueKey)
+
+	// Clean up queue entry on exit
+	defer c.cleanupQueueStatus(queueKey)
+
+	// Use singleflight to coalesce duplicate requests for the same spectrogram.
+	// Audio validation and generation run inside the group so that concurrent
+	// requests share a single readiness check and generation pass.
+	getSpectrogramLogger().Debug("Starting singleflight generation",
+		logger.String("queue_key", queueKey),
+		logger.String("singleflight_key", singleflightKey))
+
+	// Use DoChan so callers can bail out early if their request context is
+	// cancelled (e.g. client disconnect) without blocking the handler goroutine.
+	// The shared work continues in the background using the controller-scoped
+	// context (c.Context()) and the next request will hit the fast path. Coalesce on the
+	// path-based singleflightKey so requests targeting the same on-disk file share
+	// one generation pass regardless of how each derived its queueKey.
+	resultCh := spectrogramGroup.DoChan(singleflightKey, func() (any, error) {
+		// Use a controller-scoped context with timeout instead of the request-scoped ctx.
+		// Since singleflight shares the result across all concurrent callers, using a
+		// request-scoped context would cause all waiters to fail if the winning request's
+		// client disconnects. The controller context (c.Context()) respects server shutdown
+		// but is not tied to any individual HTTP request.
+		sharedCtx, sharedCancel := context.WithTimeout(c.Context(), spectrogramGenerationTimeout)
+		defer sharedCancel()
+
+		// Step 4: Wait for audio file to appear on disk. The detection DB record and
+		// SSE broadcast happen before the async SaveAudioAction writes the file, so
+		// we poll instead of doing an instant check. This uses the same timeout and
+		// interval as the audio serving endpoint (audioWaitTimeout / audioWaitPollInterval).
+		if err := c.waitForAudioFileCtx(sharedCtx, relAudioPath); err != nil {
+			return nil, err
+		}
+
+		// Step 5: Validate the audio file with the pure-Go readiness check.
+		// Running inside singleflight ensures only one check per unique spectrogram key.
+		sourceState, err := validateNativeSpectrogramInput(sharedCtx, absAudioPath, audioPath, queueKey)
+		if err != nil {
+			return nil, err
+		}
+		// The generator re-checks the file against the state readiness judged, so a
+		// clip that grew while it waited for a slot or decoded is not published as a
+		// short image. A new slice keeps the caller's backing array unwritten.
+		genOpts := append(slices.Clip(extraOpts), spectrogram.WithSourceState(sourceState))
+
+		getSpectrogramLogger().Debug("Proceeding with spectrogram generation",
+			logger.String("queue_key", queueKey),
+			logger.String("abs_audio_path", absAudioPath),
+			logger.String("abs_spectrogram_path", absSpectrogramPath),
+			logger.Int("width", width),
+			logger.Bool("raw", raw))
+
+		// Acquire semaphore inside singleflight - only the actual worker gets a slot
+		if err := c.acquireSemaphoreSlot(sharedCtx, queueKey); err != nil {
+			return nil, err
+		}
+		defer func() {
+			slotsBeforeRelease := len(spectrogramSemaphore)
+			<-spectrogramSemaphore
+			slotsAfterRelease := len(spectrogramSemaphore)
+			getSpectrogramLogger().Debug("Semaphore slot released",
+				logger.String("queue_key", queueKey),
+				logger.Int("slots_before_release", slotsBeforeRelease),
+				logger.Int("slots_after_release", slotsAfterRelease),
+				logger.Int("slots_now_available", maxConcurrentSpectrograms-slotsAfterRelease),
+				logger.Int64("total_duration_ms", time.Since(start).Milliseconds()))
+		}()
+		generated, genErr := c.performSpectrogramGeneration(sharedCtx, relSpectrogramPath, absAudioPath, absSpectrogramPath, queueKey, width, raw, genOpts...)
+		if errors.Is(genErr, spectrogram.ErrSourceChanged) {
+			// Not-ready, so the client gets a 503 with Retry-After and nothing is cached.
+			return nil, notReadyError(genErr)
+		}
+		return generated, genErr
+	})
+
+	// Wait for either the singleflight result or caller's context cancellation.
+	// If the caller's context is done (client disconnect), return immediately;
+	// the shared generation work continues in the background.
+	var shared bool
+	select {
+	case result := <-resultCh:
+		shared = result.Shared
+		err = result.Err
+	case <-ctx.Done():
+		getSpectrogramLogger().Debug("Caller context cancelled while waiting for spectrogram generation",
+			logger.String("queue_key", queueKey),
+			logger.Error(ctx.Err()),
+			logger.Int64("total_duration_ms", time.Since(start).Milliseconds()))
+		return "", ctx.Err()
+	}
+
+	if shared {
+		getSpectrogramLogger().Info("Spectrogram request coalesced via singleflight (duplicate avoided)",
+			logger.String("queue_key", queueKey),
+			logger.Int64("total_duration_ms", time.Since(start).Milliseconds()))
+	}
+
+	if err != nil {
+		// Mark the queue entry failed BEFORE returning so the deferred cleanupQueueStatus
+		// retains it for the polling window. Otherwise cleanup deletes the still-"generating"
+		// entry on the way out and a polling client sees "not_started" instead of the error.
+		c.failQueueStatus(queueKey, spectrogramFailureReason(err), "Generation failed")
+
+		getSpectrogramLogger().Debug("Spectrogram generation failed",
+			logger.String("queue_key", queueKey),
+			logger.Bool("shared", shared),
+			logger.Error(err),
+			logger.Int64("total_duration_ms", time.Since(start).Milliseconds()))
+		return "", fmt.Errorf("failed to generate spectrogram: %w", err)
+	}
+
+	getSpectrogramLogger().Debug("Spectrogram generation completed successfully",
+		logger.String("queue_key", queueKey),
+		logger.String("relative_spectrogram_path", relSpectrogramPath),
+		logger.Bool("shared", shared),
+		logger.Int64("total_duration_ms", time.Since(start).Milliseconds()))
+
+	// A non-default frequency profile (e.g. bat) just wrote a distinct "-<profile>"
+	// filename. Remove the stale default-profile PNG for the same clip/params so the
+	// old bird-profile image (e.g. one cached while the bat gate was disabled) is not
+	// left orphaned alongside the new one. Best-effort: a missing file is fine.
+	if freqSuffix != "" {
+		c.removeStaleRender(relAudioPath, width, raw, style, dynamicRange, "")
+	}
+
+	// A superseded profile token (e.g. bat-v2 and bat for bat-v3) left renders with
+	// a different frequency range next to the new one. Remove them the same way.
+	for _, oldSuffix := range spectrogram.SupersededSuffixesForToken(freqSuffix) {
+		c.removeStaleRender(relAudioPath, width, raw, style, dynamicRange, oldSuffix)
+	}
+
+	// Return the relative path of the newly created spectrogram
+	return relSpectrogramPath, nil
+}
+
+// removeStaleRender removes, best-effort, the render of the clip that carries
+// staleSuffix instead of the current profile token (callers pass a suffix that
+// differs from the one just written). A missing file is fine.
+func (c *Handler) removeStaleRender(relAudioPath string, width int, raw bool, style, dynamicRange, staleSuffix string) {
+	_, _, _, staleRel := buildSpectrogramPaths(relAudioPath, width, raw, style, dynamicRange, staleSuffix)
+	if rmErr := c.SFS.Remove(filepath.Join(c.SFS.BaseDir(), staleRel)); rmErr != nil && !os.IsNotExist(rmErr) {
+		getSpectrogramLogger().Debug("Failed to remove stale spectrogram render",
+			logger.String("path", staleRel),
+			logger.Error(rmErr))
+	}
+}
+
+// GetSpeciesImage serves an image for a bird species by scientific name
+func (c *Handler) GetSpeciesImage(ctx echo.Context) error {
+	scientificName := ctx.QueryParam("name")
+	if scientificName == "" {
+		return c.HandleError(ctx, fmt.Errorf("missing scientific name"), "Scientific name is required", http.StatusBadRequest)
+	}
+
+	// Trim whitespace to prevent empty strings with spaces
+	scientificName = strings.TrimSpace(scientificName)
+	if scientificName == "" {
+		return c.HandleError(ctx, fmt.Errorf("scientific name contains only whitespace"), "Valid scientific name is required", http.StatusBadRequest)
+	}
+
+	// Delegate to the proxy handler by setting the param
+	ctx.SetParamNames("scientific_name")
+	ctx.SetParamValues(scientificName)
+	return c.ServeSpeciesImageProxy(ctx)
+}
+
+// GetSpeciesImageInfo returns attribution metadata for a species image as JSON
+func (c *Handler) GetSpeciesImageInfo(ctx echo.Context) error {
+	scientificName := ctx.QueryParam("name")
+	if scientificName == "" {
+		return c.HandleError(ctx, fmt.Errorf("missing scientific name"), "Scientific name is required", http.StatusBadRequest)
+	}
+
+	scientificName = strings.TrimSpace(scientificName)
+	if scientificName == "" {
+		return c.HandleError(ctx, fmt.Errorf("scientific name contains only whitespace"), "Valid scientific name is required", http.StatusBadRequest)
+	}
+
+	cache := c.BirdImageCache
+	if cache == nil {
+		return c.HandleError(ctx, ErrImageProviderNotAvailable, "Image service unavailable", http.StatusServiceUnavailable)
+	}
+
+	birdImage, found, negative := cache.GetCached(scientificName)
+	switch {
+	case negative:
+		return c.respondImageNotFound(ctx)
+	case !found:
+		cache.PrefetchAsync(scientificName)
+		return c.respondImagePendingJSON(ctx, scientificName)
+	}
+
+	ctx.Response().Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", ImageCacheSeconds))
+
+	return ctx.JSON(http.StatusOK, map[string]string{
+		"authorName":     birdImage.AuthorName,
+		"authorURL":      birdImage.AuthorURL,
+		"licenseName":    birdImage.LicenseName,
+		"licenseURL":     birdImage.LicenseURL,
+		"sourceProvider": birdImage.SourceProvider,
+	})
+}
+
+// respondImageNotFound answers "this species has no image", cacheable by the browser.
+// A cached 404 is what keeps a species that genuinely has no image from re-requesting
+// on every render, and it is what makes the client-side retry cheap: the retry is
+// served from the browser's own HTTP cache without reaching the network.
+func (c *Handler) respondImageNotFound(ctx echo.Context) error {
+	ctx.Response().Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", NotFoundCacheSeconds))
+	return c.HandleError(ctx, imageprovider.ErrImageNotFound, "Image not found for species", http.StatusNotFound)
+}
+
+// respondImagePending answers "not yet, try again shortly" for a species whose image
+// is being resolved on a background goroutine.
+//
+// Deliberately not routed through HandleError: that reports every status >= 500 to
+// Sentry, and a cold dashboard requesting thirty uncached thumbnails would emit
+// thirty events for what is ordinary first-load behaviour.
+//
+// no-store is load-bearing. It is the only thing that distinguishes this response
+// from the cacheable 404 above for a client that cannot read a status code from an
+// <img> error event: a retry of a pending image reaches the server, a retry of a
+// missing image does not.
+func (c *Handler) respondImagePending(ctx echo.Context, scientificName string) error {
+	return c.respondImagePendingWithBody(ctx, scientificName, false)
+}
+
+// respondImagePendingJSON is respondImagePending for the JSON metadata endpoint, which
+// returns the project-standard ErrorResponse body so a client parsing every response
+// as JSON gets a document to back off on rather than a parse error.
+func (c *Handler) respondImagePendingJSON(ctx echo.Context, scientificName string) error {
+	return c.respondImagePendingWithBody(ctx, scientificName, true)
+}
+
+func (c *Handler) respondImagePendingWithBody(ctx echo.Context, scientificName string, withJSONBody bool) error {
+	c.LogDebugIfEnabled("Species image not cached yet, background fetch scheduled",
+		logger.String("scientific_name", scientificName))
+	header := ctx.Response().Header()
+	header.Set("Retry-After", strconv.Itoa(ImagePendingRetryAfterSeconds))
+	header.Set("Cache-Control", "no-store")
+	if withJSONBody {
+		return ctx.JSON(http.StatusServiceUnavailable,
+			c.NewErrorResponse(ErrImageNotResolvedYet, "Image is not resolved yet", http.StatusServiceUnavailable))
+	}
+	return ctx.NoContent(http.StatusServiceUnavailable)
+}
+
+// ServeSpeciesImageProxy serves a cached bird image by scientific name.
+//
+// The proxy is a hard boundary: it serves bytes from the local cache or it says
+// "not found" / "not yet", but it never redirects a client to the upstream image
+// host. That keeps every consumer (browser, MQTT subscriber, notification target)
+// pointed at one URL whose availability this process controls.
+//
+// It never contacts an image provider on the request goroutine. BirdImageCache.Get
+// is uncancellable and, for a cold species, bounded only by the provider's retry and
+// rate-limit budget (worst case minutes); running it here is what froze the UI, since
+// ~30 queued thumbnail requests also exhaust the browser's per-host connection
+// budget and starve unrelated API calls and the SSE stream. A cold miss instead
+// schedules a background fetch and returns 503 immediately.
+//
+// Route: GET /media/image/:scientific_name
+// Route: GET /media/bird-image/:scientific_name (alias)
+func (c *Handler) ServeSpeciesImageProxy(ctx echo.Context) error {
+	scientificName, err := url.PathUnescape(ctx.Param("scientific_name"))
+	if err != nil {
+		return c.HandleError(ctx, fmt.Errorf("invalid scientific name encoding"), "Invalid species name", http.StatusBadRequest)
+	}
+
+	scientificName = strings.TrimSpace(scientificName)
+	if scientificName == "" {
+		return c.HandleError(ctx, fmt.Errorf("missing scientific name"), "Scientific name is required", http.StatusBadRequest)
+	}
+
+	// Input validation: reject path traversal attempts and invalid paths
+	if !filepath.IsLocal(scientificName) {
+		return c.HandleError(ctx, fmt.Errorf("invalid scientific name"), "Invalid species name", http.StatusBadRequest)
+	}
+
+	cache := c.BirdImageCache
+	if cache == nil {
+		return c.HandleError(ctx, ErrImageProviderNotAvailable, "Image service unavailable", http.StatusServiceUnavailable)
+	}
+
+	// Cached-only lookup: never contacts a provider, so this cannot block.
+	birdImage, found, negative := cache.GetCached(scientificName)
+	switch {
+	case negative:
+		return c.respondImageNotFound(ctx)
+	case !found:
+		cache.PrefetchAsync(scientificName)
+		return c.respondImagePending(ctx, scientificName)
+	}
+
+	fileCache := cache.GetFileCache()
+	if fileCache == nil {
+		// Without a file cache the proxy has no bytes to serve and, as a hard
+		// boundary, will not hand the client an external URL instead.
+		return c.respondImagePending(ctx, scientificName)
+	}
+
+	provider := birdImage.SourceProvider
+	if provider == "" {
+		provider = cache.GetProviderName()
+	}
+
+	// Try to serve from file cache
+	cachedPath, contentType, fresh, err := fileCache.Get(provider, scientificName)
+	if err != nil {
+		return c.HandleError(ctx, err, "File cache error", http.StatusInternalServerError)
+	}
+
+	if cachedPath != "" && fresh {
+		c.LogDebugIfEnabled("Serving fresh cached image",
+			logger.String("scientific_name", scientificName),
+			logger.String("path", cachedPath))
+		return c.serveImageFile(ctx, cachedPath, contentType)
+	}
+
+	// The bytes are missing or stale. Downloading them here would put the request
+	// back on the network path the rest of this handler exists to avoid, and
+	// DownloadAndStore runs its shared work on the first caller's context, so one
+	// aborted tab would cancel the download for every concurrent waiter. Schedule it
+	// on the cache's own goroutine instead.
+	cache.PrefetchAsync(scientificName)
+
+	if cachedPath != "" {
+		c.LogDebugIfEnabled("Serving stale cached image while refreshing in the background",
+			logger.String("scientific_name", scientificName),
+			logger.String("path", cachedPath))
+		return c.serveImageFile(ctx, cachedPath, contentType)
+	}
+
+	return c.respondImagePending(ctx, scientificName)
+}
+
+// serveImageFile serves a cached image file with appropriate cache headers.
+// http.ServeContent handles Last-Modified, If-Modified-Since, and If-None-Match natively.
+func (c *Handler) serveImageFile(ctx echo.Context, filePath, contentType string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return c.HandleError(ctx, err, "Failed to open cached image", http.StatusInternalServerError)
+	}
+	defer func() { _ = file.Close() }()
+
+	info, err := file.Stat()
+	if err != nil {
+		return c.HandleError(ctx, err, "Failed to stat cached image", http.StatusInternalServerError)
+	}
+
+	if contentType != "" {
+		ctx.Response().Header().Set("Content-Type", contentType)
+	}
+	// Species images are public bird reference photos keyed by scientific name
+	// (identical for every user), not access-controlled detection media, so they
+	// stay publicly cacheable even in Private Mode. Unlike the spectrogram/audio
+	// serves they are intentionally NOT routed through mediaCacheVisibility()
+	// (GHSA-c7jx-552f-94hh); this "public" is deliberate, not a missed site.
+	ctx.Response().Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", ImageCacheSeconds))
+
+	// ETag based on modification time and size
+	etag := fmt.Sprintf(`"%x-%x"`, info.ModTime().UnixNano(), info.Size())
+	ctx.Response().Header().Set("ETag", etag)
+
+	// http.ServeContent handles Last-Modified, If-Modified-Since, and range requests.
+	http.ServeContent(ctx.Response(), ctx.Request(), filepath.Base(filePath), info.ModTime(), file)
+	return nil
+}
+
+// HandleError, CurrentSettings, and the logging helpers are promoted from the
+// embedded *apicore.Core; see internal/api/v2/apicore.

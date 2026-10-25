@@ -4,7 +4,6 @@ package spectrogram
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,11 +24,10 @@ const (
 	testPollInterval = 100 * time.Millisecond
 )
 
-// TestPreRenderer_RealSoxExecution tests actual spectrogram generation with Sox
+// TestPreRenderer_RendersPNG tests actual spectrogram rendering through the pre-renderer
 // Run with: go test -v -tags=integration ./internal/spectrogram/...
-func TestPreRenderer_RealSoxExecution(t *testing.T) {
-	soxPath := requireSoxAvailable(t)
-	env := createIntegrationPreRenderer(t, soxPath, "test")
+func TestPreRenderer_RendersPNG(t *testing.T) {
+	env := createIntegrationPreRenderer(t, "test")
 	defer env.PreRenderer.Stop()
 
 	// Generate synthetic PCM data using shared helper
@@ -62,17 +60,13 @@ func TestPreRenderer_RealSoxExecution(t *testing.T) {
 		case <-ticker.C:
 			if _, statErr := os.Stat(spectrogramPath); statErr == nil {
 				// File exists, verify it's a valid PNG
-				f, openErr := os.Open(spectrogramPath)
-				require.NoError(t, openErr, "Failed to open spectrogram")
-				defer f.Close()
+				data, readErr := os.ReadFile(spectrogramPath)
+				require.NoError(t, readErr, "Failed to read spectrogram")
 
 				// Check PNG magic number (first 8 bytes: 89 50 4E 47 0D 0A 1A 0A)
-				hdr := make([]byte, 8)
-				_, readErr := io.ReadFull(f, hdr)
-				require.NoError(t, readErr, "Failed to read PNG header")
-
 				pngMagic := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
-				assert.Equal(t, pngMagic, hdr, "Invalid PNG magic number")
+				require.GreaterOrEqual(t, len(data), len(pngMagic), "spectrogram too small for a PNG header")
+				assert.Equal(t, pngMagic, data[:len(pngMagic)], "Invalid PNG magic number")
 
 				// Verify stats
 				stats := env.PreRenderer.GetStats()
@@ -80,11 +74,7 @@ func TestPreRenderer_RealSoxExecution(t *testing.T) {
 				assert.Equal(t, int64(0), stats.Failed, "Expected 0 failed jobs")
 
 				// Log file size
-				if fi, fiErr := f.Stat(); fiErr == nil {
-					t.Logf("Successfully generated spectrogram: %s (%d bytes)", spectrogramPath, fi.Size())
-				} else {
-					t.Logf("Successfully generated spectrogram: %s", spectrogramPath)
-				}
+				t.Logf("Successfully generated spectrogram: %s (%d bytes)", spectrogramPath, len(data))
 				return // Test passed
 			}
 			// File doesn't exist yet, continue waiting
@@ -95,8 +85,7 @@ func TestPreRenderer_RealSoxExecution(t *testing.T) {
 // TestPreRenderer_ConcurrentProcessing tests multiple jobs being processed concurrently
 // Run with: go test -v -race -tags=integration ./internal/spectrogram/...
 func TestPreRenderer_ConcurrentProcessing(t *testing.T) {
-	soxPath := requireSoxAvailable(t)
-	env := createIntegrationPreRenderer(t, soxPath, "concurrent")
+	env := createIntegrationPreRenderer(t, "concurrent")
 	defer env.PreRenderer.Stop()
 
 	// Generate synthetic PCM data using shared helper
@@ -104,7 +93,7 @@ func TestPreRenderer_ConcurrentProcessing(t *testing.T) {
 
 	// Submit multiple jobs concurrently
 	numJobs := 5
-	for i := 0; i < numJobs; i++ {
+	for i := range numJobs {
 		clipPath := filepath.Join(env.AudioDir, fmt.Sprintf("test-%d.wav", i))
 		job := &Job{
 			PCMData:   pcmData,
@@ -134,10 +123,10 @@ func TestPreRenderer_ConcurrentProcessing(t *testing.T) {
 				assert.Equal(t, int64(0), stats.Failed, "Some jobs failed")
 
 				// Verify all spectrograms exist
-				for i := 0; i < numJobs; i++ {
+				for i := range numJobs {
 					spectrogramPath := filepath.Join(env.AudioDir, fmt.Sprintf("test-%d.png", i))
 					_, err := os.Stat(spectrogramPath)
-					assert.NoError(t, err, "Spectrogram %d not found", i)
+					require.NoError(t, err, "Spectrogram %d not found", i)
 				}
 
 				t.Logf("Successfully processed %d concurrent jobs. Stats: %+v", numJobs, stats)
@@ -149,8 +138,7 @@ func TestPreRenderer_ConcurrentProcessing(t *testing.T) {
 
 // TestPreRenderer_GracefulShutdownUnderLoad tests shutdown with active jobs
 func TestPreRenderer_GracefulShutdownUnderLoad(t *testing.T) {
-	soxPath := requireSoxAvailable(t)
-	env := createIntegrationPreRenderer(t, soxPath, "shutdown")
+	env := createIntegrationPreRenderer(t, "shutdown")
 	// Note: Don't defer Stop() here - we manually stop to test shutdown behavior
 
 	// Generate synthetic PCM data using shared helper
@@ -158,7 +146,7 @@ func TestPreRenderer_GracefulShutdownUnderLoad(t *testing.T) {
 
 	// Submit several jobs
 	numJobs := 10
-	for i := 0; i < numJobs; i++ {
+	for i := range numJobs {
 		clipPath := filepath.Join(env.AudioDir, fmt.Sprintf("test-%d.wav", i))
 		job := &Job{
 			PCMData:   pcmData,
@@ -188,8 +176,7 @@ func TestPreRenderer_GracefulShutdownUnderLoad(t *testing.T) {
 
 // TestPreRenderer_QueueOverflow tests behavior when submitting more jobs than queue size
 func TestPreRenderer_QueueOverflow(t *testing.T) {
-	soxPath := requireSoxAvailable(t)
-	env := createIntegrationPreRenderer(t, soxPath, "overflow")
+	env := createIntegrationPreRenderer(t, "overflow")
 	defer env.PreRenderer.Stop()
 
 	// Generate synthetic PCM data using shared helper
@@ -201,7 +188,7 @@ func TestPreRenderer_QueueOverflow(t *testing.T) {
 	queueFull := 0
 	submitted := 0
 
-	for i := 0; i < numJobs; i++ {
+	for i := range numJobs {
 		clipPath := filepath.Join(env.AudioDir, fmt.Sprintf("test-%03d.wav", i))
 		job := &Job{
 			PCMData:   pcmData,
@@ -222,7 +209,7 @@ func TestPreRenderer_QueueOverflow(t *testing.T) {
 	}
 
 	// Verify that some jobs were rejected due to queue overflow
-	assert.Greater(t, queueFull, 0, "Expected some jobs to be rejected due to queue overflow")
+	assert.Positive(t, queueFull, "Expected some jobs to be rejected due to queue overflow")
 
 	t.Logf("Submitted %d jobs, %d rejected due to queue overflow", submitted, queueFull)
 

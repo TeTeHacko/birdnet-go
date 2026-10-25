@@ -1,0 +1,609 @@
+// catalog_loader.go loads and persists the user-editable model catalog.
+//
+// The embedded catalog (EmbeddedCatalog, see model_catalog.go) remains the
+// built-in default that ships inside the binary; no extra files are shipped.
+// On first run the catalog is seeded to <config-dir>/model-catalog.json so the
+// user can hand-edit it. On later runs the file is loaded and used.
+//
+// Staleness handling: the on-disk file records a checksum of the embedded
+// catalog it was generated from. When a new binary release ships a changed
+// embedded catalog, a file that the user has NOT edited is automatically
+// refreshed to the new catalog (so the manifest never goes stale on upgrade).
+// A file the user HAS edited is preserved, with a warning telling the user how
+// to regenerate it. Parse or validation errors are non-fatal: the loader logs a
+// warning, falls back to the embedded catalog, and never overwrites the file.
+package classifier
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/tphakala/birdnet-go/internal/errors"
+	"github.com/tphakala/birdnet-go/internal/logger"
+)
+
+const (
+	// catalogFileName is the on-disk name of the user-editable model catalog,
+	// co-located with config.yaml in the resolved config directory.
+	catalogFileName = "model-catalog.json"
+
+	// catalogSchemaVersion is the current on-disk schema version. It versions
+	// the file format (the wrapper and field shape), independent of the catalog
+	// content fingerprint stored in CatalogChecksum.
+	catalogSchemaVersion = 1
+
+	// catalogFileMode is the permission mode for the catalog file (world-readable
+	// so it can be inspected; owner-writable for hand-editing).
+	catalogFileMode = 0o644
+	// catalogDirMode is the permission mode used when creating the config
+	// directory as a fallback during seeding.
+	catalogDirMode = 0o755
+)
+
+// catalogManifest is the on-disk wrapper for the model catalog. The 2-space
+// indented JSON is meant to be hand-editable.
+type catalogManifest struct {
+	// SchemaVersion is the file-format version (see catalogSchemaVersion).
+	SchemaVersion int `json:"schema_version"`
+	// CatalogChecksum fingerprints the embedded catalog this file was generated
+	// from. It is how an upgrade detects that a pristine file should be refreshed
+	// and that an edited file diverges from its baseline. Hand-edited files may
+	// omit it (empty), which is treated as "edited / unknown baseline".
+	CatalogChecksum string `json:"catalog_checksum"`
+	// Entries is the catalog itself.
+	Entries []CatalogEntry `json:"entries"`
+}
+
+// LoadCatalog initializes the runtime model catalog from configDir. It seeds the
+// file on first run, refreshes a pristine file when the embedded catalog changed
+// (avoiding staleness on upgrade), preserves user edits, and always falls back to
+// the embedded catalog on any error so startup never fails. The returned error is
+// advisory (a seed/refresh write failure); the active catalog is always set.
+func LoadCatalog(configDir string) error {
+	log := GetLogger()
+	path := filepath.Join(configDir, catalogFileName)
+
+	embeddedChecksum, err := catalogChecksum(EmbeddedCatalog)
+	if err != nil {
+		// Should never happen (the embedded catalog always marshals); fall back.
+		setActiveCatalog(EmbeddedCatalog)
+		return errors.New(err).
+			Component("classifier.catalog_loader").
+			Category(errors.CategoryConfiguration).
+			Context("operation", "checksum_embedded_catalog").
+			Build()
+	}
+
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path derived from the resolved config dir, not user input
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return seedCatalog(log, path, embeddedChecksum)
+		}
+		// Unexpected read error (permissions, etc.): use embedded, surface error.
+		setActiveCatalog(EmbeddedCatalog)
+		return errors.New(err).
+			Component("classifier.catalog_loader").
+			Category(errors.CategoryFileIO).
+			Context("operation", "read_model_catalog").
+			Context("path", path).
+			Build()
+	}
+
+	var manifest catalogManifest
+	if uerr := json.Unmarshal(data, &manifest); uerr != nil {
+		log.Warn("model catalog is malformed; using built-in catalog (file left untouched)",
+			logger.String("path", path),
+			logger.Error(uerr))
+		setActiveCatalog(EmbeddedCatalog)
+		return nil
+	}
+
+	if manifest.SchemaVersion != catalogSchemaVersion {
+		log.Warn("model catalog schema version differs from this build; loading best-effort",
+			logger.String("path", path),
+			logger.Int("file_schema_version", manifest.SchemaVersion),
+			logger.Int("app_schema_version", catalogSchemaVersion))
+	}
+
+	if verr := validateCatalog(manifest.Entries); verr != nil {
+		log.Warn("model catalog failed validation; using built-in catalog (file left untouched)",
+			logger.String("path", path),
+			logger.Error(verr))
+		setActiveCatalog(EmbeddedCatalog)
+		return nil
+	}
+
+	// The file's baseline matches the current binary: use it as-is. This honors
+	// any edits the user layered on the current built-in catalog.
+	if manifest.CatalogChecksum == embeddedChecksum {
+		setActiveCatalog(manifest.Entries)
+		log.Info("loaded model catalog",
+			logger.String("path", path),
+			logger.Int("entries", len(manifest.Entries)))
+		return nil
+	}
+
+	// The binary shipped a different embedded catalog than this file's recorded
+	// baseline. Decide whether the file is pristine (safe to refresh) or edited.
+	fileChecksum, err := catalogChecksum(manifest.Entries)
+	if err != nil {
+		// Cannot fingerprint the file; treat as edited and keep it.
+		setActiveCatalog(manifest.Entries)
+		log.Warn("could not fingerprint model catalog; keeping on-disk entries",
+			logger.String("path", path),
+			logger.Error(err))
+		return nil
+	}
+
+	pristine := fileChecksum == manifest.CatalogChecksum
+	if pristine {
+		// User never edited the file: refresh it to the new release so it does
+		// not go stale (e.g. updated checksums, new models). Even if the on-disk
+		// write fails, the in-memory catalog is the fresh embedded one.
+		setActiveCatalog(EmbeddedCatalog)
+		if werr := writeCatalogFileAtomic(path, EmbeddedCatalog, embeddedChecksum); werr != nil {
+			return werr
+		}
+		log.Info("refreshed model catalog to match new release",
+			logger.String("path", path),
+			logger.Int("entries", len(EmbeddedCatalog)))
+		return nil
+	}
+
+	// User edited the file and the built-in catalog also changed. Preserve the
+	// user's edits, but warn that the built-in catalog moved on so the user can
+	// regenerate if they want the new baseline.
+	setActiveCatalog(manifest.Entries)
+	log.Warn("built-in model catalog changed since this file was generated; keeping your edits. "+
+		"Delete the file to regenerate it from the new built-in catalog.",
+		logger.String("path", path),
+		logger.Int("entries", len(manifest.Entries)))
+	return nil
+}
+
+// seedCatalog writes the initial catalog file from the embedded catalog and sets
+// the active catalog to the embedded catalog.
+func seedCatalog(log logger.Logger, path, embeddedChecksum string) error {
+	setActiveCatalog(EmbeddedCatalog)
+	if err := writeCatalogFileAtomic(path, EmbeddedCatalog, embeddedChecksum); err != nil {
+		return err
+	}
+	log.Info("seeded model catalog",
+		logger.String("path", path),
+		logger.Int("entries", len(EmbeddedCatalog)))
+	return nil
+}
+
+// validateCatalog checks that a loaded catalog is well-formed: it has at least
+// one entry, every entry has a unique non-empty id, every entry declares files
+// (directly or through variants), every file declares the fields needed to
+// download it (remote_path, local_name, role), and the dependency graph is sound
+// (see validateCatalogDependencies).
+func validateCatalog(entries []CatalogEntry) error {
+	if len(entries) == 0 {
+		return errors.Newf("model catalog has no entries").
+			Component("classifier.catalog_loader").
+			Category(errors.CategoryValidation).
+			Build()
+	}
+	seen := make(map[string]struct{}, len(entries))
+	for i := range entries {
+		entry := &entries[i]
+		if entry.ID == "" {
+			return errors.Newf("catalog entry %d has an empty id", i).
+				Component("classifier.catalog_loader").
+				Category(errors.CategoryValidation).
+				Build()
+		}
+		if _, dup := seen[entry.ID]; dup {
+			return errors.Newf("duplicate catalog entry id %q", entry.ID).
+				Component("classifier.catalog_loader").
+				Category(errors.CategoryValidation).
+				Build()
+		}
+		seen[entry.ID] = struct{}{}
+		if err := validateCatalogEntryFiles(entry); err != nil {
+			return err
+		}
+	}
+	return validateCatalogDependencies(entries)
+}
+
+// catalogValidationError builds the validation error validateCatalogDependencies
+// returns.
+func catalogValidationError(format string, args ...any) error {
+	return errors.Newf(format, args...).
+		Component("classifier.catalog_loader").
+		Category(errors.CategoryValidation).
+		Build()
+}
+
+// validateCatalogDependencies checks DependsOn and Component across entries, using
+// only the entries being validated (never the active catalog). Every dependency
+// ID must exist, differ from the entry and appear once; the target must be a flat,
+// shared-only entry that declares no dependencies of its own (depth one). A Component
+// must be Hidden, shared-only, have no registry id, no dependencies and no geomodel
+// file (its autoremove never touches range-filter config, so a geomodel file could be
+// deleted while the config still points at it). Finally, shared-role files must agree
+// across the whole catalog (validateSharedNamesAcrossCatalog), since they all land in
+// models/shared.
+func validateCatalogDependencies(entries []CatalogEntry) error {
+	byID := make(map[string]*CatalogEntry, len(entries))
+	for i := range entries {
+		byID[entries[i].ID] = &entries[i]
+	}
+	for i := range entries {
+		entry := &entries[i]
+		if err := validateEntryDependsOn(entry, byID); err != nil {
+			return err
+		}
+		if entry.Component {
+			if err := validateComponent(entry); err != nil {
+				return err
+			}
+		}
+	}
+	return validateSharedNamesAcrossCatalog(entries)
+}
+
+// validateSharedNamesAcrossCatalog rejects two shared-role files anywhere in the
+// catalog (any entry, any variant) that share a LocalName but differ in role or
+// checksum. Every shared file lands in models/shared/<LocalName>, so entries that
+// can be installed together must agree on what each shared name holds; otherwise one
+// install would overwrite another's file. A repeated shared name needs a non-empty
+// checksum on both files, because the installer can only tell two files apart by
+// checksum; a shared file that appears once may still omit it.
+func validateSharedNamesAcrossCatalog(entries []CatalogEntry) error {
+	type owner struct {
+		file CatalogFile
+		from string
+	}
+	seen := make(map[string]owner)
+	check := func(from string, files []CatalogFile) error {
+		for i := range files {
+			f := files[i]
+			if !isSharedRole(f.Role) {
+				continue
+			}
+			prev, ok := seen[f.LocalName]
+			if !ok {
+				seen[f.LocalName] = owner{file: f, from: from}
+				continue
+			}
+			if prev.file.Role != f.Role || prev.file.SHA256 == "" || !strings.EqualFold(prev.file.SHA256, f.SHA256) {
+				return catalogValidationError("catalog entries %q and %q both declare shared file %q with different contents", prev.from, from, f.LocalName)
+			}
+		}
+		return nil
+	}
+	for i := range entries {
+		for _, files := range entryFileSets(&entries[i]) {
+			if err := check(entries[i].ID, files); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateEntryDependsOn validates the DependsOn list of one entry against byID.
+func validateEntryDependsOn(entry *CatalogEntry, byID map[string]*CatalogEntry) error {
+	seen := make(map[string]struct{}, len(entry.DependsOn))
+	for _, id := range entry.DependsOn {
+		if id == entry.ID {
+			return catalogValidationError("catalog entry %q depends on itself", entry.ID)
+		}
+		if _, dup := seen[id]; dup {
+			return catalogValidationError("catalog entry %q lists dependency %q more than once", entry.ID, id)
+		}
+		seen[id] = struct{}{}
+		dep, ok := byID[id]
+		if !ok {
+			return catalogValidationError("catalog entry %q depends on unknown entry %q", entry.ID, id)
+		}
+		if len(dep.Variants) > 0 {
+			return catalogValidationError("catalog entry %q depends on %q, which declares variants; a dependency must be flat", entry.ID, id)
+		}
+		if !IsSharedOnly(dep) {
+			return catalogValidationError("catalog entry %q depends on %q, which is not shared-only; a dependency may only hold shared files", entry.ID, id)
+		}
+		if len(dep.DependsOn) > 0 {
+			return catalogValidationError("catalog entry %q depends on %q, which has its own dependencies; only one level is supported", entry.ID, id)
+		}
+	}
+	return validateSharedNameCollisions(entry, byID)
+}
+
+// validateSharedNameCollisions rejects two different files that would land on the
+// same path in models/shared when entry is installed: a dependency file and a
+// shared-role file of any entry variant, or files of two dependencies, that share a
+// LocalName but differ in role or checksum. Equal files (same role, same non-empty
+// checksum) are allowed; EffectiveFiles keeps one copy. Without this check one file would silently shadow the other and a
+// later install could overwrite it with different bytes.
+func validateSharedNameCollisions(entry *CatalogEntry, byID map[string]*CatalogEntry) error {
+	type owner struct {
+		file CatalogFile
+		from string
+	}
+	sameFile := func(a, b *CatalogFile) bool {
+		return a.Role == b.Role && a.SHA256 != "" && strings.EqualFold(a.SHA256, b.SHA256)
+	}
+	// Dependency files first: two dependencies must agree on every shared name.
+	depFiles := make(map[string]owner)
+	for _, id := range entry.DependsOn {
+		dep := byID[id]
+		for i := range dep.Files {
+			f := dep.Files[i]
+			if prev, ok := depFiles[f.LocalName]; ok && !sameFile(&prev.file, &f) {
+				return catalogValidationError("catalog entry %q: dependencies %q and %q both install shared file %q with different contents", entry.ID, prev.from, id, f.LocalName)
+			}
+			depFiles[f.LocalName] = owner{file: f, from: id}
+		}
+	}
+	// Then every variant's own shared files against the dependency files.
+	for _, files := range entryFileSets(entry) {
+		for i := range files {
+			f := files[i]
+			if !isSharedRole(f.Role) {
+				continue
+			}
+			if prev, ok := depFiles[f.LocalName]; ok && !sameFile(&prev.file, &f) {
+				return catalogValidationError("catalog entry %q carries shared file %q that differs from the one dependency %q installs", entry.ID, f.LocalName, prev.from)
+			}
+		}
+	}
+	return nil
+}
+
+// validateComponent validates the extra rules for a Component entry.
+func validateComponent(entry *CatalogEntry) error {
+	switch {
+	case !entry.Hidden:
+		return catalogValidationError("component %q must be hidden", entry.ID)
+	case !IsSharedOnly(entry):
+		return catalogValidationError("component %q must be shared-only", entry.ID)
+	case entry.RegistryID != "":
+		return catalogValidationError("component %q must have an empty registry id", entry.ID)
+	case len(entry.DependsOn) > 0:
+		return catalogValidationError("component %q must not declare dependencies", entry.ID)
+	case HasGeomodelFiles(entry):
+		return catalogValidationError("component %q must not carry geomodel files", entry.ID)
+	}
+	return nil
+}
+
+// validateCatalogEntryFiles validates the files an entry declares, directly or
+// through variants. A variant entry stores its files under Variants, and its
+// top-level Files is empty on disk and resolved at load time, so an entry is
+// valid when it declares files in EITHER place. Every variant must have a unique
+// non-empty id and at least one file.
+func validateCatalogEntryFiles(entry *CatalogEntry) error {
+	if len(entry.Files) == 0 && len(entry.Variants) == 0 {
+		return errors.Newf("catalog entry %q declares no files or variants", entry.ID).
+			Component("classifier.catalog_loader").
+			Category(errors.CategoryValidation).
+			Build()
+	}
+	// Files and Variants are mutually exclusive: a variant entry stores its files
+	// under Variants (with an empty top-level Files, resolved at load time), so an
+	// entry carrying both would have its top-level Files silently discarded by
+	// resolveVariantDefaults. Reject it rather than lose data quietly.
+	if len(entry.Files) > 0 && len(entry.Variants) > 0 {
+		return errors.Newf("catalog entry %q declares both top-level files and variants; use one or the other (variant files live under variants[])", entry.ID).
+			Component("classifier.catalog_loader").
+			Category(errors.CategoryValidation).
+			Build()
+	}
+	if err := validateCatalogFiles(entry.ID, "", entry.Files); err != nil {
+		return err
+	}
+	seenVariants := make(map[string]struct{}, len(entry.Variants))
+	builtInCount := 0
+	for i := range entry.Variants {
+		v := &entry.Variants[i]
+		if v.ID == "" {
+			return errors.Newf("catalog entry %q variant %d has an empty id", entry.ID, i).
+				Component("classifier.catalog_loader").
+				Category(errors.CategoryValidation).
+				Build()
+		}
+		if _, dup := seenVariants[v.ID]; dup {
+			return errors.Newf("catalog entry %q has duplicate variant id %q", entry.ID, v.ID).
+				Component("classifier.catalog_loader").
+				Category(errors.CategoryValidation).
+				Build()
+		}
+		seenVariants[v.ID] = struct{}{}
+
+		// BuiltIn baseline variants (the embedded primary model) are exempt from the
+		// no-files and model-role checks below: they carry no files because there is
+		// nothing to download, and ScanInstalled reports them installed
+		// unconditionally rather than by a model file on disk. Enforce instead that a
+		// BuiltIn variant carries NO files (its files would never be used) and that at
+		// most one variant per entry is BuiltIn.
+		if v.BuiltIn {
+			builtInCount++
+			if builtInCount > 1 {
+				return errors.Newf("catalog entry %q declares more than one built-in variant; at most one is allowed", entry.ID).
+					Component("classifier.catalog_loader").
+					Category(errors.CategoryValidation).
+					Build()
+			}
+			if len(v.Files) > 0 {
+				return errors.Newf("catalog entry %q built-in variant %q must declare no files", entry.ID, v.ID).
+					Component("classifier.catalog_loader").
+					Category(errors.CategoryValidation).
+					Build()
+			}
+			continue
+		}
+
+		if len(v.Files) == 0 {
+			return errors.Newf("catalog entry %q variant %q declares no files", entry.ID, v.ID).
+				Component("classifier.catalog_loader").
+				Category(errors.CategoryValidation).
+				Build()
+		}
+		if err := validateCatalogFiles(entry.ID, v.ID, v.Files); err != nil {
+			return err
+		}
+		// Every hardware variant must carry a model-role file. ScanInstalled
+		// detects a variant install by that file's presence on disk, so a
+		// model-less variant would be silently undetectable; rejecting it here
+		// keeps the "variant entries always carry a model role" invariant that the
+		// scan relies on (a shared-only entry must stay flat, not declare variants).
+		if modelFile, _ := modelAndLabelsFiles(v.Files); modelFile == "" {
+			return errors.Newf("catalog entry %q variant %q has no model-role file; every hardware variant must carry a model file", entry.ID, v.ID).
+				Component("classifier.catalog_loader").
+				Category(errors.CategoryValidation).
+				Build()
+		}
+	}
+	return nil
+}
+
+// validateCatalogFiles checks that every file declares remote_path, local_name,
+// and role. variantID is empty for an entry's top-level files and names the
+// variant otherwise, so the error points at the offending file precisely.
+func validateCatalogFiles(entryID, variantID string, files []CatalogFile) error {
+	for j := range files {
+		f := &files[j]
+		if f.RemotePath != "" && f.LocalName != "" && f.Role != "" {
+			continue
+		}
+		if variantID == "" {
+			return errors.Newf("catalog entry %q file %d is missing remote_path, local_name, or role", entryID, j).
+				Component("classifier.catalog_loader").
+				Category(errors.CategoryValidation).
+				Build()
+		}
+		return errors.Newf("catalog entry %q variant %q file %d is missing remote_path, local_name, or role", entryID, variantID, j).
+			Component("classifier.catalog_loader").
+			Category(errors.CategoryValidation).
+			Build()
+	}
+	return nil
+}
+
+// catalogChecksum returns the hex-encoded SHA-256 of the compact JSON encoding
+// of entries. The compact encoding is deterministic (fixed struct field order,
+// ordered slices, and Go's json.Marshal sorts map keys, e.g. the
+// CatalogVariant.Backends map), so a pristine file round-trips to the same
+// checksum it was written with, and a changed embedded catalog produces a
+// different one.
+//
+// The checksum is coupled to the Go struct layout and JSON tags, not just the
+// semantic content. Reordering CatalogEntry/CatalogFile fields or renaming a tag
+// shifts every checksum, so after such a refactor existing on-disk files look
+// "changed" and are preserved with a warning (not auto-refreshed) until the user
+// regenerates them. That degradation is benign (the file still loads), but a
+// maintainer making such a change should bump catalogSchemaVersion to signal it.
+func catalogChecksum(entries []CatalogEntry) (string, error) {
+	data, err := json.Marshal(entries)
+	if err != nil {
+		return "", errors.New(err).
+			Component("classifier.catalog_loader").
+			Category(errors.CategoryConfiguration).
+			Context("operation", "marshal_catalog_checksum").
+			Build()
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// writeCatalogFileAtomic writes the catalog manifest to path atomically: it
+// writes a temp file in the same directory, fsyncs it, then renames it into
+// place. A partial write therefore never leaves a corrupt catalog file.
+func writeCatalogFileAtomic(path string, entries []CatalogEntry, checksum string) error {
+	manifest := catalogManifest{
+		SchemaVersion:   catalogSchemaVersion,
+		CatalogChecksum: checksum,
+		Entries:         entries,
+	}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return errors.New(err).
+			Component("classifier.catalog_loader").
+			Category(errors.CategoryConfiguration).
+			Context("operation", "marshal_model_catalog").
+			Build()
+	}
+	data = append(data, '\n')
+
+	dir := filepath.Dir(path)
+	if mkErr := os.MkdirAll(dir, catalogDirMode); mkErr != nil {
+		return errors.New(mkErr).
+			Component("classifier.catalog_loader").
+			Category(errors.CategoryFileIO).
+			Context("operation", "create_config_dir").
+			Context("path", dir).
+			Build()
+	}
+
+	tmp, err := os.CreateTemp(dir, catalogFileName+".*.tmp")
+	if err != nil {
+		return errors.New(err).
+			Component("classifier.catalog_loader").
+			Category(errors.CategoryFileIO).
+			Context("operation", "create_temp_model_catalog").
+			Context("dir", dir).
+			Build()
+	}
+	tmpName := tmp.Name()
+	// Best-effort cleanup: removes the temp file on any failure path. After a
+	// successful rename the temp file no longer exists and Remove is a no-op.
+	defer func() { _ = os.Remove(tmpName) }()
+
+	if _, werr := tmp.Write(data); werr != nil {
+		_ = tmp.Close()
+		return errors.New(werr).
+			Component("classifier.catalog_loader").
+			Category(errors.CategoryFileIO).
+			Context("operation", "write_model_catalog").
+			Context("path", tmpName).
+			Build()
+	}
+	// Set the final mode on the open descriptor (CreateTemp makes it 0600) rather
+	// than os.Chmod(path) after Close: operating on the fd avoids a TOCTOU window
+	// where the path could be swapped between close and chmod.
+	if cerr := tmp.Chmod(catalogFileMode); cerr != nil {
+		_ = tmp.Close()
+		return errors.New(cerr).
+			Component("classifier.catalog_loader").
+			Category(errors.CategoryFileIO).
+			Context("operation", "chmod_model_catalog").
+			Context("path", tmpName).
+			Build()
+	}
+	if serr := tmp.Sync(); serr != nil {
+		_ = tmp.Close()
+		return errors.New(serr).
+			Component("classifier.catalog_loader").
+			Category(errors.CategoryFileIO).
+			Context("operation", "sync_model_catalog").
+			Context("path", tmpName).
+			Build()
+	}
+	if cerr := tmp.Close(); cerr != nil {
+		return errors.New(cerr).
+			Component("classifier.catalog_loader").
+			Category(errors.CategoryFileIO).
+			Context("operation", "close_model_catalog").
+			Context("path", tmpName).
+			Build()
+	}
+	if rerr := os.Rename(tmpName, path); rerr != nil {
+		return errors.New(rerr).
+			Component("classifier.catalog_loader").
+			Category(errors.CategoryFileIO).
+			Context("operation", "rename_model_catalog").
+			Context("path", path).
+			Build()
+	}
+	return nil
+}

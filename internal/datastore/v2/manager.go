@@ -31,6 +31,12 @@ const defaultGormSlowThreshold = 1 * time.Second
 // Matches the 30s timeout used by the legacy datastore.
 const sqliteBusyTimeoutMs = 30_000
 
+// sqliteMmapSizeBytes caps SQLite's memory-mapped I/O for the main DB file at
+// 256 MiB. It is a max (SQLite maps at most the file size) and consumes virtual
+// address space, not resident memory, so it is safe on small 64-bit hosts and a
+// large win for cold reads on slow storage. Matches the legacy datastore.
+const sqliteMmapSizeBytes = 256 * 1024 * 1024
+
 // walCheckpointInterval is how often a periodic passive WAL checkpoint runs.
 // SQLite's auto-checkpoint (1000 pages) may not fire reliably with connection
 // pooling because the page counter is per-connection. A 5-minute interval
@@ -58,7 +64,7 @@ type Manager interface {
 	IsMySQL() bool
 	// TablePrefix returns the prefix applied to every v2 table name. It is
 	// non-empty (currently "v2_") only on MySQL deployments that are still
-	// in the v1→v2 migration window — there, v2 tables coexist alongside
+	// in the v1→v2 migration window; there, v2 tables coexist alongside
 	// the legacy v1 schema and need the prefix to avoid name collisions.
 	// On SQLite, on fresh-install MySQL, and on any future cutover where
 	// the prefix is dropped, this returns "". Code that builds raw-SQL
@@ -229,15 +235,10 @@ func NewSQLiteManager(cfg Config) (*SQLiteManager, error) {
 
 	// Build DSN with recommended SQLite pragmas.
 	// All pragmas are set via DSN query parameters so they apply to every
-	// connection created by the pool, not just the first one.
-	// Use safe separator in case dbPath already contains query parameters
-	// (e.g., "file::memory:?cache=shared" in tests).
-	pragmas := fmt.Sprintf("_journal_mode=WAL&_busy_timeout=%d&_foreign_keys=ON&_synchronous=NORMAL&_cache_size=-4000", sqliteBusyTimeoutMs)
-	sep := "?"
-	if strings.Contains(dbPath, "?") {
-		sep = "&"
-	}
-	dsn := dbPath + sep + pragmas
+	// connection created by the pool, not just the first one. dsnAppendParams uses a safe
+	// separator in case dbPath already contains query parameters (e.g. "file::memory:?cache=shared").
+	pragmas := fmt.Sprintf("_journal_mode=WAL&_busy_timeout=%d&_foreign_keys=ON&_synchronous=NORMAL&_cache_size=-16000", sqliteBusyTimeoutMs)
+	dsn := dsnAppendParams(dbPath, pragmas)
 
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: gormLogger,
@@ -256,6 +257,16 @@ func NewSQLiteManager(cfg Config) (*SQLiteManager, error) {
 		return nil, fmt.Errorf("failed to get underlying database: %w", err)
 	}
 	sqlDB.SetMaxOpenConns(1)
+
+	// Enable memory-mapped I/O for reads. mattn/go-sqlite3 has no _mmap_size DSN
+	// param, so set it per-connection; with SetMaxOpenConns(1) and no connection
+	// expiry there is a single long-lived connection, so this one Exec persists.
+	// mmap maps the main DB file (up to the cap or its size) into the page cache,
+	// avoiding read() syscalls; it is read-only and WAL/durability are unaffected.
+	if err := db.Exec(fmt.Sprintf("PRAGMA mmap_size=%d", sqliteMmapSizeBytes)).Error; err != nil && cfg.Logger != nil {
+		cfg.Logger.Warn("Failed to set SQLite mmap_size (continuing without memory-mapped reads)",
+			logger.Error(err))
+	}
 
 	return &SQLiteManager{
 		db:     db,
@@ -300,6 +311,83 @@ func v2Entities() []any {
 		&entities.AppMetadata{},
 		// Application event log
 		&entities.AppEvent{},
+		// Privacy filter activity
+		&entities.PrivacyFilterHourly{},
+	}
+}
+
+// dropStaleThresholdTables recreates the dynamic_thresholds and threshold_events tables
+// when they still carry the pre-#4195 label_id column. Those tables were re-keyed from a
+// model-scoped label foreign key to species_name (lowercase common name); since GORM's
+// AutoMigrate is additive and cannot drop the old NOT NULL/unique label_id column, a stale
+// table would reject every new insert. Existing rows are intentionally discarded (#4195):
+// dynamic thresholds are short-lived and relearned. The GORM migrator resolves the physical
+// (prefix-aware) table name from the entity, so this is dialect- and prefix-agnostic.
+func dropStaleThresholdTables(db *gorm.DB, log logger.Logger) error {
+	mig := db.Migrator()
+	// entities.ThresholdEvent, then entities.DynamicThreshold. "label_id" is checked as a raw
+	// column name (the field no longer exists on the struct), so HasColumn probes the physical
+	// table for a leftover label_id column.
+	for _, tbl := range []any{&entities.ThresholdEvent{}, &entities.DynamicThreshold{}} {
+		if !mig.HasTable(tbl) || !mig.HasColumn(tbl, "label_id") {
+			continue
+		}
+		if err := mig.DropTable(tbl); err != nil {
+			return fmt.Errorf("failed to drop stale threshold table for re-keying: %w", err)
+		}
+		if log != nil {
+			log.Info("recreated threshold table to key on species_name (#4195)",
+				logger.String("operation", "drop_stale_threshold_tables"))
+		}
+	}
+	return nil
+}
+
+// contributionDetectionIDColumn is the column of the plain index that
+// detection_model_contributions carried before the unique (detection_id, model_id)
+// index was left to serve detection_id lookups on its own.
+const contributionDetectionIDColumn = "detection_id"
+
+// dropRedundantContributionIndex drops the plain detection_id index of
+// detection_model_contributions, which the leading column of the unique
+// idx_contrib_detection_model index makes redundant. AutoMigrate never drops indexes,
+// so databases created before the entity lost its index tag still carry it.
+//
+// The index is dropped by the name the NamingStrategy derives for the physical
+// (possibly v2_ prefixed) table, never by a field name: Schema.LookIndex matches field
+// names, so "DetectionID" would resolve to idx_contrib_detection_model and drop the
+// unique index. A failure is only logged, because an extra index is harmless and the
+// drop is retried on the next start.
+func dropRedundantContributionIndex(db *gorm.DB, log logger.Logger) {
+	entity := &entities.DetectionModelContribution{}
+	stmt := &gorm.Statement{DB: db}
+	if err := stmt.Parse(entity); err != nil {
+		warnContributionIndexDrop(log, err)
+		return
+	}
+	name := db.NamingStrategy.IndexName(stmt.Schema.Table, contributionDetectionIDColumn)
+	mig := db.Migrator()
+	if !mig.HasIndex(entity, name) {
+		return
+	}
+	if err := mig.DropIndex(entity, name); err != nil {
+		warnContributionIndexDrop(log, err)
+		return
+	}
+	if log != nil {
+		log.Info("dropped redundant detection_model_contributions index",
+			logger.String("index", name),
+			logger.String("operation", "drop_redundant_contribution_index"))
+	}
+}
+
+// warnContributionIndexDrop logs a failed redundant-index drop; the drop is retried
+// on the next start.
+func warnContributionIndexDrop(log logger.Logger, err error) {
+	if log != nil {
+		log.Warn("could not drop redundant detection_model_contributions index; will retry on next start",
+			logger.Error(err),
+			logger.String("operation", "drop_redundant_contribution_index"))
 	}
 }
 
@@ -321,6 +409,13 @@ func (m *SQLiteManager) Initialize() error {
 		}
 	}
 
+	// Re-key threshold tables on species_name if they still carry the legacy label_id
+	// column; AutoMigrate cannot drop it, so recreate them (#4195). Rows are discarded.
+	if err := dropStaleThresholdTables(m.db, m.log); err != nil {
+		reportInitFailure("sqlite", "dropStaleThresholdTables", err, m.dbPath)
+		return err
+	}
+
 	// Run GORM auto-migrations for all entities
 	err := m.db.AutoMigrate(v2Entities()...)
 	if err != nil {
@@ -336,6 +431,8 @@ func (m *SQLiteManager) Initialize() error {
 	if err := m.validateV2SchemaIntegrity(); err != nil {
 		return fmt.Errorf("v2 schema integrity check failed: %w", err)
 	}
+
+	dropRedundantContributionIndex(m.db, m.log)
 
 	// Fix SQLite foreign key constraints that GORM's AutoMigrate may not handle correctly.
 	// SQLite requires ON DELETE clauses to be defined at table creation time.
@@ -406,7 +503,7 @@ func (m *SQLiteManager) renamePrePR2165Tables() error {
 //
 // Strategy:
 //  1. Try ALTER TABLE DROP COLUMN (SQLite 3.35.0+).
-//  2. If DROP COLUMN fails and the table is empty, DROP TABLE entirely — AutoMigrate
+//  2. If DROP COLUMN fails and the table is empty, DROP TABLE entirely; AutoMigrate
 //     will recreate it with the correct schema.
 //  3. If DROP COLUMN fails and the table has data, return ErrV2SchemaCorrupted so the
 //     caller can decide how to handle it (e.g. self-healing or user notification).
@@ -426,7 +523,7 @@ func (m *SQLiteManager) cleanupLegacySchemaContamination() error {
 
 		// Try DROP COLUMN first (SQLite 3.35.0+).
 		if err := m.db.Exec("ALTER TABLE `" + c.table + "` DROP COLUMN `" + c.column + "`").Error; err != nil {
-			// DROP COLUMN not available — check if table is empty.
+			// DROP COLUMN not available; check if table is empty.
 			var rowCount int64
 			if countErr := m.db.Raw("SELECT COUNT(*) FROM `" + c.table + "`").Scan(&rowCount).Error; countErr != nil {
 				reportInitFailure("sqlite", "countRows_"+c.table, countErr, m.dbPath)
@@ -434,7 +531,7 @@ func (m *SQLiteManager) cleanupLegacySchemaContamination() error {
 			}
 
 			if rowCount == 0 {
-				// Table is empty — safe to drop and let AutoMigrate recreate it.
+				// Table is empty; safe to drop and let AutoMigrate recreate it.
 				if m.log != nil {
 					m.log.Info("dropping empty table with orphaned column, AutoMigrate will recreate",
 						logger.String("table", c.table),
@@ -445,7 +542,7 @@ func (m *SQLiteManager) cleanupLegacySchemaContamination() error {
 					return fmt.Errorf("%w: failed to drop empty table %s: %w", ErrV2SchemaCorrupted, c.table, dropErr)
 				}
 			} else {
-				// Table has data and DROP COLUMN is unavailable — cannot clean up safely.
+				// Table has data and DROP COLUMN is unavailable; cannot clean up safely.
 				reportInitFailure("sqlite", "dropOrphanedColumn_"+c.table+"_"+c.column, err, m.dbPath)
 				return fmt.Errorf("%w: cannot remove orphaned column %s.%s: table has %d rows and DROP COLUMN unavailable",
 					ErrV2SchemaCorrupted, c.table, c.column, rowCount)
@@ -788,12 +885,12 @@ func (m *SQLiteManager) CheckpointWAL() error {
 // fire reliably with connection pooling.
 //
 // Use PASSIVE mode (not TRUNCATE) for the periodic checkpoint because it
-// never blocks writers — it only checkpoints pages that are not in active
+// never blocks writers; it only checkpoints pages that are not in active
 // use. The TRUNCATE mode used in CheckpointWAL() is reserved for shutdown
 // where we want to fully clean up the WAL file.
 func (m *SQLiteManager) StartPeriodicCheckpoint() {
 	m.walMu.Lock()
-	// Guard against double-start — would leak the previous goroutine.
+	// Guard against double-start; would leak the previous goroutine.
 	if m.walCancel != nil {
 		m.walMu.Unlock()
 		return

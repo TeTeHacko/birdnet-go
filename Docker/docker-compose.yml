@@ -10,6 +10,7 @@ services:
       - BIRDNET_UID=${BIRDNET_UID:-1000}
       - BIRDNET_GID=${BIRDNET_GID:-1000}
       # - SKIP_CHOWN=true                            # Skip ownership changes at startup (for NFS mounts)
+      # - SKIP_DEVICE_PERMS=true                     # Skip /dev/snd and /dev/dri permission fixups
       # Optional: uncomment to configure via environment variables
       # BirdNET Configuration
       # - BIRDNET_LOCALE=en-us                      # Locale code (2-10 chars, e.g., "en" or "en-us")
@@ -36,16 +37,38 @@ services:
     volumes:
       - ./config:/config
       - ./data:/data
-    # Mount HLS stream segment files directory as tmpfs (RAM disk)
-    tmpfs:
-      - /config/hls:exec,size=50M,uid=${BIRDNET_UID:-1000},gid=${BIRDNET_GID:-1000},mode=0755
+      # Host mounts for .local names and DNS-SD discovery (read-only, never :z or :Z).
+      # Rootless Docker without avahi/D-Bus: remove these lines. Opt out of D-Bus: remove its line.
+      # Remove the D-Bus line when BIRDNET_UID=0: uid 0 on the system bus is host root.
+      # See doc/wiki/rtsp-troubleshooting.md (Using .local (mDNS) hostnames in containers).
+      - /run/avahi-daemon:/run/avahi-daemon:ro
+      - /run/dbus:/run/dbus:ro
+      # External media (USB / SD / fileshare) for Import and Backup. Optional, opt-in.
+      # One-time host setup before uncommenting:
+      #   sudo mkdir -p /mnt/birdnet-go/external
+      #   sudo mount --bind /mnt/birdnet-go/external /mnt/birdnet-go/external
+      #   sudo mount --make-rshared /mnt/birdnet-go/external
+      #   sudo chown -h "${BIRDNET_UID:-1000}:${BIRDNET_GID:-1000}" /mnt/birdnet-go/external
+      #   (match BIRDNET_UID:BIRDNET_GID from this file if you override them; default 1000)
+      # Note: the commands above are NOT persistent across reboots. See the external
+      # media wiki page for a persistent systemd unit that runs them on every boot.
+      # Then mount media under /mnt/birdnet-go/external/<label> on the host.
+      # - type: bind
+      #   source: /mnt/birdnet-go/external
+      #   target: /external
+      #   bind:
+      #     propagation: rslave
     # For ALSA audio input (sound card)
     devices:
       - /dev/snd:/dev/snd
+      # For Intel iGPU OpenVINO acceleration (amd64 hosts with an Intel GPU),
+      # uncomment the next line to pass the render device into the container.
+      # Leave it commented on hosts without /dev/dri or `docker compose up` fails.
+      # - /dev/dri:/dev/dri
     # Add any host mappings needed
     extra_hosts:
       - "host.docker.internal:host-gateway"
- 
+
   # Optional: Add Cloudflared for secure internet access through Cloudflare Tunnel
   # cloudflared:
   #   image: cloudflare/cloudflared:latest
@@ -62,7 +85,7 @@ services:
   #   #   - ./cloudflared:/etc/cloudflared
   #   depends_on:
   #     - birdnet-go
-      
+
 volumes:
   config:
     driver: local

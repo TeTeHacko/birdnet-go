@@ -41,7 +41,7 @@ func TestInitFromDatabase_CriticalReliability(t *testing.T) {
 						{ScientificName: "Lifetime_Species_2", FirstSeenDate: "2024-02-01"},
 					}, nil).Maybe()
 				// BG-17: InitFromDatabase requires notification history
-				ds.On("GetActiveNotificationHistory", mock.AnythingOfType("time.Time")).
+				ds.On("GetActiveNotificationHistory", mock.Anything, mock.AnythingOfType("time.Time")).
 					Return([]datastore.NotificationHistory{}, nil).Maybe()
 				// Yearly data
 				ds.On("GetSpeciesFirstDetectionInPeriod", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
@@ -55,6 +55,9 @@ func TestInitFromDatabase_CriticalReliability(t *testing.T) {
 							{ScientificName: fmt.Sprintf("Seasonal_Species_%d", i), FirstSeenDate: "2024-04-01"},
 						}, nil).Once()
 				}
+				// Season carry-over lookback
+				ds.On("GetSpeciesFirstDetectionInPeriod", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+					Return([]datastore.NewSpeciesData{}, nil).Once()
 			},
 			&conf.SpeciesTrackingSettings{
 				Enabled:              true,
@@ -101,7 +104,7 @@ func TestInitFromDatabase_CriticalReliability(t *testing.T) {
 				ds.On("GetNewSpeciesDetections", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 					Return([]datastore.NewSpeciesData{}, nil).Maybe()
 				// BG-17: InitFromDatabase now loads notification history
-				ds.On("GetActiveNotificationHistory", mock.AnythingOfType("time.Time")).
+				ds.On("GetActiveNotificationHistory", mock.Anything, mock.AnythingOfType("time.Time")).
 					Return([]datastore.NotificationHistory{}, nil).Maybe()
 				// Yearly fails
 				ds.On("GetSpeciesFirstDetectionInPeriod", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
@@ -123,7 +126,7 @@ func TestInitFromDatabase_CriticalReliability(t *testing.T) {
 				ds.On("GetNewSpeciesDetections", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 					Return([]datastore.NewSpeciesData{}, nil).Maybe()
 				// BG-17: InitFromDatabase now loads notification history
-				ds.On("GetActiveNotificationHistory", mock.AnythingOfType("time.Time")).
+				ds.On("GetActiveNotificationHistory", mock.Anything, mock.AnythingOfType("time.Time")).
 					Return([]datastore.NotificationHistory{}, nil).Maybe()
 				// First season fails
 				ds.On("GetSpeciesFirstDetectionInPeriod", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
@@ -144,7 +147,7 @@ func TestInitFromDatabase_CriticalReliability(t *testing.T) {
 				ds.On("GetNewSpeciesDetections", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 					Return([]datastore.NewSpeciesData{}, nil).Maybe()
 				// BG-17: InitFromDatabase now loads notification history
-				ds.On("GetActiveNotificationHistory", mock.AnythingOfType("time.Time")).
+				ds.On("GetActiveNotificationHistory", mock.Anything, mock.AnythingOfType("time.Time")).
 					Return([]datastore.NotificationHistory{}, nil).Maybe()
 				ds.On("GetSpeciesFirstDetectionInPeriod", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 					Return([]datastore.NewSpeciesData{}, nil).Maybe()
@@ -274,9 +277,9 @@ func TestCheckAndUpdateSpecies_CriticalReliability(t *testing.T) {
 			func(tracker *SpeciesTracker, now time.Time) {
 				tracker.speciesFirstSeen["Boundary_Species"] = now.AddDate(0, 0, -14) // Exactly 14 days
 			},
-			true, // Exactly at boundary is still "new"
+			false, // The notification window has expired
 			14,
-			"Species exactly at window boundary should still be new",
+			"Species exactly at window boundary should no longer trigger new-species notifications",
 		},
 		{
 			"yearly_tracking_update",

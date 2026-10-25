@@ -30,10 +30,14 @@ tmp_dir = "tmp"  # Temporary directory for build artifacts
 
     export CGO_LDFLAGS="-L${TFLITE_LIB_DIR} -ltensorflowlite_c"
 
-    # Build the Go application with version and build date
+    # Build the Go application with version and build date.
+    # The version comes from scripts/build-version.sh, the same source Task
+    # uses. Resolve it into a variable first to avoid nested quoting inside
+    # -ldflags, and fall back to "unknown" if the script cannot run.
+    app_version="$(sh ./scripts/build-version.sh || echo unknown)"
     go build -ldflags "-s -w -r /usr/local/lib \
       -X 'main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)' \
-      -X 'main.version=$(git describe --tags --always)'" \
+      -X main.version=$app_version" \
       -o ./tmp/main .
 
     # On macOS, add the Homebrew library path to rpath since Go's -r flag
