@@ -26,12 +26,12 @@ jobs:
       # redacted output) and misconfigurations in Dockerfiles/compose
       # (trivy config, report only).
       - name: gitleaks
-        uses: https://git.rfa.cz/tth-pub/ci-actions/gitleaks@v1.2
+        uses: https://git.rfa.cz/tth-pub/ci-actions/gitleaks@v2
         with:
           mode: warn
 
       - name: Trivy config
-        uses: https://git.rfa.cz/tth-pub/ci-actions/trivy-gate@v1.2.2
+        uses: https://git.rfa.cz/tth-pub/ci-actions/trivy-gate@v2
         with:
           scan-type: fs
           scanners: misconfig
@@ -67,7 +67,7 @@ jobs:
       # mode: warn = phase 1 (report only), block = phase 2.
       - name: Trivy gate
         id: trivy
-        uses: https://git.rfa.cz/tth-pub/ci-actions/trivy-gate@v1.2
+        uses: https://git.rfa.cz/tth-pub/ci-actions/trivy-gate@v2
         with:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.build.outputs.short_sha }}
           username: ${{ gitea.actor }}
@@ -83,7 +83,7 @@ jobs:
       # SBOM of the deployed image to Dependency-Track from the same scan;
       # a DT outage (or a missing key) does not stop the deploy.
       - name: SBOM to Dependency-Track
-        uses: https://git.rfa.cz/tth-pub/ci-actions/dtrack-sbom@v1.2
+        uses: https://git.rfa.cz/tth-pub/ci-actions/dtrack-sbom@v2
         with:
           report: ${{ steps.trivy.outputs.report }}
           url: https://dtrack.grg
