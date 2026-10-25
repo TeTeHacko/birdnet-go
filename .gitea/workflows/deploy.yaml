@@ -20,25 +20,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Secrets in the commits of this push (gitleaks, first-parent only,
       # redacted output) and misconfigurations in Dockerfiles/compose
       # (trivy config, report only).
       - name: gitleaks
-        uses: https://git.rfa.cz/tth-pub/ci-actions/gitleaks@v2
+        uses: https://git.rfa.cz/tth-pub/ci-actions/gitleaks@v3
         with:
           mode: warn
 
       - name: Trivy config
-        uses: https://git.rfa.cz/tth-pub/ci-actions/trivy-gate@v2
+        uses: https://git.rfa.cz/tth-pub/ci-actions/trivy-gate@v3
         with:
           scan-type: fs
           scanners: misconfig
           mode: warn
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build Docker image
         id: build
@@ -67,7 +67,7 @@ jobs:
       # mode: warn = phase 1 (report only), block = phase 2.
       - name: Trivy gate
         id: trivy
-        uses: https://git.rfa.cz/tth-pub/ci-actions/trivy-gate@v2
+        uses: https://git.rfa.cz/tth-pub/ci-actions/trivy-gate@v3
         with:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.build.outputs.short_sha }}
           username: ${{ gitea.actor }}
@@ -83,7 +83,7 @@ jobs:
       # SBOM of the deployed image to Dependency-Track from the same scan;
       # a DT outage (or a missing key) does not stop the deploy.
       - name: SBOM to Dependency-Track
-        uses: https://git.rfa.cz/tth-pub/ci-actions/dtrack-sbom@v2
+        uses: https://git.rfa.cz/tth-pub/ci-actions/dtrack-sbom@v3
         with:
           report: ${{ steps.trivy.outputs.report }}
           url: https://dtrack.grg
