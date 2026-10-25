@@ -5,6 +5,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      skip_trivy:
+        description: "skip the Trivy gate (EMERGENCY, logged)"
+        type: boolean
+        default: false
 
 env:
   REGISTRY: git.rfa.cz
@@ -29,7 +34,7 @@ jobs:
           # Build version from git
           BUILD_VERSION="$(git describe --tags --always 2>/dev/null || echo "sha-${SHORT_SHA}")"
 
-          docker build \
+          docker build --pull \
             --build-arg BUILD_VERSION="${BUILD_VERSION}" \
             --platform linux/amd64 \
             -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
@@ -39,8 +44,38 @@ jobs:
       - name: Push to registry
         run: |
           echo "${{ secrets.REGISTRY_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ gitea.actor }} --password-stdin
-          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.build.outputs.short_sha }}
+
+      # Trivy gate (tth-pub/ci-actions): a fixable HIGH/CRITICAL or a secret
+      # in the image = `latest` does not move and nothing is deployed.
+      # Accepted risks with a reason and expiry in .trivyignore.yaml.
+      # mode: warn = phase 1 (report only), block = phase 2.
+      - name: Trivy gate
+        id: trivy
+        uses: https://git.rfa.cz/tth-pub/ci-actions/trivy-gate@v1
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.build.outputs.short_sha }}
+          username: ${{ gitea.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+          mode: warn
+          skip: ${{ inputs.skip_trivy && 'true' || 'false' }}
+
+      - name: Move latest
+        run: |
+          echo "${{ secrets.REGISTRY_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ gitea.actor }} --password-stdin
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      # SBOM of the deployed image to Dependency-Track from the same scan;
+      # a DT outage (or a missing key) does not stop the deploy.
+      - name: SBOM to Dependency-Track
+        uses: https://git.rfa.cz/tth-pub/ci-actions/dtrack-sbom@v1
+        with:
+          report: ${{ steps.trivy.outputs.report }}
+          url: https://dtrack.grg
+          api-key: ${{ secrets.DTRACK_API_KEY }}
+          ca-pem: ${{ vars.RFA_CA_PEM }}
+          project: birdnet-go
+          version: latest
 
       - name: Deploy to Portainer
         run: |
