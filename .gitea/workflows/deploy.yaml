@@ -28,7 +28,7 @@ jobs:
       - name: gitleaks
         uses: https://git.rfa.cz/tth-pub/ci-actions/gitleaks@v5
         with:
-          mode: warn
+          mode: block
 
       - name: Trivy config
         uses: https://git.rfa.cz/tth-pub/ci-actions/trivy-gate@v5
@@ -64,7 +64,7 @@ jobs:
       # Trivy gate (tth-pub/ci-actions): a fixable HIGH/CRITICAL or a secret
       # in the image = `latest` does not move and nothing is deployed.
       # Accepted risks with a reason and expiry in .trivyignore.yaml.
-      # mode: warn = phase 1 (report only), block = phase 2.
+      # mode: block since 2026-10-26 (phase 2).
       - name: Trivy gate
         id: trivy
         uses: https://git.rfa.cz/tth-pub/ci-actions/trivy-gate@v5
@@ -72,7 +72,7 @@ jobs:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.build.outputs.short_sha }}
           username: ${{ gitea.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
-          mode: warn
+          mode: block
           skip: ${{ inputs.skip_trivy && 'true' || 'false' }}
 
       - name: Move latest
