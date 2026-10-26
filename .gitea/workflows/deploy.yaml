@@ -95,7 +95,7 @@ jobs:
       # Compose in git = source of truth; stack env (SENTRY_DSN) is kept,
       # IMAGE_TAG pins the commit that passed the gate.
       - name: Deploy to Portainer
-        uses: https://git.rfa.cz/tth-pub/ci-actions/portainer-deploy@v4
+        uses: https://git.rfa.cz/tth-pub/ci-actions/portainer-deploy@v5
         with:
           url: ${{ secrets.PORTAINER_URL }}
           token: ${{ secrets.PORTAINER_TOKEN }}
