@@ -1752,6 +1752,12 @@
             "sqlite_integrity": {
               "name": "Database-integriteit"
             },
+            "mysql_server_version": {
+              "name": "Versie van databaseserver"
+            },
+            "mysql_charset": {
+              "name": "Tekenset van database"
+            },
             "mysql_table_health": {
               "name": "Tabelgezondheid"
             },
