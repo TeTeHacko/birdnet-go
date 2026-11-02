@@ -1230,6 +1230,8 @@ export type TranslationKey =
   | 'system.database.migration.completedNote'
   | 'system.database.migration.starting'
   | 'system.database.migration.status.idle'
+  | 'system.database.migration.status.checking'
+  | 'system.database.migration.status.notReady'
   | 'system.database.migration.status.initializing'
   | 'system.database.migration.status.dual_write'
   | 'system.database.migration.status.migrating'
@@ -1259,6 +1261,8 @@ export type TranslationKey =
   | 'system.database.migration.progress.recordsLabel'
   | 'system.database.migration.progress.sizeLabel'
   | 'system.database.migration.progress.prerequisitesNotMet'
+  | 'system.database.migration.progress.prerequisitesUnavailable'
+  | 'system.database.migration.progress.prerequisitesFailedList' // params: checks
   | 'system.database.migration.progress.validatingTitle'
   | 'system.database.migration.progress.validatingBody' // params: count
   | 'system.database.migration.progress.dirtyRecordsCatchup' // params: count
@@ -4658,6 +4662,7 @@ export type TranslationParams = {
   'system.database.migration.progress.dirtyIds': { count: string | number };
   'system.database.migration.progress.completedBody': { count: string | number };
   'system.database.migration.progress.migrateInfo': { count: string | number };
+  'system.database.migration.progress.prerequisitesFailedList': { checks: string | number };
   'system.database.migration.progress.validatingBody': { count: string | number };
   'system.database.migration.progress.dirtyRecordsCatchup': { count: string | number };
   'system.database.migration.progress.migratingPhase': { phase: string | number };
