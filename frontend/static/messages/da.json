@@ -1564,6 +1564,8 @@
           "creating": "Opretter...",
           "createBackup": "Opret sikkerhedskopi",
           "noBackups": "Ingen sikkerhedskopier endnu",
+          "loadFailed": "Sikkerhedskopieringshistorikken kunne ikke indlæses",
+          "createFailed": "Sikkerhedskopien kunne ikke startes",
           "download": "Download",
           "failed": "Mislykkedes",
           "columns": {
