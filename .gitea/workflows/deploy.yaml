@@ -49,7 +49,25 @@ jobs:
           # Build version from git
           BUILD_VERSION="$(git describe --tags --always 2>/dev/null || echo "sha-${SHORT_SHA}")"
 
+          # Layer cache from the registry, not only from the runner: builds
+          # alternate between grg-runner and swarm-runner and the swarm prunes
+          # build cache, so runtime-base was often rebuilt. Its apt/dpkg RUN
+          # is not reproducible, so every rebuild pushed a new 217 MB layer
+          # and invalidated all of `final` (the 67 MB models layer too) -
+          # ~0.5 GB of new blobs per build, ~14 GB held by the keep-30
+          # cleanup rule (proxmox.rfa.cz TODO-125, measured 2026-11-03).
+          # Inline cache = the metadata rides in the image itself, no extra
+          # blobs (unlike a mode=max :buildcache, which would also store the
+          # buildenv/node_modules layers). `latest` is the last image that
+          # passed the gate. A missing/unreadable cache source only logs
+          # "failed to configure registry cache importer" and builds
+          # normally - tested 2026-11-03 against a local registry with an
+          # empty-cache containerd-store daemon.
+          echo "${{ secrets.REGISTRY_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ gitea.actor }} --password-stdin
+
           docker build --pull \
+            --cache-from type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            --cache-to type=inline \
             --build-arg BUILD_VERSION="${BUILD_VERSION}" \
             --platform linux/amd64 \
             -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
