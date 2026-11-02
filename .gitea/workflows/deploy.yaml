@@ -65,14 +65,38 @@ jobs:
           # empty-cache containerd-store daemon.
           echo "${{ secrets.REGISTRY_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ gitea.actor }} --password-stdin
 
-          docker build --pull \
-            --cache-from type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-            --cache-to type=inline \
-            --build-arg BUILD_VERSION="${BUILD_VERSION}" \
-            --platform linux/amd64 \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${SHORT_SHA} \
-            .
+          build() {
+            docker build --pull \
+              --cache-from type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+              --cache-to type=inline \
+              --build-arg BUILD_VERSION="${BUILD_VERSION}" \
+              --platform linux/amd64 \
+              -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+              -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${SHORT_SHA} \
+              "$@" .
+          }
+          upgradable() {
+            docker run --rm --user 0 --entrypoint sh \
+              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${SHORT_SHA} \
+              -c 'apt-get update -qq >/dev/null 2>&1 && apt list --upgradable 2>/dev/null | grep -c "\[upgradable" || true'
+          }
+
+          build
+          # A cached runtime-base never sees Debian (security) updates: the
+          # runner's local cache wins over the registry, and on 2026-11-02
+          # swarm-runner reused an apt layer older than vim +deb13u1 -> Trivy
+          # gate blocked 72 findings while `latest` (grg-runner) was fine.
+          # The gate only reports; this fixes it: if the built image has
+          # upgradable packages (or the check fails), rebuild runtime-base
+          # without cache. Costs one rebuild per Debian update per runner.
+          UPG=$(upgradable || true)
+          if [ "$UPG" != "0" ]; then
+            echo "::warning::cached runtime-base is stale (${UPG:-check failed} upgradable packages), rebuilding it without cache"
+            build --no-cache-filter runtime-base
+            echo "after rebuild: $(upgradable || true) upgradable packages"
+          else
+            echo "runtime-base is current (0 upgradable packages)"
+          fi
 
       - name: Push to registry
         run: |
