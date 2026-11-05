@@ -26,12 +26,12 @@ jobs:
       # redacted output) and misconfigurations in Dockerfiles/compose
       # (trivy config, report only).
       - name: gitleaks
-        uses: https://git.rfa.cz/tth-pub/ci-actions/gitleaks@v12
+        uses: https://git.rfa.cz/tth-pub/ci-actions/gitleaks@v14
         with:
           mode: block
 
       - name: Trivy config
-        uses: https://git.rfa.cz/tth-pub/ci-actions/trivy-gate@v12
+        uses: https://git.rfa.cz/tth-pub/ci-actions/trivy-gate@v14
         with:
           scan-type: fs
           scanners: misconfig
@@ -109,7 +109,7 @@ jobs:
       # mode: block since 2026-10-26 (phase 2).
       - name: Trivy gate
         id: trivy
-        uses: https://git.rfa.cz/tth-pub/ci-actions/trivy-gate@v12
+        uses: https://git.rfa.cz/tth-pub/ci-actions/trivy-gate@v14
         with:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.build.outputs.short_sha }}
           username: ${{ gitea.actor }}
@@ -125,7 +125,7 @@ jobs:
       # SBOM of the deployed image to Dependency-Track from the same scan;
       # a DT outage (or a missing key) does not stop the deploy.
       - name: SBOM to Dependency-Track
-        uses: https://git.rfa.cz/tth-pub/ci-actions/dtrack-sbom@v12
+        uses: https://git.rfa.cz/tth-pub/ci-actions/dtrack-sbom@v14
         with:
           report: ${{ steps.trivy.outputs.report }}
           url: https://dtrack.grg
@@ -137,7 +137,7 @@ jobs:
       # Compose in git = source of truth; stack env (SENTRY_DSN) is kept,
       # IMAGE_TAG pins the commit that passed the gate.
       - name: Deploy to Portainer
-        uses: https://git.rfa.cz/tth-pub/ci-actions/portainer-deploy@v12
+        uses: https://git.rfa.cz/tth-pub/ci-actions/portainer-deploy@v14
         with:
           url: ${{ secrets.PORTAINER_URL }}
           token: ${{ secrets.PORTAINER_TOKEN }}
