@@ -93,17 +93,18 @@ func TestAudibleBatsCacheKey(t *testing.T) {
 
 	negZero := math.Copysign(0, -1)
 	assertCacheKeyPairs(t, []cacheKeyPair{
-		{"negative zero gain is zero", audibleBatsCacheKey("1", "tag", 10, false, 0), audibleBatsCacheKey("1", "tag", 10, false, negZero), true},
-		{"clip source tag separates entries", audibleBatsCacheKey("1", "tagA", 10, false, 0), audibleBatsCacheKey("1", "tagB", 10, false, 0), false},
-		{"expansion separates entries", audibleBatsCacheKey("1", "tag", 10, false, 0), audibleBatsCacheKey("1", "tag", 20, false, 0), false},
-		{"normalize separates entries", audibleBatsCacheKey("1", "tag", 10, true, 0), audibleBatsCacheKey("1", "tag", 10, false, 0), false},
+		{"negative zero gain is zero", audibleBatsCacheKey("1", "tag", 10, false, "", 0), audibleBatsCacheKey("1", "tag", 10, false, "", negZero), true},
+		{"clip source tag separates entries", audibleBatsCacheKey("1", "tagA", 10, false, "", 0), audibleBatsCacheKey("1", "tagB", 10, false, "", 0), false},
+		{"expansion separates entries", audibleBatsCacheKey("1", "tag", 10, false, "", 0), audibleBatsCacheKey("1", "tag", 20, false, "", 0), false},
+		{"denoise preset separates entries", audibleBatsCacheKey("1", "tag", 10, false, "light-medium", 0), audibleBatsCacheKey("1", "tag", 10, false, "", 0), false},
+		{"normalize separates entries", audibleBatsCacheKey("1", "tag", 10, true, "", 0), audibleBatsCacheKey("1", "tag", 10, false, "", 0), false},
 		// The key keeps the gain at full precision, unlike the processing key.
-		{"gain below 0.1 dB separates entries", audibleBatsCacheKey("1", "tag", 10, false, 6.01), audibleBatsCacheKey("1", "tag", 10, false, 6.04), false},
+		{"gain below 0.1 dB separates entries", audibleBatsCacheKey("1", "tag", 10, false, "", 6.01), audibleBatsCacheKey("1", "tag", 10, false, "", 6.04), false},
 	})
 
 	t.Run("detection id cannot add path elements", func(t *testing.T) {
 		t.Parallel()
-		assertKeyStaysInCacheDir(t, audibleBatsCacheKey(`..\x/y`, "tag", 10, false, 0))
+		assertKeyStaysInCacheDir(t, audibleBatsCacheKey(`..\x/y`, "tag", 10, false, "", 0))
 	})
 }
 
@@ -263,4 +264,27 @@ func TestProcessingCache(t *testing.T) {
 		_, _, ok = cache.open("missing.wav")
 		assert.False(t, ok)
 	})
+}
+
+func TestDenoisedSpectrogramCacheKey(t *testing.T) {
+	tests := []struct {
+		name        string
+		id          string
+		raw         bool
+		freqToken   string
+		styleSuffix string
+		want        string
+	}{
+		{name: "bird profile, raw", id: "7", raw: true, want: "spec_7_tag_light-medium_1026_1_bird.png"},
+		{name: "bat profile, legend", id: "7", freqToken: "bat-v3", want: "spec_7_tag_light-medium_1026_0_bat-v3.png"},
+		{name: "style suffix is appended", id: "7", raw: true, styleSuffix: "-scientific_dark-dr80", want: "spec_7_tag_light-medium_1026_1_bird-scientific_dark-dr80.png"},
+		{name: "path separators in the id are neutralised", id: "../a/b", raw: true, want: "spec__" + "_a_b_tag_light-medium_1026_1_bird.png"},
+		{name: "path separators in the style suffix are neutralised", id: "7", raw: true, styleSuffix: "-dr../../outside", want: "spec_7_tag_light-medium_1026_1_bird-dr____outside.png"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := denoisedSpectrogramCacheKey(tc.id, "tag", "light-medium", 1026, tc.raw, tc.freqToken, tc.styleSuffix)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }

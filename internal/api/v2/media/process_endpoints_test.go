@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -245,6 +246,66 @@ func TestAudibleBatsByID_CacheFollowsClipFile(t *testing.T) {
 	assert.InDelta(t, float64(lenA), float64(lenB2), 8192, "a clip replaced in place is processed again, not served from its old cache entry")
 }
 
+func TestAudibleBatsByID_DenoiseSeparatesCacheEntries(t *testing.T) {
+	e, controller, tempDir := setupMediaTestEnvironment(t)
+
+	writeToneWAV(t, fixturePath(tempDir, "bat.wav"), batTestRate, batTestSeconds, fixtureBatToneHz)
+	mockDS := mocks.NewMockInterface(t)
+	mockDS.On("GetNoteModelType", "2").Return("bat", nil)
+	mockDS.On("GetNoteClipPath", "2").Return("bat.wav", nil)
+	controller.DS = mockDS
+
+	const denoised = `{"expansion": 10, "denoise": "light-medium"}`
+	rec := postJSON(e, "/api/v2/audio/2/audible-bats", denoised)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	// The source now holds undecodable bytes of the same length and mtime, so
+	// only a cache hit can answer 200.
+	corruptKeepingStat(t, fixturePath(tempDir, "bat.wav"))
+	rec = postJSON(e, "/api/v2/audio/2/audible-bats", denoised)
+	assert.Equal(t, http.StatusOK, rec.Code, "the same preset is served from the cache")
+	rec = postJSON(e, "/api/v2/audio/2/audible-bats", `{"expansion": 10}`)
+	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code, "no preset is a different entry and is processed again")
+
+	assert.Equal(t, http.StatusBadRequest, postJSON(e, "/api/v2/audio/2/audible-bats", `{"expansion": 10, "denoise": "extreme"}`).Code)
+}
+
+func TestAudibleBatsByID_CancelledRequestFreesItsSlot(t *testing.T) {
+	e, controller, tempDir := setupMediaTestEnvironment(t)
+
+	// Long enough that the job is still denoising when the client leaves.
+	const inFlightSeconds = 10
+	writeToneWAV(t, fixturePath(tempDir, "bat.wav"), batTestRate, inFlightSeconds, fixtureBatToneHz)
+	mockDS := mocks.NewMockInterface(t)
+	mockDS.On("GetNoteModelType", "3").Return("bat", nil)
+	mockDS.On("GetNoteClipPath", "3").Return("bat.wav", nil)
+	controller.DS = mockDS
+
+	reqCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/audio/3/audible-bats",
+		strings.NewReader(`{"expansion": 10, "denoise": "light-medium"}`)).WithContext(reqCtx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.ServeHTTP(rec, req)
+	}()
+
+	require.Eventually(t, func() bool { return len(controller.processingSemaphore) == 1 },
+		5*time.Second, time.Millisecond, "the job took its processing slot")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		require.FailNow(t, "the handler did not return after the client left")
+	}
+
+	assert.Empty(t, rec.Body.Bytes(), "a client that left gets no error body and no audio")
+	assert.Empty(t, controller.processingSemaphore, "the aborted job released its processing slot")
+}
+
 func TestProcessedSpectrogramByID_UndecodableSourceIs422(t *testing.T) {
 	e, controller, tempDir := setupMediaTestEnvironment(t)
 
@@ -256,8 +317,11 @@ func TestProcessedSpectrogramByID_UndecodableSourceIs422(t *testing.T) {
 	rec := postJSON(e, "/api/v2/spectrogram/20/process", `{"normalize": true}`)
 	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code, "the source is rejected before any rendering")
 
+	// The temp directory is only made once the transcode succeeds.
 	entries, err := os.ReadDir(filepath.Join(tempDir, ".tmp-processing"))
-	require.NoError(t, err)
+	if !os.IsNotExist(err) {
+		require.NoError(t, err)
+	}
 	assert.Empty(t, entries, "no temp file outlives the request")
 }
 

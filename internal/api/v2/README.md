@@ -197,7 +197,9 @@ in the order denoise (`light`, `light-medium`, `medium`, `heavy`), loudness norm
 (`gain_db`, within +/-60). A source that cannot be processed answers **422**: a file
 that is not one of the clip formats (WAV, FLAC, MP3, AAC in M4A, Opus), a corrupt or truncated file, a file or range above the size limits
 (256 MiB on disk, 128 MiB of decoded audio), or a clip window that starts past the end
-of the audio.
+of the audio. `audible-bats` takes the same optional `denoise` preset; it runs at the
+source sample rate before the time expansion, while normalization and gain run after it. An
+unknown preset answers **400**.
 
 **Denoised audio (`GET /audio/:id?denoise=<preset>`).** Without the parameter the stored
 clip is served verbatim, whatever the clip format. With `denoise` set to a preset
@@ -216,6 +218,19 @@ dashboard "denoise playback" setting, empty while it is off or export-stage deno
 read per request, and only when `denoise` equals it; otherwise they get the stored clip
 with `Cache-Control: no-store`, unless the denoised variant is already cached, which is
 served to them as to anyone.
+
+**Denoised spectrogram (`GET /spectrogram/:id?denoise=<preset>`).** Without the parameter the
+stored spectrogram is served as before. With a preset the response is a PNG rendered from the
+same denoised WAV the audio GET above serves, so the spectrogram and the first play denoise the
+clip once. The render follows the frequency profile of the detection's model and the current
+Style and DynamicRange settings (a change renders fresh); it is cached for 15 minutes with the
+processed audio. An unknown preset answers **400**. The slot is held for the denoise only and
+the render runs outside it; when both slots are busy and no render is cached the request
+answers **503** with `Retry-After`. The same guest rule as for audio applies: a request that
+is not allowed to start a denoise, a clip that is not on disk, and the `user-requested`
+spectrogram mode before the stored spectrogram exists (a page load never starts a denoise
+there) get the stored-spectrogram answer with `Cache-Control: no-store`. A detection whose
+audio was removed ignores the parameter and serves the kept spectrogram.
 
 **Spectrogram status codes.** All five spectrogram endpoints (`/media/spectrogram/:filename`,
 `/spectrogram/:id`, `/spectrogram/:id/generate`, `/spectrogram/:id/status` and
