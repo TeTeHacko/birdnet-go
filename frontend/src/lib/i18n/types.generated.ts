@@ -2900,6 +2900,7 @@ export type TranslationKey =
   | 'settings.audio.exportDenoise.warningBats'
   | 'settings.audio.exportDenoise.warningImported'
   | 'settings.audio.exportDenoise.lossyNote' // params: minBitrate
+  | 'settings.audio.exportDenoise.warningPlayback'
   | 'settings.audio.audioClipRetention.title'
   | 'settings.audio.audioClipRetention.description'
   | 'settings.audio.audioClipRetention.policyLabel'
@@ -3622,6 +3623,14 @@ export type TranslationKey =
   | 'settings.userInterface.audioPlayback.defaultGain'
   | 'settings.userInterface.audioPlayback.defaultGainHelpText'
   | 'settings.userInterface.audioPlayback.defaultGainUnit'
+  | 'settings.userInterface.audioPlayback.denoiseLabel'
+  | 'settings.userInterface.audioPlayback.denoiseHelpText'
+  | 'settings.userInterface.audioPlayback.denoiseStrengthLabel'
+  | 'settings.userInterface.audioPlayback.denoiseStrengthHelpText'
+  | 'settings.userInterface.audioPlayback.denoiseStrengthDisabledHelp'
+  | 'settings.userInterface.audioPlayback.denoiseExportPrecedence'
+  | 'settings.userInterface.audioPlayback.denoiseRedenoiseNote'
+  | 'settings.userInterface.audioPlayback.denoiseLossyNote' // params: minBitrate
   | 'settings.restartRequired'
   | 'auth.login'
   | 'auth.logout'
@@ -4924,6 +4933,7 @@ export type TranslationParams = {
   'settings.alerts.confirmDelete': { name: string | number };
   'settings.alerts.historyCount': { total: string | number };
   'settings.alerts.status.imported': { imported: string | number; total: string | number };
+  'settings.userInterface.audioPlayback.denoiseLossyNote': { minBitrate: string | number };
   'auth.errors.rateLimited': { minutes: string | number };
   'dataDisplay.table.sortBy': { column: string | number };
   'dataDisplay.table.pageInfo': {
