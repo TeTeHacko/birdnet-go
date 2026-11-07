@@ -5241,6 +5241,7 @@
         "denoise": "Odszumianie",
         "denoiseOff": "Wyłączony",
         "denoiseLight": "Lekki",
+        "denoiseLightMedium": "Lekki-średni",
         "denoiseMedium": "Średni",
         "denoiseHeavy": "Ciężki",
         "normalize": "Normalizuj audio",

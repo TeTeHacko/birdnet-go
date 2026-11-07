@@ -5241,6 +5241,7 @@
         "denoise": "Brusreducering",
         "denoiseOff": "Av",
         "denoiseLight": "Lätt",
+        "denoiseLightMedium": "Lätt-medel",
         "denoiseMedium": "Medel",
         "denoiseHeavy": "Kraftig",
         "normalize": "Normalisera ljud",

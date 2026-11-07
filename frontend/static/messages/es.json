@@ -5241,6 +5241,7 @@
         "denoise": "Reducir ruido",
         "denoiseOff": "Desactivado",
         "denoiseLight": "Suave",
+        "denoiseLightMedium": "Suave-medio",
         "denoiseMedium": "Medio",
         "denoiseHeavy": "Fuerte",
         "normalize": "Normalizar audio",

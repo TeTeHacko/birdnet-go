@@ -5241,6 +5241,7 @@
         "denoise": "Ruisonderdrukking",
         "denoiseOff": "Uit",
         "denoiseLight": "Licht",
+        "denoiseLightMedium": "Licht-gemiddeld",
         "denoiseMedium": "Gemiddeld",
         "denoiseHeavy": "Zwaar",
         "normalize": "Audio normaliseren",

@@ -5260,6 +5260,7 @@
         "denoise": "Odšumění",
         "denoiseOff": "Vypnuto",
         "denoiseLight": "Slabé",
+        "denoiseLightMedium": "Středně slabé",
         "denoiseMedium": "Střední",
         "denoiseHeavy": "Silné",
         "normalize": "Normalizovat zvuk",
