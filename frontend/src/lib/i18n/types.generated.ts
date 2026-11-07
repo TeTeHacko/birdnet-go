@@ -2886,6 +2886,19 @@ export type TranslationKey =
   | 'settings.audio.audioNormalization.truePeakHelp'
   | 'settings.audio.audioNormalization.noteTitle'
   | 'settings.audio.audioNormalization.noteDescription'
+  | 'settings.audio.exportDenoise.title'
+  | 'settings.audio.exportDenoise.description'
+  | 'settings.audio.exportDenoise.enable'
+  | 'settings.audio.exportDenoise.enableHelp'
+  | 'settings.audio.exportDenoise.requiresRecording'
+  | 'settings.audio.exportDenoise.strengthLabel'
+  | 'settings.audio.exportDenoise.strengthHelp'
+  | 'settings.audio.exportDenoise.strengthDisabledHelp'
+  | 'settings.audio.exportDenoise.warningTitle'
+  | 'settings.audio.exportDenoise.warningPermanent'
+  | 'settings.audio.exportDenoise.warningBats'
+  | 'settings.audio.exportDenoise.warningImported'
+  | 'settings.audio.exportDenoise.lossyNote' // params: minBitrate
   | 'settings.audio.audioClipRetention.title'
   | 'settings.audio.audioClipRetention.description'
   | 'settings.audio.audioClipRetention.policyLabel'
@@ -4857,6 +4870,7 @@ export type TranslationParams = {
   'settings.audio.clipRecording.preCaptureHelp': { max: string | number };
   'settings.audio.clipRecording.bitrateHelp': { min: string | number; max: string | number };
   'settings.audio.fileSettings.bitrateHelp': { min: string | number; max: string | number };
+  'settings.audio.exportDenoise.lossyNote': { minBitrate: string | number };
   'settings.audio.models.defaultBadge': { models: string | number };
   'settings.security.oauth.providers.deleteConfirm': { provider: string | number };
   'settings.security.oauth.getCredentialsLabel': { provider: string | number };
