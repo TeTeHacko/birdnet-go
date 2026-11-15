@@ -34,7 +34,6 @@
     "internalServerError": "Sisäinen palvelinvirhe",
     "actions": {
       "download": "Lataa",
-      "review": "Tarkastele",
       "play": "Toista",
       "view": "Näytä"
     },
@@ -141,14 +140,14 @@
       "visitEbirdLink": "Avaa eBird.org uuteen välilehteen",
       "learnEbirdTaxonomyLink": "Avaa eBird-taksonomia uuteen välilehteen",
       "resizeHandle": "Vedä muuttaaksesi kokoa",
-      "imageCredit": "Kuvan luotto: {name}"
+      "imageCredit": "Kuvan luotto: {name}",
+      "opensInNewTab": "avautuu uudelle välilehdelle"
     },
     "labels": {
       "confidence": "Luottamus",
       "github": "GitHub"
     },
     "values": {
-      "yes": "Kyllä",
       "no": "Ei",
       "unknown": "Tuntematon"
     },
@@ -181,12 +180,6 @@
         "hideComment": "Piilota kommentti",
         "commentPlaceholder": "Lisää kommentti tästä havainnosta...",
         "commentCount": "({chars} merkkiä)",
-        "chars": "merkkiä",
-        "commentsLabel": "Kommentit",
-        "currentStatusTitle": "Nykyinen tila",
-        "detectionStatusTitle": "Havainnon tila",
-        "lockLabel": "Lukitustila",
-        "reviewLabel": "Tarkistustila",
         "saveReview": "Tallenna tarkistus"
       },
       "errors": {
@@ -207,7 +200,6 @@
     "hoursShort": "t"
   },
   "pageTitle": {
-    "settings": "Asetukset - BirdNET-Go",
     "pageNotFound": "404 - Sivua ei löydy",
     "serverError": "500 - Sisäinen palvelinvirhe",
     "componentError": "Komponentin latausvirhe",
@@ -889,23 +881,190 @@
       "allDetections": "Kaikki havainnot päivänä {date}"
     },
     "detail": {
-      "species": "Laji",
-      "observation": "Havainto",
+      "species": {
+        "dialogTitle": "Vaihda laji",
+        "current": "Tunnistettu tällä hetkellä lajiksi",
+        "fromPredictions": "Mallin muut ennusteet",
+        "search": "Hae lajeja",
+        "loadingList": "Ladataan lajiluetteloa...",
+        "listFailed": "Lajiluetteloa ei voitu ladata. Sulje tämä ikkuna ja yritä uudelleen.",
+        "noMatches": "Yksikään laji ei täsmää.",
+        "effect": "Havainto merkitään oikeaksi, ja mallin oma valinta säilyy tiedoissa.",
+        "pickFirst": "Valitse ensin laji.",
+        "confirm": "Vaihda lajiksi {species}",
+        "confirmEmpty": "Vaihda laji",
+        "changed": "Lajiksi vaihdettu {species}",
+        "changeFailed": "Lajia ei voitu vaihtaa. Yritä uudelleen.",
+        "conflict": "Lajia ei voi nyt vaihtaa: havainto on säilytetty (lukittu) tai käytössä on vanha tietokantamuoto.",
+        "notKnownHere": "Lajia {species} ei ole koskaan havaittu tai ennustettu tällä asemalla, joten sitä ei voi vielä valita.",
+        "predictionsTitle": "Muut ennusteet",
+        "noPredictions": "Malli ei tallentanut muita ennusteita tälle tallenteelle.",
+        "allSpecies": "Kaikki lajit",
+        "searchRangePlaceholder": "Tällä sijainnilla odotettu laji",
+        "searchAllPlaceholder": "Mikä tahansa mallien tuntema laji",
+        "searchHintRange": "Haetaan {count} lajista, joita aluesuodatin odottaa täällä. Ota Kaikki lajit käyttöön hakeaksesi kaikista.",
+        "searchHintAll": "Haetaan kaikista {count} mallien tuntemasta lajista.",
+        "noMatchesInRange": "Ei osumia täällä odotettujen lajien joukossa. Ota Kaikki lajit käyttöön hakeaksesi kaikista.",
+        "modelPick": "mallin valinta"
+      },
       "aria": {
-        "downloadAudioClip": "Lataa äänileike {name} havainnolle",
-        "audioRecordingFor": "Äänitallenne ja spektrogrammi lajille {name}",
         "scientificName": "Tieteellinen nimi",
         "classificationBadges": "Lajin luokitusmerkit",
         "confidence": "Havainnon luottamus {confidence}%",
-        "metadata": "Havainnon metatiedot",
-        "weatherConditions": "Sääolosuhteet havaintohetkellä",
-        "comments": "Havainnon kommentit",
-        "commentText": "Kommentin teksti",
-        "commentTimestamp": "Kommentin aikaleima",
-        "mainRegion": "Havainnon tiedot",
-        "tabsHeading": "Havaintotietojen välilehdet",
-        "tabList": "Havainnon tietojen välilehdet",
         "speciesHeadingSuffix": "havainnon tiedot"
+      },
+      "nav": {
+        "label": "Havaintojen selaus",
+        "back": "Havainnot",
+        "allGroup": "Kaikki havainnot",
+        "older": "Vanhempi havainto",
+        "noOlder": "Tämä on vanhin havainto",
+        "newer": "Uudempi havainto",
+        "noNewer": "Tämä on uusin havainto",
+        "speciesGroup": "Lajin {species} havainnot",
+        "olderSpecies": "Vanhempi havainto lajista {species}",
+        "noOlderSpecies": "Ei vanhempaa havaintoa lajista {species}",
+        "newerSpecies": "Uudempi havainto lajista {species}",
+        "noNewerSpecies": "Ei uudempaa havaintoa lajista {species}",
+        "stepLoading": "{label}: tarkistetaan vierekkäisiä havaintoja",
+        "stepFailed": "{label}: vierekkäisten havaintojen tarkistus epäonnistui"
+      },
+      "identity": {
+        "date": "Päivämäärä",
+        "time": "Aika",
+        "beforeSunrise": "{hours} h {minutes} min ennen auringonnousua",
+        "afterSunrise": "{hours} h {minutes} min auringonnousun jälkeen",
+        "beforeSunset": "{hours} h {minutes} min ennen auringonlaskua",
+        "afterSunset": "{hours} h {minutes} min auringonlaskun jälkeen",
+        "setByReviewer": "Tarkistajan asettama laji",
+        "timeOfDay": "Vuorokaudenaika",
+        "minutesBeforeSunrise": "{minutes} min ennen auringonnousua",
+        "minutesAfterSunrise": "{minutes} min auringonnousun jälkeen",
+        "minutesBeforeSunset": "{minutes} min ennen auringonlaskua",
+        "minutesAfterSunset": "{minutes} min auringonlaskun jälkeen",
+        "predictionsUnknown": "Muut ennusteet",
+        "predictionsNone": "Ei muita ennusteita",
+        "predictionsCount": "{count, plural, one {# muu ennuste} other {# muuta ennustetta}}"
+      },
+      "conditions": {
+        "title": "Aika ja olosuhteet",
+        "skyLabel": "Päivän aikajana: havaittu klo {time}, auringonnousu {sunrise}, auringonlasku {sunset}",
+        "activityLabel": "Lajin {species} havainnot kellonajan mukaan",
+        "sunrise": "Auringonnousu",
+        "sunset": "Auringonlasku",
+        "activityLegend": "Lajin {species} aktiivisuus tunneittain, kaikkiaan",
+        "feelsLike": "Tuntuu kuin",
+        "moonLit": "{percent}% valaistu",
+        "windFrom": "Tuuli {direction}",
+        "cloudCover": "Pilvisyys",
+        "precipitation": "Sademäärä",
+        "precipitationTypes": {
+          "rain": "vettä",
+          "snow": "lunta",
+          "sleet": "räntää"
+        },
+        "observedAt": "Säähavainto klo {time}",
+        "notObserved": "Ei säähavaintoa tälle ajankohdalle"
+      },
+      "compass": {
+        "n": "P",
+        "nne": "PKO",
+        "ne": "KO",
+        "ene": "IKO",
+        "e": "I",
+        "ese": "IKA",
+        "se": "KA",
+        "sse": "EKA",
+        "s": "E",
+        "ssw": "ELO",
+        "sw": "LO",
+        "wsw": "LLO",
+        "w": "L",
+        "wnw": "LLU",
+        "nw": "LU",
+        "nnw": "PLU"
+      },
+      "review": {
+        "title": "Tarkistus",
+        "autosave": "Tallentuu heti valittaessa",
+        "question": "Onko tämä {species}?",
+        "correct": "Oikein",
+        "falsePositive": "Virheellinen havainto",
+        "saving": "Tallennetaan...",
+        "savedCorrect": "Merkitty oikeaksi",
+        "savedFalsePositive": "Merkitty virheelliseksi",
+        "loginRequired": "Kirjaudu sisään tarkistaaksesi tämän havainnon.",
+        "lockedHelp": "Säilytettyjä havaintoja ei voi muuttaa. Poista ensin Säilytä tämä tallenne käytöstä.",
+        "keep": "Säilytä tämä tallenne",
+        "keepHelp": "Säilytettyjä havaintoja ei koskaan poisteta siivouksessa.",
+        "reloadFailed": "Tallennettu, mutta havaintoa ei voitu ladata uudelleen. Päivitä sivu nähdäksesi muutoksen.",
+        "ignoredSpecies": "{species} ohitetaan tästä lähtien",
+        "wrongSpecies": "Väärä laji...",
+        "legacyHelp": "Lajin vaihtaminen edellyttää nykyistä tietokantamuotoa.",
+        "databaseChecking": "Tarkistetaan, voidaanko laji vaihtaa.",
+        "databaseUnknown": "Lajia ei voi vaihtaa ennen kuin tietokantamuoto on tiedossa.",
+        "ignoreShort": "Ohita laji",
+        "ignoredShort": "Laji ohitettu"
+      },
+      "models": {
+        "title": "Mallit",
+        "summary": "{hit} / {total} tunnisti sen",
+        "empty": "Tälle havainnolle ei ole mallikohtaisia tietoja. Mallien osuudet tallennetaan vain uudemmista havainnoista.",
+        "hits": "{count, plural, one {# osuma} other {# osumaa}}",
+        "mean": "keskiarvo {value}",
+        "noHit": "Ajettu tälle äänelle, ei osumaa"
+      },
+      "stats": {
+        "title": "Laji tällä asemalla",
+        "rangeScore": "Aluesuodattimen pistemäärä",
+        "rangeScoreNote": "Todennäköisyys tässä sijainnissa päivänä {date}",
+        "rangeScoreNoteToday": "Todennäköisyys tässä sijainnissa tänään",
+        "total": "Havainnot yhteensä",
+        "windowTotal": "Havainnot, viimeiset {days} päivää",
+        "firstHeard": "Ensimmäisen kerran kuultu",
+        "lastHeard": "Viimeksi kuultu",
+        "avgConfidence": "Keskimääräinen luottamus",
+        "maxConfidence": "Korkein luottamus",
+        "dailyTitle": "Havainnot päivässä, {days} päivää tähän havaintoon saakka",
+        "dailyLabel": "{count} havaintoa {days} päivän aikana tähän havaintoon saakka",
+        "allThisDay": "Kaikki lajin {species} havainnot tänä päivänä",
+        "reviewsTitle": "Ihmisten tarkistamat",
+        "reviewsCount": "{count, plural, one {# tarkistus} other {# tarkistusta}}",
+        "reviewsCorrect": "{count} oikein",
+        "reviewsFalse": "{count, plural, one {# virheellinen} other {# virheellistä}}",
+        "oftenRejected": "Hylätty täällä usein: {percent} % tarkistuksista oli virheellisiä",
+        "reviewsNone": "Tämän lajin havaintoja ei ole vielä tarkistettu."
+      },
+      "clip": {
+        "window": "Tallennusikkuna",
+        "length": "Pituus",
+        "seconds": "{count} s",
+        "format": "Muoto",
+        "denoised": "Kohina poistettu tallennettaessa",
+        "denoisedYes": "Kyllä",
+        "denoisedNo": "Ei",
+        "file": "Tiedosto",
+        "audioRemoved": "Ääni poistettiin säilytyskäytännön mukaisesti; spektrogrammikuva säilytettiin.",
+        "noClip": "Tälle havainnolle ei tallennettu äänitettä."
+      },
+      "log": {
+        "title": "Toimintaloki",
+        "subtitle": "Mitä tälle havainnolle on tapahtunut",
+        "detected": "Havaittu {species} luottamuksella {confidence} %",
+        "captureWindow": "Tallennusikkuna {begin}-{end}",
+        "clipSaved": "Tallenne tallennettu",
+        "clipSavedDenoised": "Tallenne tallennettu, kohina poistettu",
+        "firstReviewed": "Ensimmäisen kerran tarkistettu",
+        "reviewed": "Merkitty: {status}",
+        "locked": "Säilytetty (lukittu)",
+        "noteAdded": "Muistiinpano lisätty",
+        "noteEdited": "Muokattu {time}",
+        "timeUnknown": "Aikaa ei tallennettu",
+        "addNote": "Lisää muistiinpano",
+        "saveNote": "Lisää muistiinpano",
+        "lockedHelp": "Muistiinpanoja ei voi lisätä, kun havainto on säilytetty (lukittu).",
+        "noteEmpty": "Kirjoita muistiinpano ennen sen lisäämistä.",
+        "speciesChanged": "Laji vaihdettu lajista {from} lajiksi {to}"
       }
     },
     "headers": {
@@ -1042,12 +1201,6 @@
       "title": "Tallenne ja spektrogrammi",
       "clipHint": "Valitse leike napsauttamalla ja vetämällä spektrogrammia"
     },
-    "tabs": {
-      "overview": "Yleiskatsaus",
-      "taxonomy": "Taksonomia",
-      "history": "Historia",
-      "notes": "Huomiot"
-    },
     "environmental": {
       "title": "Ympäristöolosuhteet"
     },
@@ -1058,18 +1211,9 @@
       "status": "Tila",
       "locked": "Lukittu"
     },
-    "history": {
-      "title": "Havainnon historia",
-      "comingSoon": "Historian seuranta tulossa pian..."
-    },
-    "notes": {
-      "title": "Huomiot ja kommentit",
-      "noComments": "Ei kommentteja tai huomioita tälle havainnolle."
-    },
     "aria": {
       "loading": "Ladataan havainnon tietoja...",
       "loaded": "Havainnon tiedot ladattu: {species}",
-      "error": "Virhe havainnon latauksessa: {error}",
       "loadingResults": "Ladataan {count} tulosta...",
       "thumbnailLoading": "Ladataan {species} pikkukuvaa...",
       "thumbnailLoaded": "Pikkukuva {species} ladattu",
@@ -1105,9 +1249,7 @@
   },
   "species": {
     "rarity": {
-      "title": "Lajin harvinaisuus",
       "score": "Pisteet",
-      "basedOnLocation": "Sijainnin perusteella: {latitude}, {longitude}",
       "statuses": {
         "very_common": "Hyvin yleinen",
         "common": "Yleinen",
@@ -1119,7 +1261,6 @@
     },
     "taxonomy": {
       "hierarchy": "Taksonomiluokitus",
-      "subspecies": "Alalajit",
       "noData": "Taksonomiatietoja ei ole saatavilla.",
       "labels": {
         "kingdom": "Kunta",
@@ -1145,11 +1286,9 @@
       }
     },
     "tracking": {
-      "title": "Lajiseuranta",
       "newSpecies": "Uusi laji",
       "newThisYear": "Ensimmäinen tänä vuonna",
-      "newThisSeason": "Ensimmäinen tällä kaudella",
-      "daysSinceFirst": "Päiviä ensihavainnosta"
+      "newThisSeason": "Ensimmäinen tällä kaudella"
     }
   },
   "spectrogram": {
@@ -1202,13 +1341,6 @@
     },
     "systemInfo": {
       "title": "Järjestelmätiedot",
-      "os": "Käyttöjärjestelmä",
-      "hostname": "Isäntänimi",
-      "uptime": "Käynnissäoloaika",
-      "cpus": "Prosessorit",
-      "model": "Järjestelmämalli",
-      "timezone": "Aikavyöhyke",
-      "temperature": "Prosessorin lämpötila",
       "temperatureValue": "{temp}°C",
       "temperatureUnavailable": "Lämpötilatiedot eivät ole saatavilla",
       "cpuCores": "CPU-ytimet",
@@ -1247,16 +1379,7 @@
         "uptime": "Käynnissäoloaika",
         "process": "Prosessi"
       },
-      "showAll": "Näytä kaikki prosessit",
-      "showBirdnetOnly": "Näytä vain BirdNET",
-      "table": {
-        "process": "Prosessi",
-        "status": "Tila",
-        "cpu": "CPU",
-        "memory": "Muisti",
-        "uptime": "Käyntiaika",
-        "showAllProcesses": "Näytä kaikki prosessit"
-      }
+      "showAll": "Näytä kaikki prosessit"
     },
     "errors": {
       "systemInfo": "Järjestelmätietojen lataus epäonnistui: {error}",
@@ -1980,7 +2103,8 @@
     "detach": "Avaa uudessa ikkunassa",
     "detached": "Terminaali on irrotettu",
     "detachedDescription": "Terminaali toimii erillisessä ikkunassa. Sulje se palauttaaksesi sen tänne.",
-    "reattach": "Liitä takaisin"
+    "reattach": "Liitä takaisin",
+    "keyboardExitHint": "Poistu terminaalista painamalla Esc ja sitten Tab"
   },
   "analytics": {
     "hub": {
@@ -5651,6 +5775,10 @@
         "label": "Tunnistuksen jälkitarkistus",
         "helpText": "Kun käytössä, lepakkotunnistukset validoidaan analysoimalla ultraäänienergiakuvioita lähdeäänitteestä. Tunnistukset, joista puuttuvat kaikuluotausominaisuudet, merkitään epätodennäköisiksi."
       },
+      "batDiscardUnlikely": {
+        "label": "Hylkää epätodennäköiset tunnistukset",
+        "helpText": "Kun käytössä, lepakkotunnistukset, jotka tunnistuksen jälkitarkistus merkitsee epätodennäköisiksi, hylätään: niitä ei tallenneta, niille ei synny äänileikettä eikä ilmoitusta, eikä niitä voi palauttaa. Kun pois käytöstä (oletus), ne tallennetaan ja merkitään epätodennäköisiksi. Jo tallennettuja tunnistuksia ei muuteta."
+      },
       "batFalsePositiveFilter": {
         "label": "Lepakon väärien positiivisten suodatin",
         "helpText": "Vaatii useita vahvistuksia lepakkotunnistuksesta liukuvan ikkunan sisällä ennen kuin se hyväksytään. Korkeammat tasot vaativat enemmän vahvistuksia, mikä vähentää vääriä positiivisia. Lepakkomalli käyttää kiinteää 50 % päällekkäisyyttä, joten päällekkäisyyden säätöä ei tarvita.",
@@ -5794,7 +5922,8 @@
       },
       "tabs": {
         "installed": "Asennetut",
-        "available": "Saatavilla"
+        "available": "Saatavilla",
+        "navigationAria": "Malligallerian välilehdet"
       },
       "loading": "Ladataan malleja...",
       "retry": "Yritä uudelleen",
@@ -5864,6 +5993,11 @@
         "buildLabel": "{version} · {build}",
         "cardNotice": "Kehittäjien esiversio, ei lopullinen julkaisu. Tämä on varhainen versio testausta varten; tulokset voivat muuttua ennen vakaata versiota.",
         "dialogNotice": "Olet asentamassa kehittäjien esiversiota ({build}). Se soveltuu kokeiluun, mutta sitä ei vielä suositella ainoaksi luokittelijaksi."
+      },
+      "experimental": {
+        "badge": "Kokeellinen",
+        "cardNotice": "Kokeellinen BirdNET-Gossa. Malli on julkaistu, mutta sen suorituskykyä BirdNET-Gossa ei ole vielä todistettu, joten tulokset voivat olla epäluotettavampia.",
+        "dialogNotice": "Asennat mallin, joka on BirdNET-Gossa kokeellinen. Sen suorituskykyä ei ole vielä todistettu, joten tarkista sen havainnot ennen kuin luotat niihin."
       },
       "entryIncompatible": "Tämä malli ei ole saatavilla tässä järjestelmässä.",
       "regionGlobal": "Globaali",
@@ -6013,6 +6147,7 @@
     },
     "metricFooter": {
       "allPassing": "Kaikki kunnossa",
+      "healthyOfTotal": "{healthy} / {total}",
       "needsAttention": "Vaatii huomiota",
       "failing": "Epäonnistuu",
       "allClear": "Ei ongelmia",

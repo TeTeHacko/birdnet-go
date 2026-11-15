@@ -62,7 +62,7 @@ frontend/
 │   ├── App.svelte, main.js      # entry points
 │   ├── lib/
 │   │   ├── desktop/              # tablet and desktop UI (see desktop/AGENTS.md)
-│   │   │   ├── components/       # data, database, forms, media, modals, review, ui
+│   │   │   ├── components/       # data, database, forms, media, modals, ui
 │   │   │   ├── features/         # analytics, dashboard, detections, import-export,
 │   │   │   │                     #   live-stream, settings, system, wizard
 │   │   │   ├── layouts/          # RootLayout, sidebar, header
@@ -254,15 +254,38 @@ guessing:
 
 Theme colours are written as CSS variables in arbitrary values
 (`text-[var(--color-base-content)]`), not bare theme class names. Error text
-uses `text-[var(--text-error)]`, which is verified on base-100 and on a 15%
-error tint over base-100 (check other surfaces yourself); `--color-error` is for
-fills and borders.
+uses `text-[var(--text-error)]`; `--color-error` is for fills and borders.
+Success, warning and info text use `--text-success`, `--text-warning` and
+`--text-info`; text in the primary hue uses
+`--text-primary` (`schemes.css` sets it per colour scheme, and the custom
+scheme maps it to `--color-base-content`). Its consumers are
+`.menu-item-active` and `.menu-subitem-active`; the `.text-primary` utility
+still maps to `var(--color-primary)`, so write `text-[var(--text-primary)]` for
+AA primary-hue text. All four status text tokens reach
+4.5:1 on base-100, base-200, base-300 and on a 15% tint of their fill over each,
+and `--text-primary` does the same for every fixed scheme in both themes;
+`.badge-status-*`, `.alert-*`, `.text-error/success/warning/info` and
+`StatusPill` already use them. Use the
+`--color-*` fills for backgrounds, borders and dots, not for new text.
 
 ### General Rules
 
 - Every state (loading, saving, validating, error, success) has a visible,
   labelled indicator; a bare spinner is not enough. Fetching, saving and
   processing are distinct states with distinct labels.
+- Every page, and every card that loads its own data, shows a skeleton of its
+  final layout while it loads, not a spinner in a corner. Build it from the
+  `Skeleton` (one bar) and `SkeletonStatus` (the label) primitives in
+  `src/lib/desktop/components/ui/`, which hide each bar from assistive
+  technology, stop the pulse under `motion-reduce` and let bars shrink
+  (`min-w-0 max-w-full`). The skeleton mirrors the loaded layout (same grid,
+  card chrome and minimum heights) so nothing jumps when the data arrives, and
+  has exactly one visible loading label (a `SkeletonStatus`, or a status region the view already shows), placed where a line of loaded text
+  appears so it adds no height. Show it only on the first load: a refresh or a
+  poll never brings it back, and a failed load replaces it with an error. Use
+  `src/lib/desktop/features/system/components/InferenceSkeleton.svelte` as the
+  reference. Many existing pages still show a spinner; give a page a skeleton
+  when you change its loading state.
 - Validation errors appear next to the offending field with the specific
   reason, including a required field left empty. Show the error once the field
   is left or a submit is attempted, clear it when the user edits the field, and

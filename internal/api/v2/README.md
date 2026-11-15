@@ -142,8 +142,10 @@ Lightweight connectivity check. Returns a minimal response with no database quer
 | GET    | `/detections/recent`          | `GetRecentDetections`     | ❌   | Recent detections; `limit` defaults to 10 and is capped at 1000                                                            |
 | GET    | `/detections/:id/time-of-day` | `GetDetectionTimeOfDay`   | ❌   | Detection time context                                                                                                     |
 | GET    | `/detections/:id/predictions` | `GetDetectionPredictions` | ❌   | Alternate species the detecting model scored (enhanced database only)                                                      |
+| GET    | `/detections/:id/neighbors`   | `GetDetectionNeighbors`   | ❌   | Previous and next detection ids, overall and of the same species (enhanced database only)                                  |
 | DELETE | `/detections/:id`             | `DeleteDetection`         | ✅   | Delete detection record                                                                                                    |
 | POST   | `/detections/:id/review`      | `ReviewDetection`         | ✅   | Review/verify detection                                                                                                    |
+| PUT    | `/detections/:id/species`     | `ChangeDetectionSpecies`  | ✅   | Set the species as a reviewer's correction (enhanced database only)                                                        |
 | POST   | `/detections/:id/lock`        | `LockDetection`           | ✅   | Lock detection from changes                                                                                                |
 | POST   | `/detections/ignore`          | `IgnoreSpecies`           | ✅   | Toggle species in ignore list (add/remove)                                                                                 |
 | GET    | `/detections/ignored`         | `GetExcludedSpecies`      | ✅   | Get list of excluded species                                                                                               |
@@ -325,6 +327,19 @@ at the end of daylight saving time show the same `date` and `time` and differ in
 match and moon phase of a response use the same instant. A legacy database stores only offset-free date and
 time text, so there both detections get the first occurrence's offset.
 
+**Review and lock times.** On the enhanced (v2) database, `GET /detections/:id` carries `firstReviewedAt`,
+`lastReviewedAt` and `lockedAt`, each an RFC3339 time in the station zone, formatted like `timestamp`.
+`firstReviewedAt` is when the detection's review was first stored. `lastReviewedAt` is when the review was
+last saved: any save moves it, so the same status saved again and a species change both do, and it is never
+earlier than `firstReviewedAt` (they are equal for a review saved once). `lockedAt` is when the current lock
+was set; unlocking removes it and locking again starts a new time. Each is omitted without a review or lock
+and on the legacy database. List, recent and `POST /search` responses do not carry them. A review or lock
+imported from the legacy database can carry the time the migration copied or synced it rather than when it was made. On MySQL and MariaDB these times
+are stored as local wall clock without an offset, unlike `timestamp`, so one saved in the repeated hour at
+the end of daylight saving time can read back an hour early. A lock set by an earlier version was stamped in
+the database server's zone, so where the MySQL or MariaDB server zone differs from the BirdNET-Go zone its
+`lockedAt` is off by that difference; unlocking and locking again corrects it.
+
 **Spectrogram frequency range.** Bird spectrograms span 0 to 12 kHz. Bat
 spectrograms render at the clip's own sample rate and span 0 to half of it (a 384 kHz clip shows 0 to
 192 kHz, a 192 kHz clip 0 to 96 kHz). Bat renders carry the `-bat-v3` token in their file name, and a
@@ -333,6 +348,9 @@ fresh render removes the older `-bat-v2` and `-bat` files next to it.
 - Detection and search responses carry `clipSampleRate` (Hz, an integer) for the detection's original
   audio clip. The field is omitted when the rate is unknown. A spectrogram-only detection reports the
   original clip's rate, which kept images made before the `-bat-v3` change do not match.
+- List, recent and single detection responses carry `clipDenoised: true` when the export stage denoised the saved clip.
+  The field is omitted for a clip written as captured, for a clip saved before the marker existed, and on
+  the legacy database.
 - `GET /detections/:id` fills a missing rate for an older bat detection by reading that clip's header
   once (a few KB, never the whole clip), waiting at most 250 ms, and storing the value. If the clip is
   unreadable, nothing is stored and the next request tries again. If the wait runs out, the field is left
@@ -365,12 +383,35 @@ written best-effort).
 - The SSE `pending` event has its own `modelContributions` with a different element shape (`modelID`,
   `hitCount`, `maxConfidence`, present only when more than one model contributed).
 
+**Species change.** `PUT /detections/:id/species` with `{"scientificName": "..."}` sets the species of a
+detection as a reviewer's correction, on the enhanced (v2) database only. The detection takes the detecting
+model's label for that species (by name or taxonomic alias); confidence, clip and times are unchanged, and the
+detection is marked reviewed as `correct`. The first change records the model's own pick, and later changes
+keep it. A request for the species the detection already has changes nothing and answers 200, except that a locked detection answers 409 first. The success
+body is `{"status":"success"}`.
+
+- `originalSpecies`: list, recent and single detection responses carry `originalSpecies` (`scientificName`,
+  `commonName`, `speciesCode`) once a reviewer has changed the species, also after it was changed back. Its
+  confidence is the detection's `confidence`. It is omitted when the species was never changed and on the
+  legacy database. `POST /search` does not carry it.
+- Status codes: `409` when the enhanced database is not in use and for a locked detection (checked before the species is looked up), `400` for an id
+  that is not a positive integer that fits in 32 bits, a body that cannot be read, a missing name, a name
+  without a species part and an unknown species, `404` when the detection does not exist, and `500` for a database error.
+- Limitations: the new-species flags (`isNewSpecies`, `daysSinceFirstSeen` and the yearly and seasonal ones)
+  of the changed detection and of both species can stay as they were until the species tracker next
+  re-syncs from the database. Nothing already published is retracted or sent again: MQTT, BirdWeather, SSE
+  and notifications keep the species they were sent with. The clip file name and the tags embedded in the
+  clip keep the old species. No audit event is recorded, and no history is kept: only the model's own pick
+  and the current species. Only a species that already has a label row, for any model, is accepted; any
+  other name answers 400.
+
 **Detection predictions.** On the enhanced (v2) database, `GET /detections/:id/predictions` returns the
 alternate species the detecting model scored for one detection. `modelPredictions` has one element per
 model, today at most one, with `modelName`, `modelVersion`, `modelVariant`, `modelType` and `predictions`.
 `predictions` is never empty, and `modelPredictions` is `[]` when nothing remains after filtering. Each
 prediction has `scientificName` (the current, canonical name), `commonName`, `speciesCode` and
-`confidence`, ordered by confidence descending, then by scientific name.
+`confidence`, and `original` (on at most one entry, and absent when the species was never changed or was
+changed back; see below), ordered by confidence descending, then by scientific name.
 
 - Filtered out: the detected species and its aliases, human sound classes, and a dog class that scores
   below every non-dog alternate that remains, and is kept when none remains. This is a heuristic: the classifier adds one past its top results so that
@@ -378,6 +419,10 @@ prediction has `scientificName` (the current, canonical name), `commonName`, `sp
   The comparison is against the stored alternates, which are only those at or above
   `birdnet.alternateminconfidence`, so a genuine dog result is hidden when it scores below every stored non-dog alternate,
   and with fewer stored rows this happens more often.
+- Original pick: after a species change the model's own pick is listed with `original: true` and the
+  detection's confidence, unless it is the current species. It is exempt from the human sound and dog
+  filters, does not take part in the dog comparison, and a stored alternate of the same species is merged
+  into it.
 - Scope: the species the detecting model ranked in its top 10 for the analysis window that produced
   the detection, without the detected species and, when a location is set and the model takes part in
   range filtering, without species outside the location's range (for detections saved after the range
@@ -392,6 +437,65 @@ prediction has `scientificName` (the current, canonical name), `commonName`, `sp
   as Male or Child.
 - Status codes: `409` when the enhanced database is not in use, `400` for an id that is not a positive
   integer that fits in 32 bits, `404` when the detection does not exist, and `500` for a database error.
+
+**Detection neighbors.** `GET /api/v2/detections/:id/neighbors` returns the ids of the detections next to one
+detection, for stepping through detections:
+
+```json
+{
+  "detectionId": 509253,
+  "previous": 509252,
+  "next": 509254,
+  "previousSameSpecies": 509100,
+  "nextSameSpecies": null
+}
+```
+
+Every key is always present, and a neighbor that does not exist is `null`.
+
+- Order: `previous` is the greatest id below `:id` and `next` the smallest id above it, so gaps left by deleted
+  detections are skipped. The order is record id order, which is the order detections were stored. After an
+  import it can differ from time order.
+- Same species: `previousSameSpecies` and `nextSameSpecies` walk the detections of the species of `:id`, matched by
+  scientific name across the labels of every model, including labels stored in the legacy
+  `ScientificName_CommonName` form. Two spellings of one species, such as a former and a current name, are two
+  separate chains. Refetch the neighbors after the species of the detection is changed.
+- Status codes: `409` when the enhanced database is not in use, `400` for an id that is not a positive integer
+  that fits in 32 bits, `404` when the detection does not exist, and `500` for a database error.
+
+**Species statistics.** `GET /api/v2/species/stats?scientific_name=Parus%20major` returns the all-time statistics of
+one species. The handler is `detections/species_stats.go`, because it reads the detection store.
+
+```json
+{
+  "scientificName": "Parus major",
+  "count": 1234,
+  "firstHeard": "2024-03-01T06:12:44+02:00",
+  "lastHeard": "2026-11-14T09:01:10+02:00",
+  "avgConfidence": 0.71,
+  "maxConfidence": 0.98,
+  "reviews": { "correct": 12, "falsePositive": 3 }
+}
+```
+
+Every key is always present. `firstHeard`, `lastHeard`, `avgConfidence` and `maxConfidence` are `null` when `count`
+is 0.
+
+- False positives: `count`, the two times and the two confidences leave out detections reviewed as false positive,
+  by the rule `/analytics/species/summary` uses. `reviews` counts the reviewed detections, so
+  `count + reviews.falsePositive` is every stored detection of the species and `reviews.correct` is part of `count`.
+- Scope: all time and all models. There is no date range parameter.
+- Species matching: send the scientific name as detection responses carry it, with the same spelling and letter
+  case. It is matched across the labels of every model, including labels stored in the legacy
+  `ScientificName_CommonName` form, the same labels the same-species neighbors walk. Unlike
+  `/analytics/species/summary`, which lists a species once per stored label spelling, the legacy and the bare form
+  are one result here. Two spellings of one species, such as a former and a current name, are counted separately.
+- Times: the stored instant as RFC3339 in the station zone, like a detection's `timestamp`. Confidences are 0 to 1.
+- A name no detection was ever stored under answers `200` with zeros and nulls, not `404`.
+- Status codes: `409` when the enhanced database is not in use (a client can fall back to
+  `/analytics/species/summary` there), `400` for a missing name or a name without a species part, and `500` for a
+  database error.
+- Cost: proportional to the number of detections of the species.
 
 ### Notifications (`notifications/notifications.go`)
 
@@ -477,13 +581,16 @@ Both verbs report identically under the `skippedFields` response key: it lists o
 
 ### Species (`species/species.go`)
 
-| Method | Route                         | Handler                  | Auth | Description                                                       |
-| ------ | ----------------------------- | ------------------------ | ---- | ----------------------------------------------------------------- |
-| GET    | `/species`                    | `GetSpeciesInfo`         | ❌   | Get extended species information including rarity status          |
-| GET    | `/species/all`                | `GetAllSpecies`          | ❌   | Get all BirdNET species labels (not filtered by location)         |
-| GET    | `/species/taxonomy`           | `GetSpeciesTaxonomy`     | ❌   | Get detailed taxonomy data with subspecies and hierarchy          |
-| GET    | `/species/:code/thumbnail`    | `GetSpeciesThumbnail`    | ❌   | Get bird thumbnail image by species code (redirects to image URL) |
-| GET    | `/species/dictionary/:locale` | `ServeSpeciesDictionary` | ❌   | Precompressed per-locale species name dictionary (gzip JSON)      |
+| Method | Route                         | Handler                  | Auth | Description                                                                   |
+| ------ | ----------------------------- | ------------------------ | ---- | ----------------------------------------------------------------------------- |
+| GET    | `/species`                    | `GetSpeciesInfo`         | ❌   | Get extended species information including rarity status                      |
+| GET    | `/species/all`                | `GetAllSpecies`          | ❌   | Get all BirdNET species labels (not filtered by location)                     |
+| GET    | `/species/taxonomy`           | `GetSpeciesTaxonomy`     | ❌   | Get detailed taxonomy data with subspecies and hierarchy                      |
+| GET    | `/species/:code/thumbnail`    | `GetSpeciesThumbnail`    | ❌   | Get bird thumbnail image by species code (redirects to image URL)             |
+| GET    | `/species/dictionary/:locale` | `ServeSpeciesDictionary` | ❌   | Precompressed per-locale species name dictionary (gzip JSON)                  |
+| GET    | `/species/stats`              | `GetSpeciesStats`        | ❌   | Species statistics, enhanced database only (in `detections/species_stats.go`) |
+
+**Sound classes.** `scientific_name` on `/species` and `/species/taxonomy` also accepts a sound class name as detections report it ("Dog", "Human vocal", "Church_bell"). `/species` answers with the names only, and `/species/taxonomy` with `metadata.source` set to "unresolved", a `metadata.note` saying it is a sound class, and no `taxonomy`. `GET /taxonomy/tree/:scientific_name` answers 404 "Species not found" for a sound class. Any other name that is shorter than 3 characters or has no space answers 400.
 
 ### Server-Sent Events (`sse/sse.go`)
 

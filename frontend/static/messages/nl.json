@@ -34,7 +34,6 @@
     "internalServerError": "Interne server fout",
     "actions": {
       "download": "Ophalen",
-      "review": "Beoordeling",
       "play": "Afspelen",
       "view": "Bekijken"
     },
@@ -141,14 +140,14 @@
       "visitEbirdLink": "Open eBird.org in een nieuwe tab",
       "learnEbirdTaxonomyLink": "Open eBird Taxonomy in een nieuwe tab",
       "resizeHandle": "Sleep om te vergroten/verkleinen",
-      "imageCredit": "Foto door: {name}"
+      "imageCredit": "Foto door: {name}",
+      "opensInNewTab": "opent in een nieuw tabblad"
     },
     "labels": {
       "confidence": "Betrouwbaarheid",
       "github": "GitHub"
     },
     "values": {
-      "yes": "Ja",
       "no": "Nee",
       "unknown": "Onbekend"
     },
@@ -181,12 +180,6 @@
         "hideComment": "Notitie verbergen",
         "commentPlaceholder": "Notitie m.b.t. deze herkenning toevoegen ...",
         "commentCount": "({chars} tekens)",
-        "chars": "tekens",
-        "commentsLabel": "Notitie",
-        "currentStatusTitle": "Status momenteel",
-        "detectionStatusTitle": "Status herkenning",
-        "lockLabel": "Status vergrendeling",
-        "reviewLabel": "Status beoordeling",
         "saveReview": "Beoordeling bewaren"
       },
       "errors": {
@@ -207,7 +200,6 @@
     "hoursShort": "u"
   },
   "pageTitle": {
-    "settings": "Instellingen - BirdNET-Go",
     "pageNotFound": "404 - Pagina niet gevonden",
     "serverError": "500 - Interne serverfout",
     "componentError": "Component laadfout",
@@ -889,23 +881,190 @@
       "allDetections": "Alles herkend op {date}"
     },
     "detail": {
-      "species": "Soort",
-      "observation": "Waarneming",
+      "species": {
+        "dialogTitle": "Soort wijzigen",
+        "current": "Momenteel herkend als",
+        "fromPredictions": "Andere voorspellingen van het model",
+        "search": "Zoek soorten",
+        "loadingList": "Soortenlijst laden...",
+        "listFailed": "De soortenlijst kon niet worden geladen. Sluit dit venster en probeer het opnieuw.",
+        "noMatches": "Geen overeenkomende soorten.",
+        "effect": "De detectie wordt als juist gemarkeerd en de eigen keuze van het model blijft bewaard.",
+        "pickFirst": "Kies eerst een soort.",
+        "confirm": "Wijzigen naar {species}",
+        "confirmEmpty": "Soort wijzigen",
+        "changed": "Soort gewijzigd naar {species}",
+        "changeFailed": "De soort kon niet worden gewijzigd. Probeer het opnieuw.",
+        "conflict": "De soort kan nu niet worden gewijzigd: de detectie is bewaard (vergrendeld), of het oude databaseformaat is in gebruik.",
+        "notKnownHere": "{species} is op dit station nog nooit gedetecteerd of voorspeld en kan daarom nog niet worden gekozen.",
+        "predictionsTitle": "Overige voorspellingen",
+        "noPredictions": "Het model heeft geen andere voorspellingen voor deze opname opgeslagen.",
+        "allSpecies": "Alle soorten",
+        "searchRangePlaceholder": "Een soort die hier wordt verwacht",
+        "searchAllPlaceholder": "Elke soort die de modellen kennen",
+        "searchHintRange": "Zoekt in de {count} soorten die het bereikfilter hier verwacht. Schakel Alle soorten in om alles te doorzoeken.",
+        "searchHintAll": "Zoekt in alle {count} soorten die de modellen kennen.",
+        "noMatchesInRange": "Geen overeenkomst bij de soorten die hier worden verwacht. Schakel Alle soorten in om alles te doorzoeken.",
+        "modelPick": "keuze van model"
+      },
       "aria": {
-        "downloadAudioClip": "Audiofragment downloaden voor {name} detectie",
-        "audioRecordingFor": "Geluidsopname en spectrogram voor {name}",
         "scientificName": "Wetenschappelijke naam",
         "classificationBadges": "Soortclassificatie-badges",
         "confidence": "Betrouwbaarheid herkenning {confidence}%",
-        "metadata": "Meta informatie herkenning",
-        "weatherConditions": "Weersomstandigheden op het moment van herkenning",
-        "comments": "Notities bij herkenning",
-        "commentText": "Notitietekst",
-        "commentTimestamp": "Tijdstempel van notitie",
-        "mainRegion": "Herkenningsdetails",
-        "tabsHeading": "Tabbladen met herkenningsinformatie",
-        "tabList": "Tabbladen met herkenningsdetails",
         "speciesHeadingSuffix": "herkenningsdetails"
+      },
+      "nav": {
+        "label": "Detectienavigatie",
+        "back": "Herkend",
+        "allGroup": "Alle detecties",
+        "older": "Oudere detectie",
+        "noOlder": "Dit is de oudste detectie",
+        "newer": "Nieuwere detectie",
+        "noNewer": "Dit is de nieuwste detectie",
+        "speciesGroup": "Detecties van {species}",
+        "olderSpecies": "Oudere detectie van {species}",
+        "noOlderSpecies": "Geen oudere detectie van {species}",
+        "newerSpecies": "Nieuwere detectie van {species}",
+        "noNewerSpecies": "Geen nieuwere detectie van {species}",
+        "stepLoading": "{label}: controleren op aangrenzende detecties",
+        "stepFailed": "{label}: kon niet controleren op aangrenzende detecties"
+      },
+      "identity": {
+        "date": "Datum",
+        "time": "Tijd",
+        "beforeSunrise": "{hours} u {minutes} min voor zonsopgang",
+        "afterSunrise": "{hours} u {minutes} min na zonsopgang",
+        "beforeSunset": "{hours} u {minutes} min voor zonsondergang",
+        "afterSunset": "{hours} u {minutes} min na zonsondergang",
+        "setByReviewer": "Soort ingesteld door beoordelaar",
+        "timeOfDay": "Dagdeel",
+        "minutesBeforeSunrise": "{minutes} min voor zonsopgang",
+        "minutesAfterSunrise": "{minutes} min na zonsopgang",
+        "minutesBeforeSunset": "{minutes} min voor zonsondergang",
+        "minutesAfterSunset": "{minutes} min na zonsondergang",
+        "predictionsUnknown": "Overige voorspellingen",
+        "predictionsNone": "Geen andere voorspellingen",
+        "predictionsCount": "{count, plural, one {# andere voorspelling} other {# andere voorspellingen}}"
+      },
+      "conditions": {
+        "title": "Tijd en omstandigheden",
+        "skyLabel": "Dagtijdlijn: gedetecteerd om {time}, zonsopgang {sunrise}, zonsondergang {sunset}",
+        "activityLabel": "Detecties van {species} per uur van de dag",
+        "sunrise": "Zonsopgang",
+        "sunset": "Zonsondergang",
+        "activityLegend": "Activiteit van {species} per uur, totaal",
+        "feelsLike": "Voelt als",
+        "moonLit": "{percent}% verlicht",
+        "windFrom": "Wind uit {direction}",
+        "cloudCover": "Bewolking",
+        "precipitation": "Neerslag",
+        "precipitationTypes": {
+          "rain": "regen",
+          "snow": "sneeuw",
+          "sleet": "natte sneeuw"
+        },
+        "observedAt": "Weerobservatie van {time}",
+        "notObserved": "Geen weerobservatie voor dit tijdstip"
+      },
+      "compass": {
+        "n": "N",
+        "nne": "NNO",
+        "ne": "NO",
+        "ene": "ONO",
+        "e": "O",
+        "ese": "OZO",
+        "se": "ZO",
+        "sse": "ZZO",
+        "s": "Z",
+        "ssw": "ZZW",
+        "sw": "ZW",
+        "wsw": "WZW",
+        "w": "W",
+        "wnw": "WNW",
+        "nw": "NW",
+        "nnw": "NNW"
+      },
+      "review": {
+        "title": "Beoordeling",
+        "autosave": "Wordt direct opgeslagen zodra u kiest",
+        "question": "Is dit {species}?",
+        "correct": "Juist",
+        "falsePositive": "Fout-positief",
+        "saving": "Opslaan...",
+        "savedCorrect": "Gemarkeerd als juist",
+        "savedFalsePositive": "Gemarkeerd als fout-positief",
+        "loginRequired": "Log in om deze detectie te beoordelen.",
+        "lockedHelp": "Bewaarde detecties kunnen niet worden gewijzigd. Schakel eerst Deze opname bewaren uit.",
+        "keep": "Deze opname bewaren",
+        "keepHelp": "Bewaarde detecties worden nooit verwijderd bij opschoning.",
+        "reloadFailed": "Opgeslagen, maar de detectie kon niet opnieuw worden geladen. Ververs de pagina om de wijziging te zien.",
+        "ignoredSpecies": "{species} wordt nu genegeerd",
+        "wrongSpecies": "Verkeerde soort...",
+        "legacyHelp": "Voor het wijzigen van de soort is het huidige databaseformaat nodig.",
+        "databaseChecking": "Controleren of de soort kan worden gewijzigd.",
+        "databaseUnknown": "De soort kan niet worden gewijzigd zolang het databaseformaat onbekend is.",
+        "ignoreShort": "Soort negeren",
+        "ignoredShort": "Soort genegeerd"
+      },
+      "models": {
+        "title": "Modellen",
+        "summary": "{hit} van {total} heeft het gedetecteerd",
+        "empty": "Geen gegevens per model voor deze detectie. Modeldeelname wordt alleen opgeslagen voor nieuwere detecties.",
+        "hits": "{count, plural, one {# treffer} other {# treffers}}",
+        "mean": "gemiddelde {value}",
+        "noHit": "Op dit geluid uitgevoerd, geen treffer"
+      },
+      "stats": {
+        "title": "Soort op dit station",
+        "rangeScore": "Score bereikfilter",
+        "rangeScoreNote": "Waarschijnlijkheid op deze locatie voor {date}",
+        "rangeScoreNoteToday": "Waarschijnlijkheid op deze locatie vandaag",
+        "total": "Detecties, totaal",
+        "windowTotal": "Detecties, laatste {days} dagen",
+        "firstHeard": "Eerst gehoord",
+        "lastHeard": "Laatst gehoord",
+        "avgConfidence": "Gemiddelde betrouwbaarheid",
+        "maxConfidence": "Hoogste betrouwbaarheid",
+        "dailyTitle": "Detecties per dag, {days} dagen tot deze detectie",
+        "dailyLabel": "{count} detecties in de {days} dagen tot deze detectie",
+        "allThisDay": "Alle detecties van {species} op deze dag",
+        "reviewsTitle": "Beoordeeld door mensen",
+        "reviewsCount": "{count, plural, one {# beoordeling} other {# beoordelingen}}",
+        "reviewsCorrect": "{count} juist",
+        "reviewsFalse": "{count, plural, one {# fout-positief} other {# fout-positieven}}",
+        "oftenRejected": "Hier vaak afgekeurd: {percent}% van de beoordelingen was fout-positief",
+        "reviewsNone": "Er is nog geen detectie van deze soort beoordeeld."
+      },
+      "clip": {
+        "window": "Opnamevenster",
+        "length": "Lengte",
+        "seconds": "{count} s",
+        "format": "Formaat",
+        "denoised": "Ruisonderdrukking bij opslaan",
+        "denoisedYes": "Ja",
+        "denoisedNo": "Nee",
+        "file": "Bestand",
+        "audioRemoved": "Het geluid is verwijderd door het bewaarbeleid; de spectrogramafbeelding is bewaard.",
+        "noClip": "Er is geen opname opgeslagen voor deze detectie."
+      },
+      "log": {
+        "title": "Activiteitenlog",
+        "subtitle": "Wat er met deze detectie is gebeurd",
+        "detected": "{species} gedetecteerd met {confidence}% betrouwbaarheid",
+        "captureWindow": "Opnamevenster {begin}-{end}",
+        "clipSaved": "Opname opgeslagen",
+        "clipSavedDenoised": "Opname opgeslagen, ruis onderdrukt",
+        "firstReviewed": "Eerst beoordeeld",
+        "reviewed": "Gemarkeerd als {status}",
+        "locked": "Bewaard (vergrendeld)",
+        "noteAdded": "Notitie toegevoegd",
+        "noteEdited": "Bewerkt op {time}",
+        "timeUnknown": "Tijdstip niet vastgelegd",
+        "addNote": "Notitie toevoegen",
+        "saveNote": "Notitie toevoegen",
+        "lockedHelp": "Notities kunnen niet worden toegevoegd zolang de detectie bewaard (vergrendeld) is.",
+        "noteEmpty": "Schrijf eerst een notitie voordat u deze toevoegt.",
+        "speciesChanged": "Soort gewijzigd van {from} naar {to}"
       }
     },
     "headers": {
@@ -1042,12 +1201,6 @@
       "title": "Geluid opname & Spectrogram",
       "clipHint": "Klik en sleep op het spectrogram om een bereik te selecteren voor export"
     },
-    "tabs": {
-      "overview": "Overzicht",
-      "taxonomy": "Taxonomie",
-      "history": "Geschiedenis",
-      "notes": "Notities"
-    },
     "environmental": {
       "title": "Omgevings situatie"
     },
@@ -1058,18 +1211,9 @@
       "status": "Status",
       "locked": "Vergrendeld"
     },
-    "history": {
-      "title": "Herkennings geschiedenis",
-      "comingSoon": "Geschiedenis (nog) niet beschikbaar ..."
-    },
-    "notes": {
-      "title": "Notities & Aantekeningen",
-      "noComments": "Geen notities of aantekeningen voor deze herkenning."
-    },
     "aria": {
       "loading": "Herkenningsdetails laden...",
       "loaded": "Herkenningsdetails geladen voor {species}",
-      "error": "Fout bij het laden van herkenning: {error}",
       "loadingResults": "{count} resultaten laden...",
       "thumbnailLoading": "{species} miniatuur laden...",
       "thumbnailLoaded": "Miniatuur van {species} geladen",
@@ -1105,9 +1249,7 @@
   },
   "species": {
     "rarity": {
-      "title": "Soort zeldzaamheid",
       "score": "Score",
-      "basedOnLocation": "Gebaseerd op locatie: {latitude}, {longitude}",
       "statuses": {
         "very_common": "Zeer algemeen",
         "common": "Algemeen",
@@ -1119,7 +1261,6 @@
     },
     "taxonomy": {
       "hierarchy": "Taxonomische klassificatie",
-      "subspecies": "Ondersoort",
       "noData": "Geen taxonomische informatie beschikbaar.",
       "labels": {
         "kingdom": "Rijk",
@@ -1145,11 +1286,9 @@
       }
     },
     "tracking": {
-      "title": "Soortmonitoring",
       "newSpecies": "Nieuwe soort",
       "newThisYear": "Eerste keer dit jaar",
-      "newThisSeason": "Eerste keer dit seizoen",
-      "daysSinceFirst": "Dagen sinds eerste waarneming"
+      "newThisSeason": "Eerste keer dit seizoen"
     }
   },
   "spectrogram": {
@@ -1202,13 +1341,6 @@
     },
     "systemInfo": {
       "title": "Systeem informatie",
-      "os": "Besturingssysteem",
-      "hostname": "Computernaam",
-      "uptime": "Werktijd",
-      "cpus": "Processor kernen",
-      "model": "Systeem model",
-      "timezone": "Tijdzone",
-      "temperature": "Processor temperatuur",
       "temperatureValue": "{temp}°C",
       "temperatureUnavailable": "Temperatuur informatie niet beschikbaar",
       "cpuCores": "CPU-kernen",
@@ -1247,16 +1379,7 @@
         "uptime": "Werktijd",
         "process": "Proces"
       },
-      "showAll": "Toon alle processen",
-      "showBirdnetOnly": "Toon alleen BirdNET",
-      "table": {
-        "process": "Proces",
-        "status": "Status",
-        "cpu": "CPU",
-        "memory": "Geheugen",
-        "uptime": "Uptime",
-        "showAllProcesses": "Toon alle processen"
-      }
+      "showAll": "Toon alle processen"
     },
     "errors": {
       "systemInfo": "Systeem informatie inlezen mislukt: {error}",
@@ -1980,7 +2103,8 @@
     "detach": "Openen in nieuw venster",
     "detached": "Terminal is losgekoppeld",
     "detachedDescription": "De terminal draait in een apart venster. Sluit dat venster om het hier terug te brengen.",
-    "reattach": "Opnieuw koppelen"
+    "reattach": "Opnieuw koppelen",
+    "keyboardExitHint": "Druk op Esc en daarna op Tab om de terminal te verlaten"
   },
   "analytics": {
     "hub": {
@@ -5651,6 +5775,10 @@
         "label": "Validatie na detectie",
         "helpText": "Indien ingeschakeld worden vleermuisdetecties gevalideerd door analyse van ultrasone energiepatronen in de bronaudio. Detecties zonder echolocatiekenmerken worden gemarkeerd als onwaarschijnlijk."
       },
+      "batDiscardUnlikely": {
+        "label": "Onwaarschijnlijke detecties verwerpen",
+        "helpText": "Indien ingeschakeld worden vleermuisdetecties die de validatie na detectie als onwaarschijnlijk markeert, verworpen: ze worden niet opgeslagen, krijgen geen audioclip of melding en kunnen niet worden hersteld. Indien uitgeschakeld (standaard) worden ze opgeslagen en als onwaarschijnlijk gemarkeerd. Al opgeslagen detecties worden niet gewijzigd."
+      },
       "batFalsePositiveFilter": {
         "label": "Vleermuis vals-positief filter",
         "helpText": "Vereist meerdere bevestigingen van een vleermuisdetectie binnen een schuifvenster voordat deze wordt geaccepteerd. Hogere niveaus vereisen meer bevestigingen, waardoor valse positieven worden verminderd. Het vleermuismodel gebruikt een vaste overlap van 50%, dus er is geen overlapaanpassing nodig.",
@@ -5794,7 +5922,8 @@
       },
       "tabs": {
         "installed": "Geïnstalleerd",
-        "available": "Beschikbaar"
+        "available": "Beschikbaar",
+        "navigationAria": "Tabbladen van de modelgalerij"
       },
       "loading": "Modellen laden...",
       "retry": "Opnieuw proberen",
@@ -5864,6 +5993,11 @@
         "buildLabel": "{version} · {build}",
         "cardNotice": "Voorvertoning voor ontwikkelaars, niet de definitieve versie. Dit is een vroege versie om te testen; resultaten kunnen veranderen voor de stabiele versie.",
         "dialogNotice": "Je installeert een voorvertoning voor ontwikkelaars ({build}). Handig om uit te proberen, maar nog niet aanbevolen als je enige classificator."
+      },
+      "experimental": {
+        "badge": "Experimenteel",
+        "cardNotice": "Experimenteel in BirdNET-Go. Het model is gepubliceerd, maar de prestaties ervan in BirdNET-Go zijn nog niet bewezen, dus de resultaten kunnen minder betrouwbaar zijn.",
+        "dialogNotice": "Je installeert een model dat in BirdNET-Go experimenteel is. De prestaties zijn nog niet bewezen, dus controleer de detecties voordat je erop vertrouwt."
       },
       "entryIncompatible": "Dit model is niet beschikbaar op dit systeem.",
       "regionGlobal": "Globaal",
@@ -6013,6 +6147,7 @@
     },
     "metricFooter": {
       "allPassing": "Alles in orde",
+      "healthyOfTotal": "{healthy} van {total}",
       "needsAttention": "Vereist aandacht",
       "failing": "Mislukt",
       "allClear": "Geen problemen",

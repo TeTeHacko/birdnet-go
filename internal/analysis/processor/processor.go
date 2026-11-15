@@ -116,6 +116,10 @@ type Processor struct {
 	// (humanHitMaxPerSource) dropped from humanHits. It is guarded by
 	// detectionMutex and created lazily.
 	humanHitsCapDropped map[string]time.Time
+	// clipMarks writes the clip denoise marker. It is set once before Start
+	// (SetClipDenoiseRecorder) and never written again, so it needs no lock; nil on
+	// the legacy store leaves the marker unwritten.
+	clipMarks clipDenoiseRecorder
 	// privacyRollup receives privacy filter activity for the hourly rollup. It is
 	// set once before Start (SetPrivacyRollup) and never written again, so it needs
 	// no lock; nil leaves every hit site a no-op.
@@ -854,11 +858,70 @@ func (p *Processor) processDetections(item classifier.Results) {
 	p.broadcastPendingSnapshot(snapshot)
 }
 
+// unlikelyVerdict is the part of a detection result that records whether and why
+// validators tagged it unlikely: the tag, the validators that judged, and the
+// diagnostics of the CV filter.
+type unlikelyVerdict struct {
+	unlikely    bool
+	sources     detection.UnlikelySource
+	cv          float64
+	cvThreshold float64
+}
+
+// verdictOf reads the unlikely verdict of a result.
+func verdictOf(r *detection.Result) unlikelyVerdict {
+	return unlikelyVerdict{
+		unlikely:    r.Unlikely,
+		sources:     r.UnlikelySources,
+		cv:          r.UltrasonicCV,
+		cvThreshold: r.UltrasonicCVThreshold,
+	}
+}
+
+// mergeUnlikelyVerdict sets the unlikely verdict of a pending detection after a later
+// hit window was merged into it. merged is the pending result (already replaced by
+// the hit when that window won on confidence); prev is its verdict before the merge
+// and hit the verdict of the merged window. The detection stays unlikely only while
+// every hit window was tagged; one window that was not tagged clears the tag, the
+// source bits and the diagnostics. While it stays unlikely, the source bits are the
+// union of both sides, so a bit means that validator judged at least one hit window.
+//
+// The CV and its threshold are merged only between sides that carry the CV bit: when
+// only one side does, that side's values are kept untouched; when both do, the
+// highest CV wins with the threshold that judged it (the later one's on a tie);
+// when neither does, there is none. Apart from the threshold kept on a CV tie, the
+// merge does not depend on arrival order or on which window had the highest confidence.
+func mergeUnlikelyVerdict(merged *detection.Result, prev, hit unlikelyVerdict) {
+	merged.Unlikely = prev.unlikely && hit.unlikely
+	if !merged.Unlikely {
+		merged.UnlikelySources = 0
+		merged.UltrasonicCV = 0
+		merged.UltrasonicCVThreshold = 0
+		return
+	}
+	merged.UnlikelySources = prev.sources | hit.sources
+
+	prevCV := prev.sources.Has(detection.UnlikelySourceUltrasonicCV)
+	hitCV := hit.sources.Has(detection.UnlikelySourceUltrasonicCV)
+	switch {
+	case prevCV && hitCV && prev.cv > hit.cv, prevCV && !hitCV:
+		merged.UltrasonicCV = prev.cv
+		merged.UltrasonicCVThreshold = prev.cvThreshold
+	case hitCV:
+		merged.UltrasonicCV = hit.cv
+		merged.UltrasonicCVThreshold = hit.cvThreshold
+	default:
+		merged.UltrasonicCV = 0
+		merged.UltrasonicCVThreshold = 0
+	}
+}
+
 // mergePendingHit folds one detection of the chunk item into pendingDetections: it
 // updates the pending entry for the detection's source and species (which another
 // model may have created) or creates one, counts the hit, records it in the model's
 // contribution statistics stamped with hitAt, and applies extended capture when the
-// species qualifies. It takes and releases pendingMutex itself; the caller must not
+// species qualifies. On update it also merges the ultrasonic unlikely verdict of the hit
+// (see mergeUnlikelyVerdict). It takes and releases pendingMutex itself; the caller must not
 // hold it.
 func (p *Processor) mergePendingHit(item *classifier.Results, det *Detections, hitAt time.Time, detectionWindow time.Duration) {
 	commonName := strings.ToLower(det.Result.Species.CommonName)
@@ -874,6 +937,7 @@ func (p *Processor) mergePendingHit(item *classifier.Results, det *Detections, h
 	if existing, exists := p.pendingDetections[mapKey]; exists {
 		// Update the existing detection (may be from same or different model)
 		oldConfidence := existing.Confidence
+		previous := verdictOf(&existing.Detection.Result)
 		existing.LastUpdated = now
 		existing.AudioCapturedAt = item.AudioCapturedAt
 		if confidence > existing.Confidence {
@@ -889,6 +953,7 @@ func (p *Processor) mergePendingHit(item *classifier.Results, det *Detections, h
 				logger.Int("count", existing.Count+1),
 				logger.String("operation", "update_pending_detection"))
 		}
+		mergeUnlikelyVerdict(&existing.Detection.Result, previous, verdictOf(&det.Result))
 		existing.Count++
 
 		// Track per-model contribution
@@ -1022,14 +1087,21 @@ func (p *Processor) processResults(settings *conf.Settings, item classifier.Resu
 	return detections
 }
 
+// reasonUltrasonicFilter is the discard reason of the ultrasonic filter when
+// discardunlikely drops a detection still tagged unlikely. The text is fixed
+// because discard reasons are aggregated by their exact string (see
+// reasonModelConsensus).
+const reasonUltrasonicFilter = "ultrasonic filter"
+
 // bytesPerPCM16Sample is the size of one 16-bit PCM sample in bytes.
 const bytesPerPCM16Sample = 2
 
 // applyUltrasonicFilter runs the ultrasonic validation filter on a batch of bat detections.
-// It computes the US frame CV once from the shared PCM audio and tags all detections
-// as unlikely when the CV falls below the configured threshold. The PCM data is the
-// model's analysis window, at the model's effective sample rate (Bat 256 kHz,
-// BSG-BAT 384 kHz), whatever the source rate is: the source audio is resampled to
+// It computes the US frame CV once from the shared PCM audio, takes the share of
+// broadband events (clicks, rustling) out of it, and tags all detections as
+// unlikely when the resulting CV, which is the one reported, falls below the
+// configured threshold. The PCM data is the model's analysis window, at the
+// model's effective sample rate (Bat 256 kHz, BSG-BAT 384 kHz), whatever the source rate is: the source audio is resampled to
 // that rate for the model.
 // It does nothing when the filter is disabled, when the model is unknown (its
 // window rate cannot be known), when the model rate or the source rate leaves no
@@ -1085,7 +1157,7 @@ func (p *Processor) applyUltrasonicFilter(settings *conf.Settings, item classifi
 			logger.Error(err))
 		return
 	}
-	cv, ok := ultrasonic.ComputeUSFrameCV(samples, windowRate, filterCfg)
+	frameCV, ok := ultrasonic.ComputeUSFrameCV(samples, windowRate, filterCfg)
 	if !ok {
 		GetLogger().Debug("ultrasonic filter: insufficient data for CV computation",
 			logger.String("source", sourceName),
@@ -1094,9 +1166,13 @@ func (p *Processor) applyUltrasonicFilter(settings *conf.Settings, item classifi
 		return
 	}
 
+	// A click or a rustle reaches above the split too; take its share out before the verdict.
+	cv := ultrasonic.BroadbandAdjustedCV(samples, windowRate, filterCfg, frameCV)
+
 	unlikely := ultrasonic.IsUnlikely(cv, filterCfg)
 	logFields := []logger.Field{
 		logger.Float64("us_frame_cv", cv),
+		logger.Float64("us_frame_cv_unadjusted", frameCV),
 		logger.Float64("threshold", filterCfg.CVThreshold),
 		logger.Bool("unlikely", unlikely),
 		logger.String("source", sourceName),
@@ -1106,6 +1182,7 @@ func (p *Processor) applyUltrasonicFilter(settings *conf.Settings, item classifi
 		GetLogger().Info("ultrasonic validation: detections tagged unlikely", logFields...)
 		for i := range detections {
 			detections[i].Result.Unlikely = true
+			detections[i].Result.UnlikelySources |= detection.UnlikelySourceUltrasonicCV
 			detections[i].Result.UltrasonicCV = cv
 			detections[i].Result.UltrasonicCVThreshold = filterCfg.CVThreshold
 		}
@@ -1775,9 +1852,11 @@ func (p *Processor) buildClipPath(settings *conf.Settings, scientificName string
 // privacyfilter.debug on, a summary of the detectors that counted hits
 // reaching the clip (priv.contributions, which is listed whenever the latest hit
 // reaches the clip); the counts are lower bounds once the attribution list has
-// dropped a reaching hit at its cap (priv.hitCountsLowerBound). The model
-// consensus filter runs last so the other filters keep their discard attribution;
-// cons is the tick's model view (see prepareModelConsensus) and nil skips it.
+// dropped a reaching hit at its cap (priv.hitCountsLowerBound). The ultrasonic
+// filter discards a detection still tagged unlikely when discardunlikely is on,
+// after those checks and before model consensus. The model consensus filter runs
+// last so the other filters keep their discard attribution; cons is the tick's
+// model view (see prepareModelConsensus) and nil skips it.
 func (p *Processor) shouldDiscardDetection(item *PendingDetection, settings *conf.Settings, minDetections int, priv *privacyCheck, cons *consensusTick) (shouldDiscard bool, reason string) {
 	// Check minimum detection count
 	if item.Count < minDetections {
@@ -1889,6 +1968,18 @@ func (p *Processor) shouldDiscardDetection(item *PendingDetection, settings *con
 				logger.String("operation", "daylight_filter"))
 			return true, reasonDaylightFilter
 		}
+	}
+
+	if f := &settings.Bat.UltrasonicFilter; f.Enabled && f.DiscardUnlikely && item.Detection.Result.Unlikely {
+		GetLogger().Debug("Detection discarded by ultrasonic filter",
+			logger.String("species", item.Detection.Result.Species.CommonName),
+			logger.Time("detection_time", item.FirstDetected),
+			logger.Float64("us_frame_cv", item.Detection.Result.UltrasonicCV),
+			logger.Float64("threshold", item.Detection.Result.UltrasonicCVThreshold),
+			logger.String("unlikely_sources", item.Detection.Result.UnlikelySources.String()),
+			logger.String("source", p.getDisplayNameForSource(item.Source)),
+			logger.String("operation", "ultrasonic_filter"))
+		return true, reasonUltrasonicFilter
 	}
 
 	if cons != nil && p.discardForModelConsensus(item, settings, cons) {
@@ -2440,6 +2531,7 @@ func (p *Processor) getDefaultActions(det *Detections, settings *conf.Settings) 
 			Results:           det.Results,  // Domain model - all alternates, trimmed at save
 			Ds:                p.Ds,         // Legacy - kept for backward compatibility
 			Repo:              p.Repo,       // New - preferred path for database operations
+			clipMarks:         p.clipMarks,
 			CorrelationID:     det.CorrelationID,
 		}
 	}
@@ -2632,7 +2724,8 @@ func retryConfigFromSettings(rs conf.RetrySettings) jobqueue.RetryConfig {
 // available) and returns an action that will encode and write the audio file
 // when executed by the job queue. This decouples the slower clip encoding
 // from the fast Database -> SSE pipeline. The action carries the planned
-// clip sample rate and, when the datastore can store one, a recorder to correct it.
+// clip sample rate and, when the datastore can store one, a recorder to correct it,
+// and the recorder of the clip denoise marker (nil on the legacy store).
 func (p *Processor) buildSaveAudioAction(det *Detections, detectionCtx *DetectionContext, settings *conf.Settings) *SaveAudioAction {
 	// Derive the capture length and readiness time from the shared conf helper so this
 	// scheduler and the media API (which decides whether a not-yet-written clip is still
@@ -2672,6 +2765,7 @@ func (p *Processor) buildSaveAudioAction(det *Detections, detectionCtx *Detectio
 	base := func() *SaveAudioAction {
 		return &SaveAudioAction{
 			clipRates:        p.Repo,
+			clipMarks:        p.clipMarks,
 			plannedRate:      det.Result.ClipSampleRate,
 			Settings:         settings,
 			ClipName:         det.Result.ClipName,

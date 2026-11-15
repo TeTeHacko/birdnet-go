@@ -16,6 +16,7 @@ import {
   TOAST_CLOSE_CLASS,
   TOAST_TYPE_CLASSES,
 } from '../lib/desktop/components/ui/NotificationToast.styles';
+import { indexHtmlScriptBlock } from './index-html';
 import { confidenceColorClasses } from '../lib/desktop/features/dashboard/utils/confidenceColors';
 import {
   PLACE_DISCLOSURE_CLASS,
@@ -29,6 +30,7 @@ import {
 // WCAG 2.1 Level AA contrast ratios
 const WCAG_AA_NORMAL = 4.5; // Normal text
 const WCAG_AA_LARGE = 3.0; // Large text (18pt+ or 14pt+ bold)
+const WCAG_NON_TEXT = 3.0; // UI components, icons and focus indicators (WCAG 1.4.11)
 
 /**
  * Convert hex color to RGB
@@ -90,6 +92,46 @@ function blockBody(css: string, selector: string): string {
   const end = css.indexOf('\n}', start);
   return css.slice(start, end);
 }
+
+/**
+ * Bodies of every rule written as `selector { ... }` in `source`. A compound selector that ends
+ * in `selector` (`.a .text-error { ... }`) matches too.
+ */
+function ruleBodies(source: string, selector: string): string[] {
+  const bodies: string[] = [];
+  const opener = `${selector} {`;
+  let from = 0;
+  for (;;) {
+    const start = source.indexOf(opener, from);
+    if (start < 0) {
+      return bodies;
+    }
+    const bodyStart = start + opener.length;
+    const end = source.indexOf('}', bodyStart);
+    if (end < 0) {
+      throw new Error(`rule "${selector}" has no closing brace`);
+    }
+    bodies.push(source.slice(bodyStart, end));
+    from = end;
+  }
+}
+
+/** Values of the `color:` declarations (not `background-color:`) across rule bodies. */
+function colorValues(bodies: string[]): string[] {
+  return bodies.flatMap(body =>
+    [...body.matchAll(/(?:^|[\s;{])color:\s*([^;}]+)/g)].map(match => match[1].trim())
+  );
+}
+
+/** Per-channel steps of the colour grid the sweep tests sample. */
+const CHANNEL_STEPS = [0x00, 0x33, 0x66, 0x99, 0xcc, 0xff];
+
+/** Every colour of the CHANNEL_STEPS grid as a hex string (6 x 6 x 6 colours). */
+const GRID_COLORS = CHANNEL_STEPS.flatMap(r =>
+  CHANNEL_STEPS.flatMap(g =>
+    CHANNEL_STEPS.map(b => `#${[r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')}`)
+  )
+);
 
 /** Hex value of custom property `name` in a block body, or null when it is not set to a hex. */
 function findVar(body: string, name: string): string | null {
@@ -347,7 +389,16 @@ describe('Color Contrast Tests', () => {
   });
 });
 
-describe('Accessibility: error text token', () => {
+const STATUSES = ['error', 'success', 'warning', 'info'] as const;
+
+/** Status text tokens and the fill token each one is drawn over (as a 15% tint). */
+const TEXT_TOKENS = STATUSES.map(status => ({
+  status,
+  token: `--text-${status}`,
+  fill: `--color-${status}`,
+}));
+
+describe('Accessibility: status text tokens', () => {
   const css = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), '..', 'styles', 'tailwind.css'),
     'utf8'
@@ -367,66 +418,147 @@ describe('Accessibility: error text token', () => {
   ];
 
   for (const theme of themes) {
-    for (const surface of ['--color-base-100', '--color-base-200', '--color-base-300']) {
-      it(`--text-error passes AA on ${surface} in the ${theme.name} theme`, () => {
-        const ratio = getContrastRatio(
-          readVar(theme.text, '--text-error'),
-          readVar(theme.base, surface)
-        );
-        expect(ratio).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
-      });
+    for (const { token } of TEXT_TOKENS) {
+      for (const surface of ['--color-base-100', '--color-base-200', '--color-base-300']) {
+        it(`${token} passes AA on ${surface} in the ${theme.name} theme`, () => {
+          const ratio = getContrastRatio(readVar(theme.text, token), readVar(theme.base, surface));
+          expect(ratio).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
+        });
+      }
     }
   }
 });
 
-describe('Error text rules', () => {
+/** Data visualization fills: chart series and meter tones. */
+const VIZ_FILL_TOKENS = [
+  ...Array.from({ length: 8 }, (_, i) => `--viz-${i + 1}`),
+  '--viz-success',
+  '--viz-warning',
+  '--viz-error',
+];
+
+describe('Accessibility: data visualization tokens', () => {
   const stylesDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'styles');
   const css = readFileSync(join(stylesDir, 'tailwind.css'), 'utf8');
 
-  /**
-   * Bodies of every rule written as `selector { ... }` in `source`. A compound selector that ends
-   * in `selector` (`.a .text-error { ... }`) matches too.
-   */
-  function ruleBodies(source: string, selector: string): string[] {
-    const bodies: string[] = [];
-    const opener = `${selector} {`;
-    let from = 0;
-    for (;;) {
-      const start = source.indexOf(opener, from);
-      if (start < 0) {
-        return bodies;
+  const themes = [
+    { name: 'light', block: blockBody(css, ":root,\n[data-theme='light']") },
+    { name: 'dark', block: blockBody(css, "[data-theme='dark']") },
+  ];
+
+  // The meter track is a decorative groove (Meter callers print the value as text beside it), so
+  // only the fills are held to the 3:1 non-text rule, against the card and against the track.
+  for (const { name, block } of themes) {
+    for (const token of VIZ_FILL_TOKENS) {
+      for (const surface of ['--surface-100', '--viz-track']) {
+        it(`${token} reaches 3:1 on ${surface} in the ${name} theme`, () => {
+          const ratio = getContrastRatio(readVar(block, token), readVar(block, surface));
+          expect(ratio).toBeGreaterThanOrEqual(WCAG_AA_LARGE);
+        });
       }
-      const bodyStart = start + opener.length;
-      const end = source.indexOf('}', bodyStart);
-      if (end < 0) {
-        throw new Error(`rule "${selector}" has no closing brace`);
-      }
-      bodies.push(source.slice(bodyStart, end));
-      from = end;
     }
   }
 
-  for (const selector of ['.text-error', '.alert-error', '.badge-status-error']) {
-    it(`rule body of ${selector} is color: var(--text-error)`, () => {
-      const bodies = ruleBodies(css, selector);
-      expect(bodies.length, `${selector} rule found`).toBeGreaterThan(0);
-      for (const body of bodies) {
-        expect(body).toMatch(/(^|[\s;])color:\s*var\(--text-error\);/);
-        expect(body).not.toMatch(/(^|[\s;])color:\s*var\(--color-error\)/);
+  // Series 2 to 7 are the slots meant to share one chart (one per model), so every pair must
+  // stay apart for full color vision and under the two common red-green deficiencies.
+  // Distance is OKLab x100; deficiencies are simulated with Machado, Oliveira and Fernandes
+  // (2009) at full severity. 15 and 8 are the usual floors for telling two marks apart.
+  const MIN_NORMAL_DISTANCE = 15;
+  const MIN_CVD_DISTANCE = 8;
+  const SHARED_SERIES = [2, 3, 4, 5, 6, 7].map(n => `--viz-${n}`);
+  const CVD_MATRICES = {
+    protanopia: [
+      [0.152286, 1.052583, -0.204868],
+      [0.114503, 0.786281, 0.099216],
+      [-0.003882, -0.048116, 1.051998],
+    ],
+    deuteranopia: [
+      [0.367322, 0.860646, -0.227968],
+      [0.280085, 0.672501, 0.047413],
+      [-0.01182, 0.04294, 0.968881],
+    ],
+  };
+
+  /** OKLab coordinates of a hex color, optionally seen through a CVD matrix (linear RGB). */
+  function oklab(hex: string, matrix?: number[][]): number[] {
+    const { r, g, b } = hexToRgb(hex);
+    let rgb = [r, g, b].map(c => {
+      const s = c / 255;
+      return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+    });
+    if (matrix) {
+      rgb = matrix.map(row =>
+        Math.min(1, Math.max(0, row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2]))
+      );
+    }
+    const [lr, lg, lb] = rgb;
+    const l = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+    const m = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+    const s = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+    return [
+      0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+      1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+      0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+    ];
+  }
+
+  function distance(a: string, b: string, matrix?: number[][]): number {
+    const [p, q] = [oklab(a, matrix), oklab(b, matrix)];
+    return 100 * Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+  }
+
+  for (const { name, block } of themes) {
+    it(`series 2 to 7 stay apart in the ${name} theme, with and without red-green deficiency`, () => {
+      const colors = SHARED_SERIES.map(token => [token, readVar(block, token)] as const);
+      for (const [i, [tokenA, a]] of colors.entries()) {
+        for (const [tokenB, b] of colors.slice(i + 1)) {
+          const pair = `${tokenA} vs ${tokenB}`;
+          expect(distance(a, b), `${pair}`).toBeGreaterThanOrEqual(MIN_NORMAL_DISTANCE);
+          for (const [kind, matrix] of Object.entries(CVD_MATRICES)) {
+            expect(distance(a, b, matrix), `${pair} (${kind})`).toBeGreaterThanOrEqual(
+              MIN_CVD_DISTANCE
+            );
+          }
+        }
       }
     });
   }
 
-  // The tint under .alert-error and .badge-status-error stays the fill token, at the share the
-  // contrast tests below assume.
-  for (const selector of ['.alert-error', '.badge-status-error']) {
-    it(`${selector} keeps its 15% --color-error tint`, () => {
-      const bodies = ruleBodies(css, selector);
-      expect(bodies.length).toBeGreaterThan(0);
-      for (const body of bodies) {
-        expect(body).toContain('color-mix(in srgb, var(--color-error) 15%, transparent)');
-      }
-    });
+  it('no color scheme overrides a visualization token', () => {
+    // Schemes change only primary, accent and --text-primary; the viz tokens must hold under every scheme.
+    expect(readFileSync(join(stylesDir, 'schemes.css'), 'utf8')).not.toMatch(/--viz-/);
+  });
+});
+
+describe('Status text rules', () => {
+  const stylesDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'styles');
+  const css = readFileSync(join(stylesDir, 'tailwind.css'), 'utf8');
+
+  for (const { status, token, fill } of TEXT_TOKENS) {
+    const tintedSelectors = [`.alert-${status}`, `.badge-status-${status}`];
+
+    for (const selector of [`.text-${status}`, ...tintedSelectors]) {
+      it(`rule body of ${selector} is color: var(${token})`, () => {
+        const bodies = ruleBodies(css, selector);
+        expect(bodies.length, `${selector} rule found`).toBeGreaterThan(0);
+        for (const body of bodies) {
+          expect(body).toContain(`color: var(${token});`);
+          expect(body).not.toMatch(/(^|[\s;])color:\s*(var\(--color-|#)/);
+        }
+      });
+    }
+
+    // The tint under the alert and the badge stays the fill token, at the share the contrast
+    // tests below assume.
+    for (const selector of tintedSelectors) {
+      it(`${selector} keeps its 15% ${fill} tint`, () => {
+        const bodies = ruleBodies(css, selector);
+        expect(bodies.length).toBeGreaterThan(0);
+        for (const body of bodies) {
+          expect(body).toContain(`color-mix(in srgb, var(${fill}) 15%, transparent)`);
+        }
+      });
+    }
   }
 
   const desktopDir = join(stylesDir, '..', 'lib', 'desktop');
@@ -500,17 +632,17 @@ describe('Error text rules', () => {
     ['light', lightBase, blockBody(css, ":root,\n[data-theme='light']")],
     ['dark', darkBlock, darkBlock],
   ] as const) {
-    it(`--text-error passes AA on a 15% error tint over base-100 in the ${name} theme`, () => {
-      // .alert-error and .badge-status-error draw a 15% --color-error tint under --text-error
-      const tint = applyOpacity(
-        readVar(block, '--color-error'),
-        readVar(block, '--color-base-100'),
-        0.15
-      );
-      expect(getContrastRatio(readVar(textBlock, '--text-error'), tint)).toBeGreaterThanOrEqual(
-        WCAG_AA_NORMAL
-      );
-    });
+    // .alert-* and .badge-status-* draw a 15% fill tint under their text token
+    for (const { token, fill } of TEXT_TOKENS) {
+      for (const surface of ['--color-base-100', '--color-base-200', '--color-base-300']) {
+        it(`${token} passes AA on a 15% ${fill} tint over ${surface} in the ${name} theme`, () => {
+          const tint = applyOpacity(readVar(block, fill), readVar(block, surface), 0.15);
+          expect(getContrastRatio(readVar(textBlock, token), tint)).toBeGreaterThanOrEqual(
+            WCAG_AA_NORMAL
+          );
+        });
+      }
+    }
   }
 });
 
@@ -521,9 +653,6 @@ describe('SelectDropdown option states in every color scheme', () => {
 
   const FIXED_SCHEMES = ['blue', 'forest', 'amber', 'violet', 'rose'];
   const ALL_SCHEMES = [...FIXED_SCHEMES, 'custom'];
-
-  /** Minimum ratio for the focus outline against its neighbours (WCAG 1.4.11). */
-  const OUTLINE_MIN_RATIO = 3;
 
   const lightBase = blockBody(tailwindCss, '@theme');
   const darkBase = blockBody(tailwindCss, "[data-theme='dark']");
@@ -604,32 +733,23 @@ describe('SelectDropdown option states in every color scheme', () => {
         const m = measure(primaryOf(scheme, theme), theme);
         expect(m.textOnSelected).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
         expect(m.textOnHighlight).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
-        expect(m.outlineOnSurface).toBeGreaterThanOrEqual(OUTLINE_MIN_RATIO);
-        expect(m.outlineOnSelected).toBeGreaterThanOrEqual(OUTLINE_MIN_RATIO);
-        expect(m.outlineOnHighlight).toBeGreaterThanOrEqual(OUTLINE_MIN_RATIO);
+        expect(m.outlineOnSurface).toBeGreaterThanOrEqual(WCAG_NON_TEXT);
+        expect(m.outlineOnSelected).toBeGreaterThanOrEqual(WCAG_NON_TEXT);
+        expect(m.outlineOnHighlight).toBeGreaterThanOrEqual(WCAG_NON_TEXT);
       });
     }
   }
 
   it('custom scheme: option text and outline pass for any primary color', () => {
-    const channel = [0x00, 0x33, 0x66, 0x99, 0xcc, 0xff];
-    const toHex = (n: number) => n.toString(16).padStart(2, '0');
-    const primaries = ['#2563eb', '#3b82f6'];
-    for (const r of channel) {
-      for (const g of channel) {
-        for (const b of channel) {
-          primaries.push(`#${toHex(r)}${toHex(g)}${toHex(b)}`);
-        }
-      }
-    }
-    expect(primaries).toHaveLength(216 + 2);
+    const primaries = ['#2563eb', '#3b82f6', ...GRID_COLORS];
+    expect(primaries).toHaveLength(CHANNEL_STEPS.length ** 3 + 2);
 
     for (const theme of ['light', 'dark'] as const) {
       for (const primary of primaries) {
         const m = measure(primary, theme);
         expect(m.textOnSelected, `${theme} ${primary} text`).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
         expect(m.outlineOnSelected, `${theme} ${primary} outline`).toBeGreaterThanOrEqual(
-          OUTLINE_MIN_RATIO
+          WCAG_NON_TEXT
         );
       }
     }
@@ -642,9 +762,6 @@ describe('PlaceSearch colors in light and dark themes', () => {
   const lightBase = blockBody(tailwindCss, '@theme');
   const lightText = blockBody(tailwindCss, ":root,\n[data-theme='light']");
   const darkBase = blockBody(tailwindCss, "[data-theme='dark']");
-
-  /** Minimum ratio for an informative icon (WCAG 1.4.11). */
-  const ICON_MIN_RATIO = 3;
 
   /** Custom property written as `text-[var(--token)]` in a class constant, without opacity. */
   function textToken(classes: string): string {
@@ -685,8 +802,8 @@ describe('PlaceSearch colors in light and dark themes', () => {
 
       it('uses the shared highlight outline and background', () => {
         const outline = tokenValue(outlineToken(OPTION_HIGHLIGHT_OUTLINE_CLASS));
-        expect(getContrastRatio(outline, surface)).toBeGreaterThanOrEqual(ICON_MIN_RATIO);
-        expect(getContrastRatio(outline, highlightTint)).toBeGreaterThanOrEqual(ICON_MIN_RATIO);
+        expect(getContrastRatio(outline, surface)).toBeGreaterThanOrEqual(WCAG_NON_TEXT);
+        expect(getContrastRatio(outline, highlightTint)).toBeGreaterThanOrEqual(WCAG_NON_TEXT);
       });
 
       it('disclosure text and its link icon meet AA', () => {
@@ -921,6 +1038,7 @@ describe('Primary and accent content in every color scheme', () => {
 
   const lightBlock = blockBody(tailwindCss, '@theme');
   const darkBlock = blockBody(tailwindCss, "[data-theme='dark']");
+  const rootLightBlock = blockBody(tailwindCss, ":root,\n[data-theme='light']");
 
   /** Raw value (hex or color-mix) of custom property `name` in a block body, or null when unset. */
   function rawVar(body: string, name: string): string | null {
@@ -939,14 +1057,17 @@ describe('Primary and accent content in every color scheme', () => {
   }
 
   /**
-   * Raw token value of a scheme in a theme, mirroring the cascade: the dark scheme block, then
-   * the scheme block, then the theme block, then @theme.
+   * Raw token value of a scheme in a theme: the dark scheme block, then the scheme block, then
+   * the theme block, then @theme. This reads the source files and assumes schemes.css loads after
+   * the theme blocks, as main.js imports it (checked by a test below).
    */
   function tokenOf(scheme: string, theme: Theme, name: string): string {
     const candidates = [
       theme === 'dark' ? schemeBlock(scheme, 'dark') : null,
       schemeBlock(scheme, 'light'),
       theme === 'dark' ? darkBlock : null,
+      // Text tokens live in the light theme block, not in @theme
+      rootLightBlock,
       lightBlock,
     ];
     for (const block of candidates) {
@@ -1010,6 +1131,146 @@ describe('Primary and accent content in every color scheme', () => {
       expect(ratio).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
     });
   }
+
+  // The shared focus ring (toggle, card, button, table search box) is --color-primary at full
+  // strength, so it must reach 3:1 (WCAG 1.4.11) on every surface a control sits on.
+  describe('Accessibility: primary focus ring', () => {
+    const SURFACES = ['--color-base-100', '--color-base-200', '--color-base-300'];
+
+    for (const scheme of FIXED_SCHEMES) {
+      for (const theme of ['light', 'dark'] as const) {
+        it(`${scheme} ${theme}: primary ring is at least 3:1 on base-100, base-200 and base-300`, () => {
+          for (const surface of SURFACES) {
+            const ratio = getContrastRatio(
+              colorOf(scheme, theme, '--color-primary'),
+              colorOf(scheme, theme, surface)
+            );
+            expect(ratio, `${scheme} ${theme} primary on ${surface}`).toBeGreaterThanOrEqual(
+              WCAG_NON_TEXT
+            );
+          }
+        });
+      }
+    }
+  });
+
+  describe('Accessibility: sidebar active item text', () => {
+    const SURFACES = ['--color-base-100', '--color-base-200', '--color-base-300'];
+    const ACTIVE_RULES = ['.menu-item-active', '.menu-subitem-active'];
+    const TEXT_TOKEN = '--text-primary';
+    // Surfaces do not depend on the scheme; any scheme resolves them from the theme blocks.
+    const SURFACE_SCHEME = 'blue';
+
+    /** Bodies of every rule for `selector` in tailwind.css; fails when there is none. */
+    function activeBodies(selector: string): string[] {
+      const bodies = ruleBodies(tailwindCss, selector);
+      expect(bodies.length, `${selector} rule found`).toBeGreaterThan(0);
+      return bodies;
+    }
+
+    /** Tint fraction of the primary fill that an active rule puts behind the text. */
+    function tintFraction(selector: string): number {
+      const match = /color-mix\(in oklch, var\(--color-primary\) (\d+)%, transparent\)/.exec(
+        activeBodies(selector).join('\n')
+      );
+      expect(match, `${selector} tints --color-primary`).not.toBeNull();
+      return Number(match?.[1]) / 100;
+    }
+
+    const TINT = tintFraction(ACTIVE_RULES[0]);
+
+    const surfacesOf = (theme: Theme) => SURFACES.map(name => colorOf(SURFACE_SCHEME, theme, name));
+
+    /**
+     * Lowest ratio of `text` on the surfaces and on a tint of `fill` over each. The CSS mixes in
+     * oklch with transparent, which keeps the fill colour and sets its alpha to the tint share, so
+     * blending in sRGB bytes gives the same tint (checked against a full oklch mix: same worst
+     * ratios to three decimals).
+     */
+    function worstRatio(text: string, fill: string, surfaces: string[]): number {
+      return Math.min(
+        ...surfaces.flatMap(surface => [
+          getContrastRatio(text, surface),
+          getContrastRatio(text, applyOpacity(fill, surface, TINT)),
+        ])
+      );
+    }
+
+    for (const selector of ACTIVE_RULES) {
+      it(`${selector} colours its text with ${TEXT_TOKEN} and uses the shared tint`, () => {
+        // Every rule for the class, so a later override or duplicate with another colour fails.
+        expect(new Set(colorValues(activeBodies(selector)))).toEqual(
+          new Set([`var(${TEXT_TOKEN})`])
+        );
+        expect(tintFraction(selector)).toBe(TINT);
+      });
+    }
+
+    it('colorValues reads every color declaration and ignores background-color', () => {
+      const bodies = [
+        'background-color: red; color: var(--text-primary);',
+        '\n    color: #fff;\n    background-color: blue',
+      ];
+      expect(colorValues(bodies)).toEqual(['var(--text-primary)', '#fff']);
+    });
+
+    it('imports schemes.css after tailwind.css, so the scheme blocks win over the theme blocks', () => {
+      const main = readFileSync(join(srcDir, 'main.js'), 'utf8');
+      const tailwindAt = main.indexOf("'./styles/tailwind.css'");
+      const schemesAt = main.indexOf("'./styles/schemes.css'");
+      expect(tailwindAt, 'tailwind.css import').toBeGreaterThanOrEqual(0);
+      expect(schemesAt, 'schemes.css import').toBeGreaterThan(tailwindAt);
+    });
+
+    for (const scheme of FIXED_SCHEMES) {
+      for (const theme of ['light', 'dark'] as const) {
+        it(`${scheme} ${theme}: ${TEXT_TOKEN} meets AA on the surfaces and the active tint`, () => {
+          const ratio = worstRatio(
+            colorOf(scheme, theme, TEXT_TOKEN),
+            colorOf(scheme, theme, '--color-primary'),
+            surfacesOf(theme)
+          );
+          expect(ratio, `${scheme} ${theme}`).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
+        });
+      }
+    }
+
+    it('lists every scheme that schemes.css defines, so none escapes the loops above', () => {
+      const defined = new Set(
+        [...schemesCss.matchAll(/\[data-scheme=["']?([^"'\]]+)["']?\]/g)].map(m => m[1])
+      );
+      expect([...defined].sort()).toEqual([...FIXED_SCHEMES, 'custom'].sort());
+    });
+
+    for (const scheme of FIXED_SCHEMES.filter(name => name !== 'blue')) {
+      it(`${scheme} defines ${TEXT_TOKEN} in its light and dark blocks`, () => {
+        for (const theme of ['light', 'dark'] as const) {
+          const block = schemeBlock(scheme, theme);
+          expect(block, `${scheme} ${theme} block`).not.toBeNull();
+          expect(
+            findVar(block ?? '', TEXT_TOKEN),
+            `${scheme} ${theme} ${TEXT_TOKEN}`
+          ).not.toBeNull();
+        }
+      });
+    }
+
+    it('custom scheme: the token is base-content, which passes on the tint over a 6x6x6 colour grid', () => {
+      expect(blockBody(schemesCss, "\n[data-scheme='custom']")).toMatch(
+        /--text-primary:\s*var\(--color-base-content\);/
+      );
+      expect(GRID_COLORS).toHaveLength(CHANNEL_STEPS.length ** 3);
+      for (const theme of ['light', 'dark'] as const) {
+        const text = colorOf(SURFACE_SCHEME, theme, '--color-base-content');
+        const surfaces = surfacesOf(theme);
+        for (const fill of GRID_COLORS) {
+          expect(worstRatio(text, fill, surfaces), `${theme} ${fill}`).toBeGreaterThanOrEqual(
+            WCAG_AA_NORMAL
+          );
+        }
+      }
+    });
+  });
 
   it('resolves color-mix against black and white', () => {
     expect(resolve('color-mix(in srgb, #ffffff 80%, black)')).toBe('#cccccc');
@@ -1130,20 +1391,14 @@ describe('Custom scheme hover and pressed fills', () => {
   });
 
   it('keeps at least the rest contrast on hover and pressed for any custom colour', () => {
-    const channel = ['00', '33', '66', '99', 'cc', 'ff'];
-    for (const r of channel) {
-      for (const g of channel) {
-        for (const b of channel) {
-          const primary = `#${r}${g}${b}`;
-          const content = contentFor(primary);
-          const shade = content === '#ffffff' ? '#000000' : '#ffffff';
-          const rest = getContrastRatio(content, primary);
-          const hover = getContrastRatio(content, applyOpacity(primary, shade, 0.85));
-          const active = getContrastRatio(content, applyOpacity(primary, shade, 0.7));
-          expect(hover, `${primary} hover`).toBeGreaterThanOrEqual(rest - 0.01);
-          expect(active, `${primary} pressed`).toBeGreaterThanOrEqual(rest - 0.01);
-        }
-      }
+    for (const primary of GRID_COLORS) {
+      const content = contentFor(primary);
+      const shade = content === '#ffffff' ? '#000000' : '#ffffff';
+      const rest = getContrastRatio(content, primary);
+      const hover = getContrastRatio(content, applyOpacity(primary, shade, 0.85));
+      const active = getContrastRatio(content, applyOpacity(primary, shade, 0.7));
+      expect(hover, `${primary} hover`).toBeGreaterThanOrEqual(rest - 0.01);
+      expect(active, `${primary} pressed`).toBeGreaterThanOrEqual(rest - 0.01);
     }
   });
 
@@ -1166,32 +1421,16 @@ describe('Custom scheme hover and pressed fills', () => {
     }
   });
 
-  /** The scheme block of the pre-paint script in index.html (the tag also holds other init code). */
-  function prePaintSchemeScript(): string {
-    const html = readFileSync(join(stylesDir, '..', '..', 'index.html'), 'utf8');
-    const start = html.indexOf('// Restore color scheme');
-    const end = html.indexOf('})();', start);
-    return start === -1 || end === -1 ? '' : html.slice(start, end + '})();'.length);
-  }
-
-  /** Runs a shipped inline script with the scheme stored JSON-encoded, as the app stores it. */
-  function schemeAfterRunning(script: string): string | null {
+  it('the index.html pre-paint script restores a JSON-encoded scheme', () => {
+    // The scheme block of the pre-paint script
+    const script = indexHtmlScriptBlock('// Restore color scheme');
+    expect(script).not.toBe('');
+    // Stored JSON-encoded, as the app stores it
     localStorage.setItem('color-scheme', JSON.stringify('amber'));
     document.documentElement.removeAttribute('data-scheme');
     new Function(script)();
     localStorage.removeItem('color-scheme');
-    return document.documentElement.getAttribute('data-scheme');
-  }
-
-  it('the index.html pre-paint script restores a JSON-encoded scheme', () => {
-    const script = prePaintSchemeScript();
-    expect(script).not.toBe('');
-    expect(schemeAfterRunning(script)).toBe('amber');
-  });
-
-  it('the theme init script restores a JSON-encoded scheme', async () => {
-    const { getThemeInitScript } = await import('../lib/utils/theme-init');
-    expect(schemeAfterRunning(getThemeInitScript())).toBe('amber');
+    expect(document.documentElement.getAttribute('data-scheme')).toBe('amber');
   });
 
   it('the scheme store sets a shade away from the content colour', async () => {

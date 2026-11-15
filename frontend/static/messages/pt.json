@@ -34,7 +34,6 @@
     "internalServerError": "Erro interno do servidor",
     "actions": {
       "download": "Baixar",
-      "review": "Revisar",
       "play": "Reproduzir",
       "view": "Ver"
     },
@@ -141,14 +140,14 @@
       "visitEbirdLink": "Abrir eBird.org em uma nova aba",
       "learnEbirdTaxonomyLink": "Abrir Taxonomia eBird em uma nova aba",
       "resizeHandle": "Arraste para redimensionar",
-      "imageCredit": "Crédito da imagem: {name}"
+      "imageCredit": "Crédito da imagem: {name}",
+      "opensInNewTab": "abre em uma nova aba"
     },
     "labels": {
       "confidence": "Confiança",
       "github": "GitHub"
     },
     "values": {
-      "yes": "Sim",
       "no": "Não",
       "unknown": "Desconhecido"
     },
@@ -181,12 +180,6 @@
         "hideComment": "Ocultar comentário",
         "commentPlaceholder": "Adicione um comentário sobre esta detecção...",
         "commentCount": "({chars} caracteres)",
-        "chars": "caracteres",
-        "commentsLabel": "Comentários",
-        "currentStatusTitle": "Status atual",
-        "detectionStatusTitle": "Status da detecção",
-        "lockLabel": "Status de bloqueio",
-        "reviewLabel": "Status de revisão",
         "saveReview": "Salvar revisão"
       },
       "errors": {
@@ -207,7 +200,6 @@
     "hoursShort": "h"
   },
   "pageTitle": {
-    "settings": "Configurações - BirdNET-Go",
     "pageNotFound": "404 - Página não encontrada",
     "serverError": "500 - Erro interno do servidor",
     "componentError": "Erro ao carregar componente",
@@ -889,23 +881,190 @@
       "allDetections": "Todas as detecções em {date}"
     },
     "detail": {
-      "species": "Espécie",
-      "observation": "Observação",
+      "species": {
+        "dialogTitle": "Alterar espécie",
+        "current": "Atualmente identificado como",
+        "fromPredictions": "Outras previsões do modelo",
+        "search": "Pesquisar espécies",
+        "loadingList": "A carregar a lista de espécies...",
+        "listFailed": "Não foi possível carregar a lista de espécies. Feche esta janela e tente novamente.",
+        "noMatches": "Nenhuma espécie correspondente.",
+        "effect": "A detecção é marcada como correta, e a escolha original do modelo permanece registada.",
+        "pickFirst": "Escolha uma espécie primeiro.",
+        "confirm": "Alterar para {species}",
+        "confirmEmpty": "Alterar espécie",
+        "changed": "Espécie alterada para {species}",
+        "changeFailed": "Não foi possível alterar a espécie. Tente novamente.",
+        "conflict": "Não é possível alterar a espécie agora: a detecção está mantida (bloqueada) ou o formato antigo da base de dados está em uso.",
+        "notKnownHere": "{species} nunca foi detetada nem prevista nesta estação, pelo que ainda não pode ser escolhida.",
+        "predictionsTitle": "Outras previsões",
+        "noPredictions": "O modelo não guardou outras previsões para esta gravação.",
+        "allSpecies": "Todas as espécies",
+        "searchRangePlaceholder": "Uma espécie esperada neste local",
+        "searchAllPlaceholder": "Qualquer espécie que os modelos conheçam",
+        "searchHintRange": "A pesquisar nas {count} espécies esperadas aqui pelo filtro de alcance. Ative Todas as espécies para pesquisar tudo.",
+        "searchHintAll": "A pesquisar em todas as {count} espécies que os modelos conhecem.",
+        "noMatchesInRange": "Nenhuma correspondência entre as espécies esperadas aqui. Ative Todas as espécies para pesquisar tudo.",
+        "modelPick": "escolha do modelo"
+      },
       "aria": {
-        "downloadAudioClip": "Baixar clipe de áudio para a detecção de {name}",
-        "audioRecordingFor": "Gravação de áudio e espectrograma para {name}",
         "scientificName": "Nome científico",
         "classificationBadges": "Distintivos de classificação da espécie",
         "confidence": "Confiança da detecção {confidence}%",
-        "metadata": "Metadados da detecção",
-        "weatherConditions": "Condições meteorológicas no momento da detecção",
-        "comments": "Comentários da detecção",
-        "commentText": "Texto do comentário",
-        "commentTimestamp": "Data e hora do comentário",
-        "mainRegion": "Detalhes de detecção",
-        "tabsHeading": "Abas de informação da detecção",
-        "tabList": "Abas de detalhes da detecção",
         "speciesHeadingSuffix": "detalhes de detecção"
+      },
+      "nav": {
+        "label": "Navegação de detecções",
+        "back": "Detecções",
+        "allGroup": "Todas as detecções",
+        "older": "Detecção mais antiga",
+        "noOlder": "Esta é a detecção mais antiga",
+        "newer": "Detecção mais recente",
+        "noNewer": "Esta é a detecção mais recente",
+        "speciesGroup": "Detecções de {species}",
+        "olderSpecies": "Detecção mais antiga de {species}",
+        "noOlderSpecies": "Nenhuma detecção mais antiga de {species}",
+        "newerSpecies": "Detecção mais recente de {species}",
+        "noNewerSpecies": "Nenhuma detecção mais recente de {species}",
+        "stepLoading": "{label}: a verificar detecções vizinhas",
+        "stepFailed": "{label}: não foi possível verificar detecções vizinhas"
+      },
+      "identity": {
+        "date": "Data",
+        "time": "Hora",
+        "beforeSunrise": "{hours} h {minutes} min antes do nascer do sol",
+        "afterSunrise": "{hours} h {minutes} min após o nascer do sol",
+        "beforeSunset": "{hours} h {minutes} min antes do pôr do sol",
+        "afterSunset": "{hours} h {minutes} min após o pôr do sol",
+        "setByReviewer": "Espécie definida pelo revisor",
+        "timeOfDay": "Período do dia",
+        "minutesBeforeSunrise": "{minutes} min antes do nascer do sol",
+        "minutesAfterSunrise": "{minutes} min após o nascer do sol",
+        "minutesBeforeSunset": "{minutes} min antes do pôr do sol",
+        "minutesAfterSunset": "{minutes} min após o pôr do sol",
+        "predictionsUnknown": "Outras previsões",
+        "predictionsNone": "Sem outras previsões",
+        "predictionsCount": "{count, plural, one {# outra previsão} other {# outras previsões}}"
+      },
+      "conditions": {
+        "title": "Hora e condições",
+        "skyLabel": "Linha do dia: detetada às {time}, nascer do sol {sunrise}, pôr do sol {sunset}",
+        "activityLabel": "Detecções de {species} por hora do dia",
+        "sunrise": "Nascer do sol",
+        "sunset": "Pôr do sol",
+        "activityLegend": "Atividade de {species} por hora, todo o período",
+        "feelsLike": "Sensação",
+        "moonLit": "{percent}% iluminada",
+        "windFrom": "Vento de {direction}",
+        "cloudCover": "Nuvens",
+        "precipitation": "Precipitação",
+        "precipitationTypes": {
+          "rain": "chuva",
+          "snow": "neve",
+          "sleet": "chuva com neve"
+        },
+        "observedAt": "Observação meteorológica das {time}",
+        "notObserved": "Sem observação meteorológica para esta hora"
+      },
+      "compass": {
+        "n": "N",
+        "nne": "NNE",
+        "ne": "NE",
+        "ene": "LNE",
+        "e": "L",
+        "ese": "LSE",
+        "se": "SE",
+        "sse": "SSE",
+        "s": "S",
+        "ssw": "SSO",
+        "sw": "SO",
+        "wsw": "OSO",
+        "w": "O",
+        "wnw": "ONO",
+        "nw": "NO",
+        "nnw": "NNO"
+      },
+      "review": {
+        "title": "Revisão",
+        "autosave": "Guardado assim que escolher",
+        "question": "É {species}?",
+        "correct": "Correto",
+        "falsePositive": "Falso positivo",
+        "saving": "A guardar...",
+        "savedCorrect": "Marcado como correto",
+        "savedFalsePositive": "Marcado como falso positivo",
+        "loginRequired": "Inicie sessão para revisar esta detecção.",
+        "lockedHelp": "As detecções mantidas não podem ser alteradas. Desative primeiro Manter esta gravação.",
+        "keep": "Manter esta gravação",
+        "keepHelp": "As detecções mantidas nunca são removidas pela limpeza.",
+        "reloadFailed": "Salvo, mas não foi possível recarregar a detecção. Atualize a página para ver a alteração.",
+        "ignoredSpecies": "{species} está agora ignorada",
+        "wrongSpecies": "Espécie errada...",
+        "legacyHelp": "Alterar a espécie requer o formato atual da base de dados.",
+        "databaseChecking": "A verificar se a espécie pode ser alterada.",
+        "databaseUnknown": "A espécie não pode ser alterada enquanto o formato da base de dados não for conhecido.",
+        "ignoreShort": "Ignorar espécie",
+        "ignoredShort": "Espécie ignorada"
+      },
+      "models": {
+        "title": "Modelos",
+        "summary": "{hit} de {total} detetaram",
+        "empty": "Sem registo por modelo para esta detecção. A participação dos modelos é guardada apenas para detecções mais recentes.",
+        "hits": "{count, plural, one {# ocorrência} other {# ocorrências}}",
+        "mean": "média {value}",
+        "noHit": "Executado neste áudio, sem ocorrência"
+      },
+      "stats": {
+        "title": "Espécie nesta estação",
+        "rangeScore": "Pontuação do filtro de alcance",
+        "rangeScoreNote": "Probabilidade neste local para {date}",
+        "rangeScoreNoteToday": "Probabilidade neste local hoje",
+        "total": "Detecções, todo o período",
+        "windowTotal": "Detecções, últimos {days} dias",
+        "firstHeard": "Ouvida pela primeira vez",
+        "lastHeard": "Ouvida pela última vez",
+        "avgConfidence": "Confiança média",
+        "maxConfidence": "Confiança mais alta",
+        "dailyTitle": "Detecções por dia, {days} dias até esta detecção",
+        "dailyLabel": "{count} detecções nos {days} dias até esta detecção",
+        "allThisDay": "Todas as detecções de {species} neste dia",
+        "reviewsTitle": "Revisado por pessoas",
+        "reviewsCount": "{count, plural, one {# revisão} other {# revisões}}",
+        "reviewsCorrect": "{count} corretas",
+        "reviewsFalse": "{count, plural, one {# falso positivo} other {# falsos positivos}}",
+        "oftenRejected": "Rejeitada frequentemente aqui: {percent}% das revisões foram falsos positivos",
+        "reviewsNone": "Nenhuma detecção desta espécie foi revisada ainda."
+      },
+      "clip": {
+        "window": "Janela de captura",
+        "length": "Duração",
+        "seconds": "{count} s",
+        "format": "Formato",
+        "denoised": "Ruído reduzido ao guardar",
+        "denoisedYes": "Sim",
+        "denoisedNo": "Não",
+        "file": "Ficheiro",
+        "audioRemoved": "O áudio foi removido pela política de retenção; a imagem do espectrograma foi mantida.",
+        "noClip": "Nenhuma gravação foi guardada para esta detecção."
+      },
+      "log": {
+        "title": "Registo de atividade",
+        "subtitle": "O que aconteceu com esta detecção",
+        "detected": "Detetado {species} com {confidence}% de confiança",
+        "captureWindow": "Janela de captura {begin}-{end}",
+        "clipSaved": "Gravação guardada",
+        "clipSavedDenoised": "Gravação guardada, ruído reduzido",
+        "firstReviewed": "Primeira revisão",
+        "reviewed": "Marcado como {status}",
+        "locked": "Mantido (bloqueado)",
+        "noteAdded": "Nota adicionada",
+        "noteEdited": "Editado {time}",
+        "timeUnknown": "Hora não registada",
+        "addNote": "Adicionar uma nota",
+        "saveNote": "Adicionar nota",
+        "lockedHelp": "Não é possível adicionar notas enquanto a detecção estiver mantida (bloqueada).",
+        "noteEmpty": "Escreva uma nota antes de a adicionar.",
+        "speciesChanged": "Espécie alterada de {from} para {to}"
       }
     },
     "headers": {
@@ -1042,12 +1201,6 @@
       "title": "Gravação e espectrograma",
       "clipHint": "Clique e arraste no espectrograma para selecionar um intervalo para exportação"
     },
-    "tabs": {
-      "overview": "Visão geral",
-      "taxonomy": "Taxonomia",
-      "history": "Histórico",
-      "notes": "Notas"
-    },
     "environmental": {
       "title": "Condições ambientais"
     },
@@ -1058,18 +1211,9 @@
       "status": "Estado",
       "locked": "Bloqueado"
     },
-    "history": {
-      "title": "Histórico de detecção",
-      "comingSoon": "Rastreamento de histórico em breve..."
-    },
-    "notes": {
-      "title": "Notas e comentários",
-      "noComments": "Sem comentários ou notas para esta detecção."
-    },
     "aria": {
       "loading": "Carregando detalhes da detecção...",
       "loaded": "Detalhes de detecção carregados para {species}",
-      "error": "Erro ao carregar detecção: {error}",
       "loadingResults": "Carregando {count} resultados...",
       "thumbnailLoading": "Carregando miniatura de {species}...",
       "thumbnailLoaded": "Miniatura de {species} carregada",
@@ -1105,9 +1249,7 @@
   },
   "species": {
     "rarity": {
-      "title": "Raridade da espécie",
       "score": "Pontuação",
-      "basedOnLocation": "Baseado na localização: {latitude}, {longitude}",
       "statuses": {
         "very_common": "Muito comum",
         "common": "Comum",
@@ -1119,7 +1261,6 @@
     },
     "taxonomy": {
       "hierarchy": "Classificação taxonômica",
-      "subspecies": "Subespécie",
       "noData": "Sem dados de taxonomia disponíveis.",
       "labels": {
         "kingdom": "Reino",
@@ -1145,11 +1286,9 @@
       }
     },
     "tracking": {
-      "title": "Rastreamento de espécies",
       "newSpecies": "Nova espécie",
       "newThisYear": "Primeira vez este ano",
-      "newThisSeason": "Primeira vez esta temporada",
-      "daysSinceFirst": "Dias desde a primeira detecção"
+      "newThisSeason": "Primeira vez esta temporada"
     }
   },
   "spectrogram": {
@@ -1202,13 +1341,6 @@
     },
     "systemInfo": {
       "title": "Informações do sistema",
-      "os": "Sistema operacional",
-      "hostname": "Nome do host",
-      "uptime": "Tempo de atividade",
-      "cpus": "Processadores",
-      "model": "Modelo do sistema",
-      "timezone": "Fuso horário",
-      "temperature": "Temperatura do CPU",
       "temperatureValue": "{temp}°C",
       "temperatureUnavailable": "Dados de temperatura não disponíveis",
       "cpuCores": "Núcleos de CPU",
@@ -1247,16 +1379,7 @@
         "uptime": "Tempo ativo",
         "process": "Processo"
       },
-      "showAll": "Mostrar todos os processos",
-      "showBirdnetOnly": "Mostrar apenas BirdNET",
-      "table": {
-        "process": "Processo",
-        "status": "Estado",
-        "cpu": "CPU",
-        "memory": "Memória",
-        "uptime": "Tempo ativo",
-        "showAllProcesses": "Mostrar todos os processos"
-      }
+      "showAll": "Mostrar todos os processos"
     },
     "errors": {
       "systemInfo": "Falha ao carregar informações do sistema: {error}",
@@ -1980,7 +2103,8 @@
     "detach": "Abrir em nova janela",
     "detached": "Terminal separado",
     "detachedDescription": "O terminal está em execução numa janela separada. Feche essa janela para devolvê-lo aqui.",
-    "reattach": "Reconectar"
+    "reattach": "Reconectar",
+    "keyboardExitHint": "Prima Esc e depois Tab para sair do terminal"
   },
   "analytics": {
     "hub": {
@@ -5651,6 +5775,10 @@
         "label": "Validação pós-deteção",
         "helpText": "Quando ativado, as deteções de morcegos são validadas pela análise dos padrões de energia ultrassónica no áudio de origem. Deteções sem características de ecolocalização são marcadas como improváveis."
       },
+      "batDiscardUnlikely": {
+        "label": "Descartar deteções improváveis",
+        "helpText": "Quando ativado, as deteções de morcegos que a validação pós-deteção marca como improváveis são descartadas: não são guardadas, não geram clipe de áudio nem notificação e não podem ser recuperadas. Quando desativado (predefinição), são guardadas e marcadas como improváveis. As deteções já guardadas não são alteradas."
+      },
       "batFalsePositiveFilter": {
         "label": "Filtro de falsos positivos de morcegos",
         "helpText": "Requer múltiplas confirmações de uma deteção de morcego dentro de uma janela deslizante antes de a aceitar. Níveis mais altos requerem mais confirmações, reduzindo falsos positivos. O modelo de morcegos usa uma sobreposição fixa de 50%, portanto não é necessário ajuste de sobreposição.",
@@ -5794,7 +5922,8 @@
       },
       "tabs": {
         "installed": "Instalados",
-        "available": "Disponíveis"
+        "available": "Disponíveis",
+        "navigationAria": "Abas da galeria de modelos"
       },
       "loading": "Carregando modelos...",
       "retry": "Tentar novamente",
@@ -5864,6 +5993,11 @@
         "buildLabel": "{version} · {build}",
         "cardNotice": "Prévia para desenvolvedores, não é a versão final. Esta é uma versão inicial para testes; os resultados podem mudar antes da versão estável.",
         "dialogNotice": "Você está instalando uma prévia para desenvolvedores ({build}). É útil para testes, mas ainda não é recomendada como seu único classificador."
+      },
+      "experimental": {
+        "badge": "Experimental",
+        "cardNotice": "Experimental no BirdNET-Go. O modelo está publicado, mas o seu desempenho no BirdNET-Go ainda não está comprovado, por isso os resultados podem ser menos fiáveis.",
+        "dialogNotice": "Está a instalar um modelo experimental no BirdNET-Go. O seu desempenho ainda não está comprovado, por isso verifique as suas deteções antes de confiar nele."
       },
       "entryIncompatible": "Este modelo não está disponível neste sistema.",
       "regionGlobal": "Global",
@@ -6013,6 +6147,7 @@
     },
     "metricFooter": {
       "allPassing": "Tudo OK",
+      "healthyOfTotal": "{healthy} de {total}",
       "needsAttention": "Requer atenção",
       "failing": "A falhar",
       "allClear": "Sem problemas",
