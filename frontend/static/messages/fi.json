@@ -6038,10 +6038,10 @@
       "reinstalling": "Asennetaan uudelleen...",
       "reinstallComplete": "Tiedostot tarkistettu onnistuneesti",
       "geomodelBadge": "Sisältää BirdNET v3.0 -geomallin",
+      "newBadge": "Uusi",
       "preview": {
         "badge": "Esiversio",
         "buildLabel": "{version} · {build}",
-        "cardNotice": "Kehittäjien esiversio, ei lopullinen julkaisu. Tämä on varhainen versio testausta varten; tulokset voivat muuttua ennen vakaata versiota.",
         "dialogNotice": "Olet asentamassa kehittäjien esiversiota ({build}). Se soveltuu kokeiluun, mutta sitä ei vielä suositella ainoaksi luokittelijaksi."
       },
       "experimental": {
@@ -6093,7 +6093,7 @@
       "title": "BirdNET v3.0 Detection"
     },
     "birdnetplus": {
-      "title": "BirdNET+ V3.0 -tunnistus"
+      "title": "BirdNET+ v3.0 -tunnistus"
     },
     "thresholds": {
       "title": "Tunnistuskynnykset",

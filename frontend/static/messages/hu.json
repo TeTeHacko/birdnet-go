@@ -6038,10 +6038,10 @@
       "reinstalling": "Újratelepítés...",
       "reinstallComplete": "Fájlok sikeresen ellenőrizve",
       "geomodelBadge": "Tartalmazza a BirdNET v3.0 geomodellt",
+      "newBadge": "Új",
       "preview": {
         "badge": "Előzetes",
         "buildLabel": "{version} · {build}",
-        "cardNotice": "Fejlesztői előzetes, nem végleges kiadás. Ez egy korai tesztverzió; az eredmények a stabil verzió előtt még változhatnak.",
         "dialogNotice": "Fejlesztői előzetest ({build}) készülsz telepíteni. Kipróbálásra jó, de egyelőre nem ajánlott egyedüli osztályozóként használni."
       },
       "experimental": {
@@ -6093,7 +6093,7 @@
       "title": "BirdNET v3.0 észlelés"
     },
     "birdnetplus": {
-      "title": "BirdNET+ V3.0 észlelés"
+      "title": "BirdNET+ v3.0 észlelés"
     },
     "thresholds": {
       "title": "Észlelési küszöbértékek",

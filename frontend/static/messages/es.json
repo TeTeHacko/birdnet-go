@@ -6038,10 +6038,10 @@
       "reinstalling": "Reinstalando...",
       "reinstallComplete": "Archivos verificados correctamente",
       "geomodelBadge": "Incluye BirdNET v3.0 geomodel",
+      "newBadge": "Nuevo",
       "preview": {
         "badge": "Vista previa",
         "buildLabel": "{version} · {build}",
-        "cardNotice": "Vista previa para desarrolladores, no es la versión final. Esta es una versión preliminar para pruebas; los resultados pueden cambiar antes de la versión estable.",
         "dialogNotice": "Estás instalando una versión preliminar para desarrolladores ({build}). Está bien para probarla, pero aún no se recomienda como tu único clasificador."
       },
       "experimental": {
@@ -6093,7 +6093,7 @@
       "title": "BirdNET v3.0 Detection"
     },
     "birdnetplus": {
-      "title": "Detección de BirdNET+ V3.0"
+      "title": "Detección de BirdNET+ v3.0"
     },
     "thresholds": {
       "title": "Umbrales de detección",
