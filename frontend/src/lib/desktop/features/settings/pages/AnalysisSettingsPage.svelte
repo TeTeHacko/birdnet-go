@@ -27,8 +27,9 @@
   @component
 -->
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { downloadBlob } from '$lib/utils/fileHelpers';
+  import { canReturnFocus, pickOpener } from '$lib/utils/pressedElement';
   import type {
     CatalogEntry,
     DownloadProgress,
@@ -101,6 +102,7 @@
     bsgBatSettings,
     perchSettings,
     birdNetV3Settings,
+    birdNetPlusSettings,
     type BSGBatSettings,
   } from '$lib/stores/settings';
   import { cn } from '$lib/utils/cn.js';
@@ -148,6 +150,10 @@
   const DEFAULT_HUGGINGFACE_ENDPOINT = 'https://huggingface.co';
   /** Catalog ID of the BSG-BAT model (the other bat catalog entries are BattyBirdNET models). */
   const BSG_BAT_CATALOG_ID = 'bsg-bat';
+  /** Catalog ID of the BirdNET+ V3.0 model; the threshold card shows only while it is installed. */
+  const BIRDNET_PLUS_CATALOG_ID = 'birdnet-plus-v3.0';
+  /** Backend default of birdnetplus.threshold, used until the section is loaded. */
+  const BIRDNET_PLUS_DEFAULT_THRESHOLD = 0.5;
   /** Backend default of bsgbat.threshold, used until the section is loaded. */
   const BSG_BAT_DEFAULT_THRESHOLD = 0.5;
   /** Bounds and step of the bat model threshold fields. */
@@ -259,9 +265,18 @@
   const HUGGINGFACE_ENDPOINT_ID = 'huggingface-endpoint';
 
   let licenseModel = $state<CatalogEntry | null>(null);
-  // The variant preselected in the license/install dialog: the server-recommended
-  // one by default, overridable by the user. Empty for flat (variant-less) entries.
-  let selectedVariantId = $state('');
+  // The variant the user picked in the license/install dialog, null until they pick
+  // one. Reset each time the dialog opens.
+  let chosenVariantId = $state<string | null>(null);
+  // The variant the dialog installs: the user's pick, else the smart default (the
+  // server-recommended one, falling back sensibly and skipping other regions'
+  // slices). The default follows activeRegionSlug, so it is recomputed when the
+  // regions load after the dialog opened. Empty for flat (variant-less) entries.
+  const selectedVariantId = $derived.by(
+    () =>
+      chosenVariantId ??
+      (licenseModel ? pickPreselectedVariant(licenseModel, activeRegionSlug) : '')
+  );
   // The download-size row and the install target follow the selected variant when
   // the entry has variants; otherwise they fall back to the whole-entry size.
   const licenseSelectedVariant = $derived(
@@ -283,9 +298,16 @@
         return null;
     }
   });
-  // Block install when the selected variant cannot run on this host (e.g. every
-  // variant is incompatible, so the preselected one is blocked). The default
-  // path preselects a compatible variant, so this only fires in the all-blocked case.
+  // The notice the license dialog shows for a model that a newer catalog entry replaces
+  const licenseSupersededNotice = $derived(
+    licenseModel?.supersededBy
+      ? t('analysis.gallery.superseded.dialogNotice', { name: licenseModel.supersededBy.name })
+      : null
+  );
+  // Block install when the selected variant cannot run on this host. The
+  // preselection can be blocked while another variant would run, for example when
+  // the global build and the host's own slice do not fit but another region's
+  // slice does (pickPreselectedVariant skips other regions' slices).
   const installBlocked = $derived(
     licenseSelectedVariant != null && !licenseSelectedVariant.compatible
   );
@@ -403,6 +425,12 @@
   let birdnetV3 = $derived($birdNetV3Settings ?? { overrideThreshold: false, threshold: 0.5 });
   const hasPerchModel = $derived(installedModels.some(m => m.catalogId.startsWith('perch')));
   const hasBirdNetV3Model = $derived(installedModels.some(m => m.catalogId === 'birdnet-v3.0'));
+  let birdnetPlus = $derived(
+    $birdNetPlusSettings ?? { overrideThreshold: false, threshold: BIRDNET_PLUS_DEFAULT_THRESHOLD }
+  );
+  const hasBirdNetPlusModel = $derived(
+    installedModels.some(m => m.catalogId === BIRDNET_PLUS_CATALOG_ID)
+  );
 
   // ── Change detection ──────────────────────────────────────────────────
   // The saved and the current value of each card, used by the card's unsaved-changes badge
@@ -437,6 +465,13 @@
       threshold: store.originalData.birdnetv3?.threshold ?? 0.5,
     },
     current: { override: birdnetV3.overrideThreshold, threshold: birdnetV3.threshold },
+  });
+  const birdnetPlusChange: ChangePair = $derived({
+    original: {
+      override: store.originalData.birdnetplus?.overrideThreshold ?? false,
+      threshold: store.originalData.birdnetplus?.threshold ?? BIRDNET_PLUS_DEFAULT_THRESHOLD,
+    },
+    current: { override: birdnetPlus.overrideThreshold, threshold: birdnetPlus.threshold },
   });
   const batChange: ChangePair = $derived({
     original: {
@@ -489,10 +524,10 @@
     current: { huggingFaceEndpoint: birdnet?.huggingFaceEndpoint ?? '' },
   });
 
-  // A tab shows the change dot when any card badge on it would. The Perch, BirdNET v3.0 and bat
-  // cards count only while they are shown, so the dot and the badges stay in step. For Perch and
-  // BirdNET v3.0 the gate changes nothing today, since the defaults equal the saved-side
-  // fallbacks. For bat it is load-bearing: with no bat section saved, the page's defaults differ
+  // A tab shows the change dot when any card badge on it would. The Perch, BirdNET v3.0, BirdNET+
+  // V3.0 and bat cards count only while they are shown, so the dot and the badges stay in step.
+  // For Perch, BirdNET v3.0 and BirdNET+ V3.0 the gate changes nothing today, since the
+  // defaults equal the saved-side fallbacks. For bat it is load-bearing: with no bat section saved, the page's defaults differ
   // from the saved values and would light the dot for good.
   const settingsTabHasChanges = $derived(
     [
@@ -502,6 +537,7 @@
       advancedChange,
       ...(hasPerchModel ? [perchChange] : []),
       ...(hasBirdNetV3Model ? [birdnetV3Change] : []),
+      ...(hasBirdNetPlusModel ? [birdnetPlusChange] : []),
       ...(hasBatModel ? [batChange] : []),
     ].some(c => hasSettingsChanged(c.original, c.current))
   );
@@ -911,6 +947,8 @@
 
   let rangeFilterState = $state<{
     speciesCount: number | null;
+    // True once a count request has finished, so a missing count then means it failed
+    countSettled: boolean;
     loading: boolean;
     testing: boolean;
     downloading: boolean;
@@ -919,6 +957,7 @@
     species: RangeFilterSpecies[];
   }>({
     speciesCount: null,
+    countSettled: false,
     loading: false,
     testing: false,
     downloading: false,
@@ -928,7 +967,7 @@
   });
 
   // Focus management for modal accessibility
-  let previouslyFocusedElement: HTMLElement | null = null;
+  let previouslyFocusedElement: HTMLElement | SVGElement | null = null;
 
   function getFocusableElements(container: HTMLElement): HTMLElement[] {
     const focusableSelectors = [
@@ -978,7 +1017,9 @@
     let focusTimer: ReturnType<typeof setTimeout> | undefined;
 
     if (rangeFilterState.showModal) {
-      previouslyFocusedElement = document.activeElement as HTMLElement;
+      // untrack: the dialog element binds after this runs and must not re-run the effect and its cleanup
+      const opener = pickOpener(untrack(() => rangeDialogElement));
+      if (opener !== undefined) previouslyFocusedElement = opener;
 
       focusTimer = setTimeout(() => {
         const modal = rangeDialogElement;
@@ -996,8 +1037,11 @@
         }
       }, 0);
     } else if (previouslyFocusedElement) {
-      // The button may have been removed while the dialog was open
-      if (previouslyFocusedElement.isConnected) previouslyFocusedElement.focus();
+      // The button may have been removed while the dialog was open, and focus the user moved to
+      // another control stays there; the dialog is already gone from the page here
+      if (previouslyFocusedElement.isConnected && canReturnFocus(undefined)) {
+        previouslyFocusedElement.focus();
+      }
       previouslyFocusedElement = null;
     }
 
@@ -1016,6 +1060,8 @@
   let rangeFilterAbortController: AbortController | null = null;
 
   function debouncedTestRangeFilter() {
+    // A new count is on its way: until it settles, a missing count reads as loading, not failed
+    rangeFilterState.countSettled = false;
     rangeFilterAbortController?.abort();
     rangeFilterAbortController = null;
     clearTimeout(debounceTimer);
@@ -1025,6 +1071,7 @@
   }
 
   async function loadRangeFilterCount() {
+    rangeFilterState.countSettled = false;
     try {
       interface CountResponse {
         count: number;
@@ -1035,6 +1082,7 @@
       logger.error('Failed to load range filter count:', err);
       rangeFilterState.error = t('settings.main.errors.rangeFilterCountFailed');
     }
+    rangeFilterState.countSettled = true;
   }
 
   async function testCurrentRangeFilter() {
@@ -1061,6 +1109,7 @@
       );
 
       rangeFilterState.speciesCount = data.count;
+      rangeFilterState.countSettled = true;
 
       if (rangeFilterState.showModal) {
         rangeFilterState.species = data.species || [];
@@ -1070,12 +1119,38 @@
       logger.error('Failed to test range filter:', err);
       rangeFilterState.error = t('settings.main.errors.rangeFilterTestFailed');
       rangeFilterState.speciesCount = null;
+      rangeFilterState.countSettled = true;
     } finally {
       clearTimeout(loadingDelayTimer);
       rangeFilterState.testing = false;
       rangeFilterAbortController = null;
     }
   }
+
+  // Why the View Species button is blocked, or undefined when it works. The reason is shown next
+  // to the button and the button points at it.
+  let viewSpeciesBlockedReason = $derived.by(() => {
+    // The location reads as unset until the settings arrive
+    if (store.isLoading) return t('settings.loading');
+    if (!birdnet?.locationConfigured) {
+      return t('settings.species.activeSpecies.locationNotConfigured.title');
+    }
+    if (rangeFilterState.loading)
+      return t('settings.main.sections.rangeFilter.modal.loadingSpecies');
+    if (rangeFilterState.testing)
+      return t('settings.main.sections.rangeFilter.speciesCount.loading');
+    if (rangeFilterState.speciesCount === null) {
+      // Loading only while the first count is pending; after that a missing count is a failure
+      return rangeFilterState.countSettled
+        ? t('settings.main.errors.rangeFilterCountFailed')
+        : t('settings.main.sections.rangeFilter.speciesCount.loading');
+    }
+    if (rangeFilterState.speciesCount === 0) {
+      return t('settings.main.sections.rangeFilter.modal.noSpeciesFound');
+    }
+    return undefined;
+  });
+  let viewSpeciesBlocked = $derived(viewSpeciesBlockedReason !== undefined);
 
   async function loadRangeFilterSpecies() {
     if (rangeFilterState.loading || !birdnet?.locationConfigured) return;
@@ -1388,6 +1463,14 @@
     settingsActions.updateSection('birdnetv3', { threshold: value });
   }
 
+  function updateBirdNetPlusOverride(value: boolean) {
+    settingsActions.updateSection('birdnetplus', { overrideThreshold: value });
+  }
+
+  function updateBirdNetPlusThreshold(value: number) {
+    settingsActions.updateSection('birdnetplus', { threshold: value });
+  }
+
   // ── Gallery tab definitions ───────────────────────────────────────────
   const galleryTabs: TabDefinition[] = $derived([
     {
@@ -1487,9 +1570,7 @@
 
   function openLicenseDialog(entry: CatalogEntry) {
     licenseModel = entry;
-    // Smart default: preselect the recommended variant (falls back sensibly when
-    // there is no recommendation). Empty string for flat entries.
-    selectedVariantId = pickPreselectedVariant(entry);
+    chosenVariantId = null;
     licenseDialogRef?.showModal();
   }
 
@@ -1763,7 +1844,7 @@
   }
 </script>
 
-<!-- ── Secondary-model threshold override section (Perch v2, BirdNET v3.0) ── -->
+<!-- ── Secondary-model threshold override section (Perch v2, BirdNET v3.0, BirdNET+ V3.0) ── -->
 {#snippet secondaryModelThreshold(cfg: SecondaryModelThresholdConfig)}
   <SettingsSection
     title={t(cfg.titleKey)}
@@ -1865,7 +1946,7 @@
 
       {#if falsePositiveFilter.level === 0}
         <SettingsNote>
-          {#snippet icon()}<AlertTriangle class="size-4 text-[var(--color-warning)]" />{/snippet}
+          {#snippet icon()}<AlertTriangle class="size-4 text-[var(--text-warning)]" />{/snippet}
           <span>{t('settings.main.sections.falsePositiveFilter.warningOff')}</span>
         </SettingsNote>
       {:else}
@@ -1967,6 +2048,20 @@
       })}
     {/if}
 
+    <!-- 3b. BirdNET+ V3.0 threshold override (only when the BirdNET+ model is installed) -->
+    {#if hasBirdNetPlusModel}
+      {@render secondaryModelThreshold({
+        titleKey: 'analysis.birdnetplus.title',
+        descKey: 'analysis.birdnetplus.description',
+        thresholdLabelKey: 'analysis.detection.birdnetplusThreshold.label',
+        effectiveThreshold: birdnet?.threshold ?? 0.3,
+        current: birdnetPlus,
+        change: birdnetPlusChange,
+        onOverride: updateBirdNetPlusOverride,
+        onThreshold: updateBirdNetPlusThreshold,
+      })}
+    {/if}
+
     <!-- 4. Bat Detection (only when a bat model is installed) -->
     {#if hasBatModel}
       <SettingsSection
@@ -2013,9 +2108,7 @@
         {#if hasBsgBatModel}
           <div class="mt-4">
             <SettingsNote id={BSG_BAT_WARNING_ID}>
-              {#snippet icon()}<AlertTriangle
-                  class="size-4 text-[var(--color-warning)]"
-                />{/snippet}
+              {#snippet icon()}<AlertTriangle class="size-4 text-[var(--text-warning)]" />{/snippet}
               <span>{t('analysis.detection.bsgBatThreshold.sampleRateWarning')}</span>
             </SettingsNote>
           </div>
@@ -2095,7 +2188,7 @@
 
         {#if batFPLevel === 0}
           <SettingsNote>
-            {#snippet icon()}<AlertTriangle class="size-4 text-[var(--color-warning)]" />{/snippet}
+            {#snippet icon()}<AlertTriangle class="size-4 text-[var(--text-warning)]" />{/snippet}
             <span>{t('analysis.detection.batFalsePositiveFilter.warningOff')}</span>
           </SettingsNote>
         {/if}
@@ -2134,7 +2227,7 @@
           </div>
           <div class="flex items-center gap-3">
             <div
-              class="text-2xl font-bold text-[var(--color-primary)] tabular-nums"
+              class="text-2xl font-bold text-[var(--text-primary)] tabular-nums"
               class:opacity-60={rangeFilterState.testing}
             >
               {rangeFilterState.speciesCount !== null
@@ -2154,14 +2247,16 @@
                   : ''}
             </span>
           </div>
-          <div class="flex gap-2 mt-2">
+          <div class="flex flex-wrap items-center gap-2 mt-2">
+            <!-- aria-disabled, not disabled: the click that opens the dialog starts the load, and a
+                 natively disabled button would drop focus before the dialog could return it here -->
             <button
               type="button"
-              class="inline-flex items-center justify-center h-8 px-3 text-sm font-medium rounded-lg border border-[var(--color-base-content)]/30 bg-transparent hover:bg-black/5 dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)] focus-visible:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              disabled={!rangeFilterState.speciesCount ||
-                rangeFilterState.loading ||
-                !birdnet?.locationConfigured}
+              class="inline-flex items-center justify-center h-8 px-3 text-sm font-medium rounded-lg border border-[var(--color-base-content)]/30 bg-transparent hover:not-aria-disabled:bg-black/5 dark:hover:not-aria-disabled:bg-white/10 focus-ring transition-colors aria-disabled:text-[var(--color-base-content)]/50 aria-disabled:border-[var(--color-base-content)]/15 aria-disabled:cursor-not-allowed"
+              aria-disabled={viewSpeciesBlocked ? 'true' : undefined}
+              aria-describedby={viewSpeciesBlocked ? 'range-species-blocked-reason' : undefined}
               onclick={() => {
+                if (viewSpeciesBlocked) return;
                 rangeFilterState.showModal = true;
                 loadRangeFilterSpecies();
               }}
@@ -2179,6 +2274,15 @@
               <Download class="size-4" />
               {t('analytics.filters.exportCsv')}
             </button>
+            <!-- After both buttons, so a long reason wraps below them instead of splitting them -->
+            {#if viewSpeciesBlockedReason}
+              <span
+                id="range-species-blocked-reason"
+                class="text-xs text-[var(--color-base-content)]/70"
+              >
+                {viewSpeciesBlockedReason}
+              </span>
+            {/if}
           </div>
           <span class="help-text mt-1">
             {t('settings.main.sections.rangeFilter.speciesCount.helpText')}
@@ -2208,7 +2312,7 @@
                 class={cn(
                   'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium',
                   rangeFilterStatus.geomodel.autoSelected
-                    ? 'bg-[var(--color-success)]/15 text-[var(--color-success)]'
+                    ? 'bg-[var(--color-success)]/15 text-[var(--text-success)]'
                     : 'bg-[var(--color-base-300)] text-[var(--color-base-content)]/80'
                 )}
               >
@@ -2225,19 +2329,23 @@
                   <thead>
                     <tr class="border-b border-[var(--color-base-300)]">
                       <th
+                        scope="col"
                         class="text-left py-2 pr-4 font-medium text-[var(--color-base-content)]/60"
                         >{t('analysis.rangeFilter.status.classifier')}</th
                       >
                       <th
+                        scope="col"
                         class="text-right py-2 px-4 font-medium text-[var(--color-base-content)]/60"
                         >{t('analysis.rangeFilter.status.totalSpecies')}</th
                       >
                       <th
+                        scope="col"
                         class="text-right py-2 px-4 font-medium text-[var(--color-base-content)]/60"
                         title={t('analysis.rangeFilter.status.withRangeDataTooltip')}
                         >{t('analysis.rangeFilter.status.withRangeData')}</th
                       >
                       <th
+                        scope="col"
                         class="text-right py-2 pl-4 font-medium text-[var(--color-base-content)]/60"
                         title={t('analysis.rangeFilter.status.withoutRangeDataTooltip')}
                         >{t('analysis.rangeFilter.status.withoutRangeData')}</th
@@ -2283,7 +2391,7 @@
 
       {#if rangeFilterState.error}
         <div
-          class="flex items-start gap-3 p-4 rounded-lg mt-4 bg-[color-mix(in_srgb,var(--color-error)_15%,transparent)] text-[var(--color-error)]"
+          class="flex items-start gap-3 p-4 rounded-lg mt-4 bg-[color-mix(in_srgb,var(--color-error)_15%,transparent)] text-[var(--text-error)]"
           role="alert"
         >
           <XCircle class="size-5 shrink-0" aria-hidden="true" />
@@ -2423,7 +2531,7 @@
           role="alert"
         >
           <div class="flex items-start gap-3">
-            <AlertTriangle class="size-5 shrink-0 text-[var(--color-error)]" aria-hidden="true" />
+            <AlertTriangle class="size-5 shrink-0 text-[var(--text-error)]" aria-hidden="true" />
             <div class="min-w-0 flex-1">
               <p class="font-medium text-[var(--color-base-content)]">
                 {t('analysis.gallery.errors.actionFailed', { name: installError.modelName })}
@@ -2527,7 +2635,7 @@
           class="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-[var(--color-primary)]/30 bg-[var(--color-primary)]/10 px-4 py-3 text-sm"
           role="status"
         >
-          <Sparkles class="size-5 shrink-0 text-[var(--color-primary)]" aria-hidden="true" />
+          <Sparkles class="size-5 shrink-0 text-[var(--text-primary)]" aria-hidden="true" />
           <p class="min-w-0 flex-1 font-medium text-[var(--color-base-content)]">
             {t('analysis.gallery.optimize.bannerTitle', { count: offers.length })}
           </p>
@@ -2616,7 +2724,7 @@
     class="flex items-center gap-3 rounded-lg border border-[var(--color-error)]/30 bg-[var(--color-error)]/10 px-4 py-3 text-sm"
     role="alert"
   >
-    <AlertTriangle class="size-5 shrink-0 text-[var(--color-error)]" aria-hidden="true" />
+    <AlertTriangle class="size-5 shrink-0 text-[var(--text-error)]" aria-hidden="true" />
     <span class="text-[var(--color-base-content)]">{catalogError}</span>
     <button
       type="button"
@@ -2650,7 +2758,7 @@
   <div class="space-y-4">
     {#if loading}
       <div class="flex items-center justify-center py-12">
-        <Loader2 class="size-6 animate-spin text-[var(--color-primary)]" />
+        <Loader2 class="size-6 animate-spin text-[var(--text-primary)]" />
         <span class="ml-3 text-sm text-[var(--color-base-content)]/80"
           >{t('analysis.gallery.loading')}</span
         >
@@ -2677,7 +2785,7 @@
   <div class="space-y-6">
     {#if loading}
       <div class="flex items-center justify-center py-12">
-        <Loader2 class="size-6 animate-spin text-[var(--color-primary)]" />
+        <Loader2 class="size-6 animate-spin text-[var(--text-primary)]" />
         <span class="ml-3 text-sm text-[var(--color-base-content)]/80"
           >{t('analysis.gallery.loading')}</span
         >
@@ -2751,6 +2859,16 @@
   <SettingsTabs tabs={pageTabs} bind:activeTab={pageTab} />
 </main>
 
+{#snippet licenseNote(text: string)}
+  <div
+    class="mt-4 flex items-start gap-2 rounded-lg bg-[var(--color-warning)]/10 p-3 text-sm"
+    role="note"
+  >
+    <TriangleAlert class="h-4 w-4 shrink-0 mt-0.5 text-[var(--text-warning)]" aria-hidden="true" />
+    <span class="text-[var(--color-base-content)]">{text}</span>
+  </div>
+{/snippet}
+
 <!-- License Acceptance Dialog -->
 <dialog
   bind:this={licenseDialogRef}
@@ -2763,16 +2881,10 @@
         {t('analysis.gallery.license.title')}
       </h3>
       {#if licenseChannelNotice}
-        <div
-          class="mt-4 flex items-start gap-2 rounded-lg bg-[var(--color-warning)]/10 p-3 text-sm"
-          role="note"
-        >
-          <TriangleAlert
-            class="h-4 w-4 shrink-0 mt-0.5 text-[var(--color-warning)]"
-            aria-hidden="true"
-          />
-          <span class="text-[var(--color-base-content)]">{licenseChannelNotice}</span>
-        </div>
+        {@render licenseNote(licenseChannelNotice)}
+      {/if}
+      {#if licenseSupersededNotice}
+        {@render licenseNote(licenseSupersededNotice)}
       {/if}
       <div class="mt-4 space-y-3">
         <table
@@ -2850,7 +2962,7 @@
             {selectedVariantId}
             {activeRegionSlug}
             regionNames={regionNameMap}
-            onSelect={id => (selectedVariantId = id)}
+            onSelect={id => (chosenVariantId = id)}
             idPrefix="license-variant"
           />
           <!-- Plain-language help for the precision jargon (FP32/FP16/INT8) and the
@@ -2870,7 +2982,7 @@
             class="flex items-start gap-2 rounded-lg border border-[var(--color-warning)]/30 bg-[var(--color-warning)]/10 px-3 py-2.5 text-sm"
           >
             <ShieldAlert
-              class="mt-0.5 size-4 shrink-0 text-[var(--color-warning)]"
+              class="mt-0.5 size-4 shrink-0 text-[var(--text-warning)]"
               aria-hidden="true"
             />
             <p class="text-[var(--color-base-content)]">
@@ -2881,7 +2993,7 @@
       </div>
 
       {#if installBlocked}
-        <p id={INSTALL_BLOCKED_HELP_ID} class="mt-4 text-sm text-[var(--color-error)]" role="alert">
+        <p id={INSTALL_BLOCKED_HELP_ID} class="mt-4 text-sm text-[var(--text-error)]" role="alert">
           {t('analysis.gallery.variants.incompatible')}
         </p>
       {/if}
@@ -2919,7 +3031,7 @@
     <div class="w-full max-w-md p-6">
       <div class="flex items-start gap-3">
         <div class="shrink-0 rounded-full bg-[var(--color-error)]/10 p-2">
-          <AlertTriangle class="size-5 text-[var(--color-error)]" aria-hidden="true" />
+          <AlertTriangle class="size-5 text-[var(--text-error)]" aria-hidden="true" />
         </div>
         <div>
           <h3
@@ -3031,7 +3143,7 @@
 
       {#if rangeFilterState.error}
         <div
-          class="flex items-start gap-3 p-4 rounded-lg mb-4 bg-[color-mix(in_srgb,var(--color-error)_15%,transparent)] text-[var(--color-error)]"
+          class="flex items-start gap-3 p-4 rounded-lg mb-4 bg-[color-mix(in_srgb,var(--color-error)_15%,transparent)] text-[var(--text-error)]"
           role="alert"
         >
           <XCircle class="size-5 shrink-0" aria-hidden="true" />

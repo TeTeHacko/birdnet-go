@@ -516,7 +516,7 @@ is 0.
 
 | Method | Route                   | Handler                       | Auth | Description                                                                                                                                                                                          |
 | ------ | ----------------------- | ----------------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/range/status`         | `GetRangeFilterStatus`        | ❌   | Per-classifier geomodel coverage, auto-selection, threshold                                                                                                                                          |
+| GET    | `/range/status`         | `GetRangeFilterStatus`        | ❌   | Per-classifier geomodel coverage, auto-selection, threshold, missing-geomodel diagnosis (`geomodelIssue`), `reloadFailed`                                                                            |
 | GET    | `/range/species/scores` | `GetRangeFilterSpeciesScores` | ❌   | Raw geomodel scores, primary model only; excludes always-active secondary models (e.g. bats) by design                                                                                               |
 | GET    | `/range/species/count`  | `GetRangeFilterSpeciesCount`  | ❌   | Species count with range filter                                                                                                                                                                      |
 | GET    | `/range/species/list`   | `GetRangeFilterSpeciesList`   | ❌   | Species list with taxonomy groups                                                                                                                                                                    |
@@ -544,6 +544,8 @@ is 0.
 | PUT    | `/settings`                | `UpdateSettings`        | ✅   | Update all settings                                                       |
 | PATCH  | `/settings/:section`       | `UpdateSectionSettings` | ✅   | Update settings section (writes to `/dashboard` still require auth)       |
 
+Both `PUT /settings` and `PATCH /settings/:section` answer `400` while the resulting `security.oauthProviders` holds an entry whose `provider` is blank or not one of `github`, `google`, `kakao`, `line`, `microsoft` or `oidc`, whichever section was patched. The message names the entry, for example `security.oauthProviders[0].provider "gogle" is not a supported provider`, except when a `PATCH /settings/security` body itself sends such an entry: the section validation rejects it first, with the generic message `Failed to update security settings`. A client clears it by sending the list without that entry. The same two requests also answer `400` while `security.baseUrl` is set but not an absolute `http` or `https` URL with a host and no credentials; the message names `security.baseUrl`, and sending an empty or valid value clears it.
+
 The `GET /settings/connection` endpoint tells the requester how their own connection relates to the saved `security.trustedProxies` list, for the Reverse proxy card on the Security settings page. It is read-only and describes only the current request: it returns no other client's data and no raw header text; `verifiedClientAddress` is the requester's own address as the authentication decision sees it (from a verified forwarded header when one applies). It uses the same classifier (`proxytrust.Checker.Classify`) as the subnet bypass log notices, so it agrees with the authentication decision, and it reads the settings on every request, so a save applies on the next check without a restart. The response is `Cache-Control: no-store` and carries `status`, `peerAddress`, `hasForwardedHeaders`, `peerIsTrustedProxy`, `verifiedClientAddress` (the address the authentication decision uses, `""` when none could be verified), `peerIsCloudflareEdge` and `cloudflarePresetWouldVerify` (listing the peer together with the `cloudflare` preset would verify headers that currently do not verify). `status` is one of:
 
 - `direct`: no client-IP header, the peer is the client.
@@ -558,6 +560,8 @@ The `GET /settings/dashboard` endpoint is intentionally public so that unauthent
 **Optimistic concurrency:** `GET /settings` and a successful `PUT /settings` or `PATCH /settings/:section` send an `ETag` response header. The value is opaque and strong (`"<process id>-<revision>"`); it changes on every settings write, including a rollback of a failed write and writes the server makes itself (a model install, a species exclusion), and it changes after a restart. It does not change when the server rebuilds the range filter species list or stamps its update time: those fields (`birdnet.rangeFilter.species` and `lastUpdated`) are served by `GET /settings` but cannot be written through the API, so a client that missed them loses nothing, and the body of `GET /settings` can differ between two responses that carry the same `ETag`. `PUT /settings` and `PATCH /settings/:section` honour `If-Match` only when it is sent: if it does not match the current `ETag` the request answers `412 Precondition Failed` with the current `ETag`, and nothing is changed. A request without `If-Match` is applied as before (there is no `428`), but a request that sends the header with an empty value lists no tag and answers `412`. The `ETag` identifies the whole settings, not one section, so `GET /settings/:section` sends none and a `PATCH` is checked against the ETag of the whole settings. Validators are compared strongly: `*` and a list of tags are accepted, and a weak `W/"..."` tag never matches. A client behind a proxy that weakens the `ETag` should leave `If-Match` out. A proxy that rewrites the value when it compresses (Apache `mod_deflate` and Caddy append `-gzip`) makes every `If-Match` fail the same way; the 412 still names the current `ETag`, and the web UI stops sending `If-Match` for the page session once two 412s in a row name the same one.
 
 **Restart-required signal:** `PUT /settings` and `PATCH /settings/:section` responses include `restart_required` (bool) and `restart_reasons` (string[]), reflecting the global restart state also served by `GET /system/restart-status`. Settings bound once at startup that cannot hot-reload set this flag: web server / TLS settings, database (`output`), logging, and TLS certificate operations. `restart_reasons` carries i18n message keys (e.g. `restart.reasons.database`), not English text; the SPA resolves them via the translation catalog. The flag is sticky (it clears when the process actually restarts) and is not cleared by reverting the change.
+
+**Stored section in the PATCH response:** `PATCH /settings/:section` answers with `message`, `skippedFields`, `restart_required`, `restart_reasons` and `settings`, the sanitized stored section as the server now holds it (secrets redacted, server-added keys such as a source's `quietHours` present). It is the section in the shape the server keeps, not necessarily what `GET /settings/:section` serves: the `rtsp`, `privacyfilter`, `dogbarkfilter` and `telemetry` sections can be patched but have no `GET /settings/:section` endpoint. A client records `settings` as the saved value instead of its own request, which differs wherever the server adds, drops or normalizes a key. `PUT /settings` has no such field.
 
 **Blocked fields:** a set of fields can never be written through the settings API, on either write path. Both `PUT /settings` and `PATCH /settings/:section` merge the request into the current settings and then restore the blocked fields from the pre-update snapshot. Sending such a field is not an error: the rest of the request is applied normally and only the blocked values are reverted.
 
@@ -901,9 +905,11 @@ Requires enhanced (v2) database. Returns 409 Conflict with `error_key` `errors.p
 
 **Model dependencies** - A catalog entry can depend on other entries (for example a geomodel) whose files are installed with it. `GET /api/v2/models/catalog` lists them as `dependsOn` (catalog IDs, omitted when empty; it may name hidden components that the response does not list), and `totalSizeBytes` and each variant's `sizeBytes` include the dependency files. `hasGeomodel` is true when the default variant brings a geomodel, inline or through a dependency. `DELETE /api/v2/models/installed/:id` answers `409 Conflict` while another installed or downloading model depends on the entry, and changes nothing. The body carries `error_key` `analysis.gallery.errors.removeHasDependents` and `error_params` `{name, models, dependents}`, where `models` is the dependents' display names joined with `, ` and `dependents` is a list of `{id, name}`.
 
+**Superseded models** - `GET /api/v2/models/catalog` reports `supersededBy` (`{id, name}`) on an entry that a newer catalog entry replaces. The field is omitted when nothing replaces the entry and when the successor is hidden, so the gallery never points at a model it does not list. A superseded entry stays installable.
+
 **One model operation at a time** - The model manager runs a single operation at once: install, variant swap, reinstall and uninstall all share one slot. The install and reinstall endpoints reserve it before answering 202, so a request made while another operation runs is refused synchronously with `409 Conflict` and nothing is changed. The body carries `error_key` `analysis.gallery.errors.operationInProgress` and `error_params` `{name, operation, running}`, where `name` is the display name of the model whose operation is running, `operation` is `install`, `reinstall` or `uninstall`, and `running` is `{id, name}`. A failed operation frees the slot at once. `GET /api/v2/models/install/:id/progress` reports `complete` only after the entry's operation has released the slot (an install holds it through the hot-load that follows the download), so a client can start the next operation as soon as it sees `complete`. This includes requests made during an uninstall.
 
-**GET /api/v2/models** - Returns all classifier models registered in the model registry. Each entry includes a config alias (`id`, used in audio source configuration), a human-readable display name, and the classifier `registryId` (e.g. `BirdNET_V2.4`) that joins against the registry-ID `defaultTargets` list served by `GET /api/v2/system/inference`.
+**GET /api/v2/models** - Returns all classifier models registered in the model registry. Each entry includes a config alias (`id`, used in audio source configuration), a human-readable display name, and the classifier `registryId` (e.g. `BirdNET_V2.4`) that joins against the registry-ID `defaultTargets` list served by `GET /api/v2/system/inference`. The `name` is the neutral model name with no backend suffix (for example `BirdNET v2.4`, not `BirdNET v2.4 (TFLite)`). A model that is loaded also carries `backend` (the live execution backend, for example `TFLite`, `ONNX` or `OpenVINO`) and `precision` (the live runtime precision, for example `FP32` or `INT8`); both are omitted for a model that is not loaded. They describe the host, so like the catalog's recommendation fields they are omitted for an anonymous request on an instance that requires authentication. Every entry carries `state`: `loaded` (the model is loaded and can run), `failed` (enabled, not loaded, and its last load failed) or `pending` (enabled, not loaded, no load error on record). The state is not host data, so it is reported to every caller. A successful install, reinstall or uninstall also sends a topology change event on the SSE stream, so clients refetch the list.
 
 **Response:**
 
@@ -911,15 +917,19 @@ Requires enhanced (v2) database. Returns 409 Conflict with `error_key` `errors.p
 [
   {
     "id": "birdnet",
-    "name": "BirdNET GLOBAL 6K V2.4",
+    "name": "BirdNET v2.4",
     "registryId": "BirdNET_V2.4",
-    "category": "bird"
+    "category": "bird",
+    "backend": "ONNX",
+    "precision": "INT8",
+    "state": "loaded"
   },
   {
     "id": "perch_v2",
-    "name": "Google Perch V2",
+    "name": "Google Perch v2",
     "registryId": "Perch_V2",
-    "category": "bird"
+    "category": "bird",
+    "state": "pending"
   }
 ]
 ```

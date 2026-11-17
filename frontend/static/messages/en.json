@@ -219,7 +219,8 @@
     "dashboard": "Dashboard",
     "liveAudio": "Live Audio",
     "settingsMenu": "Settings menu",
-    "theme": "Theme",
+    "switchToDarkTheme": "Switch to dark theme",
+    "switchToLightTheme": "Switch to light theme",
     "github": "GitHub",
     "detections": "Detections",
     "search": "Search",
@@ -419,7 +420,7 @@
         "recalculatingThresholds": "Recalculating dynamic thresholds for new base value",
         "reconfiguringDynamicThresholds": "Reconfiguring dynamic thresholds...",
         "webserverRestartRequired": "Web server settings changed. Restart required.",
-        "oauthRestartRequired": "Authentication provider settings changed. Restart required.",
+        "reconfiguringOauthProviders": "Updating authentication providers...",
         "databaseRestartRequired": "Database settings changed. Restart required.",
         "loggingRestartRequired": "Logging settings changed. Restart required.",
         "reconfiguringSoundLevel": "Updating sound level monitoring...",
@@ -495,6 +496,10 @@
       "modelOptimize": {
         "title": "{count, plural, one {# model has a better build for this system} other {# models have better builds for this system}}",
         "message": "A build better matched to this system's hardware or location is available for: {models}. Open Settings > Analysis > Models and choose Optimize to switch."
+      },
+      "modelSuperseded": {
+        "title": "{count, plural, one {An installed model has a newer release} other {# installed models have newer releases}}",
+        "message": "An installed model is a preview version, and its final release is now available: {models}. Open Settings > Analysis > Models, install the final release and remove the preview."
       },
       "alert": {
         "firedTitle": "{rule_name}",
@@ -2497,6 +2502,15 @@
       "validationBlocked": "Some fields need attention before you can save.",
       "noChangesToSave": "No changes to save."
     },
+    "autoSave": {
+      "saved": "Saved",
+      "failed": "Not saved. The previous value was restored.",
+      "changedElsewhere": "This setting was changed elsewhere. The current value is shown; make your change again.",
+      "tabNote": "Changes on this tab are saved as you make them.",
+      "failuresSummary": "{count, plural, one {# change was not saved} other {# changes were not saved}}",
+      "dismiss": "Dismiss",
+      "otherTabsUnsaved": "Other tabs have unsaved changes. Open one to save or reset them:"
+    },
     "errors": {
       "loadFailed": "Failed to load settings",
       "saveFailed": "Failed to save settings",
@@ -3717,7 +3731,7 @@
         "sampleRateExclusive": "Rates above 48 kHz use exclusive device access on Linux, preventing other applications from sharing the sound card",
         "modelLabel": "Detection Models",
         "modelHelp": "Select which AI models to run on this audio source",
-        "deleteConfirm": "Remove this sound card source?",
+        "deleteConfirm": "Remove sound card source \"{name}\"?",
         "emptyState": {
           "title": "No Sound Card Sources Configured",
           "description": "Add a sound card source to start capturing audio for bird detection.",
@@ -3744,11 +3758,17 @@
           "minSampleRate": "Requires at least {rate}kHz capture rate",
           "recommendedSampleRate": "{rate}kHz recommended for best results",
           "atLeastOneModel": "At least one model must be selected"
-        }
+        },
+        "captureTitle": "Capture",
+        "levelTitle": "Input level",
+        "captureApplyHint": "Capture restarts when you apply.",
+        "applyCapture": "Apply and restart capture",
+        "applying": "Applying...",
+        "adding": "Adding...",
+        "captureApplyFailed": "Capture was not changed. Apply again or cancel."
       },
       "audioCapture": {
         "title": "Sound Card Configuration",
-        "description": "Select the audio input device for bird sound detection. Changes require application restart.",
         "soundCardSource": "Sound Card Source",
         "audioSourceLabel": "Audio Source (requires application restart to take effect)",
         "audioSourceHelp": "Select the audio input device for bird sound detection. Changes require application restart to take effect.",
@@ -3782,11 +3802,11 @@
         "fixedHint": "Capture pauses between start and end times daily. Overnight windows (e.g., 22:00 to 06:00) are supported.",
         "solarHint": "Times are calculated from sunrise/sunset at your configured location. Use negative offsets for before the event, positive for after.",
         "badge": "Quiet",
-        "enabledBadge": "Quiet hours enabled for this stream"
+        "enabledBadge": "Quiet hours enabled for this stream",
+        "enableLabel": "Pause capture during quiet hours"
       },
       "rtspStreams": {
         "title": "Audio Stream Configuration",
-        "description": "Configure network audio streams for remote audio capture. Supports RTSP, HTTP, HLS, RTMP, and UDP protocols.",
         "noStreamsConfigured": "No streams configured"
       },
       "streams": {
@@ -3815,7 +3835,7 @@
         "refresh": "Refresh",
         "addStream": "Add Stream",
         "testRequired": "Run a successful stream test before saving",
-        "deleteConfirm": "Remove this stream?",
+        "deleteConfirm": "Remove stream \"{name}\"?",
         "restartCount": "Restarted {count} time(s)",
         "healthLoadError": "Failed to load stream health status",
         "status": {
@@ -3839,6 +3859,7 @@
         "errors": {
           "nameRequired": "Stream name is required",
           "duplicateName": "A stream with this name already exists",
+          "nameTooLong": "Stream name is too long (at most {max} bytes)",
           "urlRequired": "Stream URL is required",
           "invalidUrl": "Invalid stream URL format",
           "duplicate": "This stream URL already exists"
@@ -3855,12 +3876,12 @@
           "eventAt": "Event at {time}"
         },
         "diagnostics": {
-          "toggleDiagnostics": "Toggle diagnostics",
           "processState": "Process State",
           "lastData": "Last Data",
           "restartCount": "Restart Count",
           "connection": "Connection",
-          "stateErrorHistory": "State & Error History"
+          "stateErrorHistory": "State & Error History",
+          "title": "Diagnostics"
         },
         "connectionStatus": {
           "stable": "Stable",
@@ -3907,8 +3928,19 @@
         },
         "stereoWarning": {
           "message": "Stereo stream detected. Downmixing multiple channels can reduce detection accuracy due to phase differences between channels. Select a specific channel (left/right) or use the channel detector for best results.",
-          "short": "Stereo downmix active. Detection accuracy may be reduced. Edit to select a specific channel.",
-          "tooltip": "Stereo downmix active. Detection accuracy may be reduced. Edit to select a specific channel."
+          "short": "Stereo downmix active. Detection accuracy may be reduced. Select a specific channel under Connection."
+        },
+        "autoSaveHelp": "Changes are saved as you make them. Connection changes reconnect the stream, so they wait until you press Apply.",
+        "connectionTitle": "Connection",
+        "connectionApplyHint": "The stream reconnects when you apply.",
+        "connectionApplyFailed": "The connection was not changed. Apply again or cancel.",
+        "applyConnection": "Apply and reconnect",
+        "testBeforeApply": "Test the new URL before you apply it.",
+        "statsLine": "Total: {total} · Rate: {rate} · Last: {last}",
+        "ago": {
+          "seconds": "{count}s ago",
+          "minutes": "{count}m ago",
+          "hours": "{count}h ago"
         }
       },
       "audioFilters": {
@@ -4127,9 +4159,25 @@
         "noneAvailable": "No detection models are enabled on this server.",
         "loadFailedWarning": "A detection model failed to load, so this source is not being analyzed until it recovers.",
         "loadFailedLink": "View AI Models status",
+        "state": {
+          "pending": "Loading",
+          "failed": "Failed to load",
+          "missing": "Not installed"
+        },
+        "notLoadedHelp": "This model is not loaded, so it cannot be selected.",
         "defaultBadge": "{models} (default)",
         "defaultPendingBadge": "Default models",
-        "noneBadge": "No model loaded"
+        "noneBadge": "No model loaded",
+        "missingHelp": "This model is no longer installed. This source ignores it.",
+        "removeMissing": "Remove",
+        "removeMissingAria": "Remove {model} from {source}",
+        "lastSelectedHelp": "At least one classifier stays selected.",
+        "followsDefaults": "This source follows the default models.",
+        "listFailed": "The model list could not be loaded.",
+        "warningBadge": "Check classifiers"
+      },
+      "sources": {
+        "autoSaveHelp": "Changes are saved as you make them. Device and sample rate changes restart capture, so they wait until you press Apply."
       }
     },
     "security": {
@@ -4200,7 +4248,7 @@
         "clientSecretLabel": "Client Secret",
         "clientSecretHelpText": "The OAuth 2.0 Client Secret from your provider's developer console",
         "userIdLabel": "Allowed Users",
-        "userIdHelpText": "Comma-separated emails or user IDs allowed to sign in with this provider. If left empty, no one can log in.",
+        "userIdHelpText": "Comma-separated emails or user IDs allowed to sign in with this provider. A user ID is recommended, since an email address can change. If left empty, no one can log in.",
         "allowedUsersEmptyWarning": "This provider has no allowed users, so every login attempt will be denied. Add at least one email or user ID to allow access.",
         "allowedUsersMissingBadge": "No allowed users set - login will fail",
         "google": {
@@ -4269,13 +4317,16 @@
           "clientSecretHelpText": "The client secret from your OIDC identity provider",
           "userIdLabel": "Allowed User (email or sub claim)",
           "issuerUrlLabel": "Issuer URL",
-          "issuerUrlHelpText": "The issuer URL of your OpenID Connect identity provider (e.g., https://auth.example.com)",
+          "issuerUrlHelpText": "Base URL of your OpenID Connect provider. BirdNET-Go adds /.well-known/openid-configuration itself, so leave that part out. Examples: https://auth.example.com/application/o/birdnet-go/ (Authentik), https://auth.example.com/realms/myrealm (Keycloak).",
           "issuerUrlPlaceholder": "https://auth.example.com",
           "issuerUrlRequired": "Issuer URL is required for OIDC providers",
           "issuerUrlInvalid": "Issuer URL must be a valid HTTP or HTTPS URL",
           "scopesLabel": "Scopes",
           "scopesHelpText": "Comma-separated list of OIDC scopes (default: openid, profile, email)",
-          "scopesPlaceholder": "openid, profile, email"
+          "scopesPlaceholder": "openid, profile, email",
+          "postLogoutRedirectLabel": "Return to BirdNET-Go after sign-out at the identity provider",
+          "postLogoutRedirectHelpText": "After sign-out the browser is sent back to {url}. Register this URL as a post-logout redirect URI at your identity provider first, or the provider may show an error.",
+          "postLogoutRedirectNoBaseUrl": "Set the Base URL or Host first. The return URL is built from it."
         }
       },
       "bypassAuthentication": {
@@ -4498,7 +4549,24 @@
           "mappedZero": {
             "title": "Range filter matched no species",
             "description": "The geomodel range filter did not match any of the active model's species, so every detection would be filtered out. Check that the range filter labels file matches the active model."
-          }
+          },
+          "geomodelNotInstalled": {
+            "title": "BirdNET Geomodel is not installed",
+            "description": "These models need the BirdNET Geomodel to filter detections by location: {models}. Install BirdNET Geomodel v3.0 from the Models tab in Analysis settings."
+          },
+          "geomodelNotSelected": {
+            "title": "BirdNET Geomodel is not in use",
+            "description": "The BirdNET Geomodel is installed, but the range filter is configured to use another model, so these models are not filtered by location: {models}. Remove birdnet.rangefilter.model and birdnet.rangefilter.modelpath from the configuration file or environment to use it."
+          },
+          "geomodelLoadFailed": {
+            "title": "BirdNET Geomodel could not be loaded",
+            "description": "The BirdNET Geomodel could not be loaded, so these models are not filtered by location: {models}. Check the application log, and install or reinstall BirdNET Geomodel v3.0 from the Models tab in Analysis settings."
+          },
+          "reloadFailed": {
+            "title": "Range filter reload failed",
+            "description": "The last range filter reload failed, so the previously loaded range filter is still in use. Check the application log and restart BirdNET-Go to retry."
+          },
+          "openModels": "Open Models"
         },
         "columns": {
           "commonName": "Common Name",
@@ -5101,7 +5169,8 @@
       "noData": "No data available",
       "loading": "Loading data...",
       "error": "Failed to load data",
-      "sortBy": "Sort by {column}",
+      "sortedAscending": "Sorted by {column}, ascending",
+      "sortedDescending": "Sorted by {column}, descending",
       "rowsPerPage": "Rows per page",
       "pageInfo": "Showing {from} to {to} of {total} results"
     },
@@ -5808,6 +5877,9 @@
       },
       "birdnetv3Threshold": {
         "label": "BirdNET v3.0 Confidence Threshold"
+      },
+      "birdnetplusThreshold": {
+        "label": "BirdNET+ V3.0 Confidence Threshold"
       }
     },
     "rangeFilter": {
@@ -5898,7 +5970,6 @@
         "filterPlaceholder": "Filter regions",
         "filterAria": "Filter region-tuned builds",
         "filterNoMatch": "No regions match \"{query}\"",
-        "latency": "~{ms} ms",
         "precisionInfo": "About precision and variants",
         "precisionHelp": "Precision (FP32, FP16, INT8) trades accuracy for size and speed: FP32 is most accurate, INT8 is smallest and fastest. Recommended is the best match for your detected hardware; Default is the model's standard build."
       },
@@ -5999,6 +6070,10 @@
         "cardNotice": "Experimental in BirdNET-Go. The model is published, but its performance in BirdNET-Go is not proven yet, so results may be less reliable.",
         "dialogNotice": "You are installing a model that is experimental in BirdNET-Go. Its performance is not proven yet, so check its detections before relying on it."
       },
+      "superseded": {
+        "cardNotice": "Superseded by {name}. Use the newer model instead.",
+        "dialogNotice": "This model has been superseded by {name}. Consider installing {name} instead."
+      },
       "entryIncompatible": "This model is not available on this system.",
       "regionGlobal": "Global",
       "hardwareLabel": "Hardware",
@@ -6046,6 +6121,10 @@
     "birdnetv3": {
       "title": "BirdNET v3.0 Detection",
       "description": "Set a dedicated confidence threshold for BirdNET v3.0 detections, independent of the main BirdNET threshold."
+    },
+    "birdnetplus": {
+      "title": "BirdNET+ V3.0 Detection",
+      "description": "Set a dedicated confidence threshold for BirdNET+ V3.0 detections, independent of the main BirdNET threshold."
     }
   },
   "restart": {
@@ -6061,7 +6140,6 @@
     "restartFailed": "Failed to initiate restart",
     "reasons": {
       "webserver": "Web server / network settings",
-      "oauth": "Authentication provider settings",
       "database": "Database settings",
       "logging": "Logging settings",
       "tlsCertificate": "TLS certificate"

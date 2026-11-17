@@ -219,7 +219,8 @@
     "dashboard": "Irányítópult",
     "liveAudio": "Élő hang",
     "settingsMenu": "Beállítások menü",
-    "theme": "Téma",
+    "switchToDarkTheme": "Váltás sötét témára",
+    "switchToLightTheme": "Váltás világos témára",
     "github": "GitHub",
     "detections": "Észlelések",
     "search": "Keresés",
@@ -419,7 +420,7 @@
         "recalculatingThresholds": "Dinamikus küszöbértékek újraszámítása az új alapértékhez",
         "reconfiguringDynamicThresholds": "Dinamikus küszöbértékek újrakonfigurálása...",
         "webserverRestartRequired": "Webszerver beállítások megváltoztak. Újraindítás szükséges.",
-        "oauthRestartRequired": "Hitelesítési szolgáltató beállítások megváltoztak. Újraindítás szükséges.",
+        "reconfiguringOauthProviders": "Hitelesítésszolgáltatók frissítése...",
         "databaseRestartRequired": "Adatbázis beállítások megváltoztak. Újraindítás szükséges.",
         "loggingRestartRequired": "Naplózási beállítások megváltoztak. Újraindítás szükséges.",
         "reconfiguringSoundLevel": "Hangszint monitorozás frissítése...",
@@ -495,6 +496,10 @@
       "modelOptimize": {
         "title": "{count, plural, one {# modellnek van jobb változata ehhez a rendszerhez} other {# modellnek van jobb változata ehhez a rendszerhez}}",
         "message": "A rendszer hardveréhez vagy helyéhez jobban illő változat érhető el a következőkhöz: {models}. Nyissa meg a Beállítások > Elemzés > Modellek oldalt, és váltson az Optimalizálás gombbal."
+      },
+      "modelSuperseded": {
+        "title": "{count, plural, one {Egy telepített modellnek újabb kiadása van} other {# telepített modellnek újabb kiadása van}}",
+        "message": "Egy telepített modell előzetes verzió, és a végleges kiadása már elérhető: {models}. Nyissa meg a Beállítások > Elemzés > Modellek oldalt, telepítse a végleges kiadást, és távolítsa el az előzetes verziót."
       },
       "alert": {
         "firedTitle": "{rule_name}",
@@ -2497,6 +2502,15 @@
       "validationBlocked": "Néhány mezőt ellenőrizni kell, mielőtt menthet.",
       "noChangesToSave": "Nincs mentendő változtatás."
     },
+    "autoSave": {
+      "saved": "Mentve",
+      "failed": "Nincs mentve. Az előző érték vissza lett állítva.",
+      "changedElsewhere": "Ezt a beállítást máshol módosították. A jelenlegi érték látható; végezze el újra a módosítást.",
+      "tabNote": "Az ezen a lapon végzett módosítások mentése azonnal megtörténik.",
+      "failuresSummary": "{count, plural, one {# módosítás nem lett mentve} other {# módosítás nem lett mentve}}",
+      "dismiss": "Elvetés",
+      "otherTabsUnsaved": "Más lapokon nem mentett módosítások vannak. Nyisson meg egyet a mentésükhöz vagy visszaállításukhoz:"
+    },
     "errors": {
       "loadFailed": "A beállítások betöltése sikertelen",
       "saveFailed": "A beállítások mentése sikertelen",
@@ -3717,7 +3731,7 @@
         "sampleRateExclusive": "A 48 kHz feletti frekvenciák kizárólagos eszközhozzáférést használnak Linuxon, megakadályozva más alkalmazásokat a hangkártya megosztásában",
         "modelLabel": "Észlelési modellek",
         "modelHelp": "Válassza ki, mely AI-modellek fussanak ezen a hangforráson",
-        "deleteConfirm": "Eltávolítja ezt a hangkártya forrást?",
+        "deleteConfirm": "Eltávolítja a(z) \"{name}\" hangkártya forrást?",
         "emptyState": {
           "title": "Nincsenek hangkártya források konfigurálva",
           "description": "Adjon hozzá egy hangkártya forrást a madárészleléshez szükséges hangfelvétel elindításához.",
@@ -3744,11 +3758,17 @@
           "minSampleRate": "Legalább {rate}kHz mintavételezési frekvencia szükséges",
           "recommendedSampleRate": "{rate}kHz ajánlott a legjobb eredményekhez",
           "atLeastOneModel": "Legalább egy modellt ki kell választani"
-        }
+        },
+        "captureTitle": "Rögzítés",
+        "levelTitle": "Bemeneti szint",
+        "captureApplyHint": "A rögzítés az alkalmazáskor újraindul.",
+        "applyCapture": "Alkalmazás és a rögzítés újraindítása",
+        "applying": "Alkalmazás...",
+        "adding": "Hozzáadás...",
+        "captureApplyFailed": "A rögzítés nem változott. Alkalmazza újra, vagy szakítsa meg."
       },
       "audioCapture": {
         "title": "Hangkártya konfiguráció",
-        "description": "Válassza ki a madárhang észleléshez használandó hang bemeneti eszközt. A változtatásokhoz alkalmazás újraindítás szükséges.",
         "soundCardSource": "Hangkártya forrás",
         "audioSourceLabel": "Hang forrás (alkalmazás újraindítást igényel az érvénybe lépéshez)",
         "audioSourceHelp": "Válassza ki a madárhang észleléshez használandó hang bemeneti eszközt. A változtatásokhoz alkalmazás újraindítás szükséges.",
@@ -3782,11 +3802,11 @@
         "fixedHint": "A rögzítés szünetel a kezdés és befejezés idők között naponta. Az éjszakai ablakok (pl. 22:00 - 06:00) támogatottak.",
         "solarHint": "Az idők a konfigurált helyszín napkeléje/napnyugtája alapján számítódnak. Használjon negatív eltolásokat az esemény előtt, pozitívat az után.",
         "badge": "Csendes",
-        "enabledBadge": "Csendes órák engedélyezve ehhez a streamhez"
+        "enabledBadge": "Csendes órák engedélyezve ehhez a streamhez",
+        "enableLabel": "Rögzítés szüneteltetése a csendes órákban"
       },
       "rtspStreams": {
         "title": "Hang stream konfiguráció",
-        "description": "Hálózati hang streamek konfigurálása távoli hang rögzítéshez. Támogatja az RTSP, HTTP, HLS, RTMP és UDP protokollokat.",
         "noStreamsConfigured": "Nincs stream konfigurálva"
       },
       "streams": {
@@ -3815,7 +3835,7 @@
         "refresh": "Frissítés",
         "addStream": "Stream hozzáadása",
         "testRequired": "Futtasson sikeres streamtesztet a mentés előtt",
-        "deleteConfirm": "Eltávolítja ezt a streamet?",
+        "deleteConfirm": "Eltávolítja a(z) \"{name}\" streamet?",
         "restartCount": "{count} alkalommal újraindítva",
         "healthLoadError": "A stream egészségi állapot betöltése sikertelen",
         "status": {
@@ -3839,6 +3859,7 @@
         "errors": {
           "nameRequired": "A stream neve kötelező",
           "duplicateName": "Ezzel a névvel már létezik stream",
+          "nameTooLong": "A stream neve túl hosszú (legfeljebb {max} bájt)",
           "urlRequired": "A stream URL kötelező",
           "invalidUrl": "Érvénytelen stream URL formátum",
           "duplicate": "Ez a stream URL már létezik"
@@ -3855,12 +3876,12 @@
           "eventAt": "Esemény ekkor: {time}"
         },
         "diagnostics": {
-          "toggleDiagnostics": "Diagnosztika kapcsolása",
           "processState": "Folyamat állapot",
           "lastData": "Utolsó adat",
           "restartCount": "Újraindítások száma",
           "connection": "Kapcsolat",
-          "stateErrorHistory": "Állapot és hiba előzmények"
+          "stateErrorHistory": "Állapot és hiba előzmények",
+          "title": "Diagnosztika"
         },
         "connectionStatus": {
           "stable": "Stabil",
@@ -3907,8 +3928,19 @@
         },
         "stereoWarning": {
           "message": "Sztereó stream észlelve. A több csatorna keverése csökkentheti az érzékelési pontosságot a csatornák közötti fáziskülönbségek miatt. Válasszon konkrét csatornát (bal/jobb) vagy használja a csatornaészlelőt a legjobb eredményekhez.",
-          "short": "Sztereó downmix aktív. Az érzékelési pontosság csökkent lehet. Szerkessze a konkrét csatorna kiválasztásához.",
-          "tooltip": "Sztereó downmix aktív. Az érzékelési pontosság csökkent lehet. Szerkessze a konkrét csatorna kiválasztásához."
+          "short": "Sztereó downmix aktív. Az érzékelési pontosság csökkent lehet. Válasszon konkrét csatornát a Kapcsolat részben."
+        },
+        "autoSaveHelp": "A módosítások azonnal mentésre kerülnek. A kapcsolat módosítása újracsatlakoztatja a streamet, ezért ezek az Alkalmaz gombra kattintásig várnak.",
+        "connectionTitle": "Kapcsolat",
+        "connectionApplyHint": "A stream az alkalmazáskor újracsatlakozik.",
+        "connectionApplyFailed": "A kapcsolat nem változott. Alkalmazza újra, vagy szakítsa meg.",
+        "applyConnection": "Alkalmazás és újracsatlakozás",
+        "testBeforeApply": "Az alkalmazás előtt tesztelje az új URL-t.",
+        "statsLine": "Összesen: {total} · Sebesség: {rate} · Utoljára: {last}",
+        "ago": {
+          "seconds": "{count} mp-e",
+          "minutes": "{count} perce",
+          "hours": "{count} órája"
         }
       },
       "audioFilters": {
@@ -4127,9 +4159,25 @@
         "noneAvailable": "Ezen a szerveren nincsenek engedélyezve detekciós modellek.",
         "loadFailedWarning": "Egy detekciós modellt nem sikerült betölteni, ezért ez a forrás nem lesz elemezve, amíg helyre nem áll.",
         "loadFailedLink": "AI Modellek állapotának megtekintése",
+        "state": {
+          "pending": "Betöltés",
+          "failed": "A betöltés sikertelen",
+          "missing": "Nincs telepítve"
+        },
+        "notLoadedHelp": "Ez a modell nincs betöltve, ezért nem választható ki.",
         "defaultBadge": "{models} (alapértelmezett)",
         "defaultPendingBadge": "Alapértelmezett modellek",
-        "noneBadge": "Nincs betöltve modell"
+        "noneBadge": "Nincs betöltve modell",
+        "missingHelp": "Ez a modell már nincs telepítve. Ez a forrás figyelmen kívül hagyja.",
+        "removeMissing": "Eltávolítás",
+        "removeMissingAria": "{model} eltávolítása innen: {source}",
+        "lastSelectedHelp": "Legalább egy osztályozó kiválasztva marad.",
+        "followsDefaults": "Ez a forrás az alapértelmezett modelleket használja.",
+        "listFailed": "A modellek listáját nem sikerült betölteni.",
+        "warningBadge": "Osztályozók ellenőrzése"
+      },
+      "sources": {
+        "autoSaveHelp": "A módosítások azonnal mentésre kerülnek. Az eszköz és a mintavételi frekvencia módosítása újraindítja a rögzítést, ezért ezek az Alkalmaz gombra kattintásig várnak."
       }
     },
     "security": {
@@ -4200,7 +4248,7 @@
         "clientSecretLabel": "Kliens titok",
         "clientSecretHelpText": "Az OAuth 2.0 Client Secret a szolgáltató fejlesztői konzoljáról",
         "userIdLabel": "Felhasználói ID (opcionális)",
-        "userIdHelpText": "Korlátozza a hozzáférést egy adott felhasználói fiókhoz e-mail vagy ID szerint",
+        "userIdHelpText": "Korlátozza a hozzáférést egy adott felhasználói fiókhoz e-mail vagy ID szerint. Felhasználói ID ajánlott, mert az e-mail-cím megváltozhat.",
         "allowedUsersEmptyWarning": "Ennek a szolgáltatónak nincsenek engedélyezett felhasználói, ezért minden bejelentkezési kísérlet el lesz utasítva. Adjon hozzá legalább egy e-mail-t vagy felhasználói azonosítót a hozzáférés engedélyezéséhez.",
         "allowedUsersMissingBadge": "Nincs engedélyezett felhasználó beállítva: a bejelentkezés sikertelen lesz",
         "google": {
@@ -4269,13 +4317,16 @@
           "clientSecretHelpText": "A client secret az OpenID Connect identitás szolgáltatójától",
           "userIdLabel": "Engedélyezett felhasználó (e-mail vagy sub claim)",
           "issuerUrlLabel": "Kibocsátó URL",
-          "issuerUrlHelpText": "Az OpenID Connect identitás szolgáltatójának issuer URL-je (pl., https://auth.example.com)",
+          "issuerUrlHelpText": "Az OpenID Connect szolgáltató alap URL-je. A BirdNET-Go maga hozzáfűzi a /.well-known/openid-configuration részt, ezért ezt hagyja ki. Példák: https://auth.example.com/application/o/birdnet-go/ (Authentik), https://auth.example.com/realms/myrealm (Keycloak).",
           "issuerUrlPlaceholder": "https://auth.example.com",
           "issuerUrlRequired": "Az Issuer URL kötelező OIDC szolgáltatókhoz",
           "issuerUrlInvalid": "Az Issuer URL-nek érvényes HTTP vagy HTTPS URL-nek kell lennie",
           "scopesLabel": "Scopok",
           "scopesHelpText": "Vesszővel elválasztott OIDC scope lista (alapértelmezett: openid, profile, email)",
-          "scopesPlaceholder": "openid, profile, email"
+          "scopesPlaceholder": "openid, profile, email",
+          "postLogoutRedirectLabel": "Visszatérés a BirdNET-Gohoz az identitásszolgáltatónál történt kijelentkezés után",
+          "postLogoutRedirectHelpText": "A kijelentkezés után a böngésző a következő címre kerül vissza: {url}. Először regisztrálja ezt az URL-t kijelentkezés utáni átirányítási URI-ként az identitásszolgáltatójánál, különben a szolgáltató hibát jeleníthet meg.",
+          "postLogoutRedirectNoBaseUrl": "Először állítsa be az alap URL-t vagy a gazdagépet. A visszatérési URL ezekből készül."
         }
       },
       "bypassAuthentication": {
@@ -4498,7 +4549,24 @@
           "mappedZero": {
             "title": "A tartomány szűrő egyetlen fajra sem illeszkedett",
             "description": "A geomodell tartomány szűrő az aktív modell egyetlen fajára sem illeszkedett, így minden észlelés kiszűrésre kerülne. Ellenőrizd, hogy a tartomány szűrő címkefájlja megegyezik-e az aktív modellel."
-          }
+          },
+          "geomodelNotInstalled": {
+            "title": "A BirdNET Geomodel nincs telepítve",
+            "description": "Ezeknek a modelleknek szükségük van a BirdNET Geomodelre, hogy a felismeréseket hely szerint szűrjék: {models}. Telepítse a BirdNET Geomodel v3.0-t az Elemzés beállítások Modellek lapjáról."
+          },
+          "geomodelNotSelected": {
+            "title": "A BirdNET Geomodel nincs használatban",
+            "description": "A BirdNET Geomodel telepítve van, de a tartomány szűrő másik modell használatára van beállítva, ezért ezeket a modelleket nem szűri hely szerint: {models}. A használatához távolítsa el a birdnet.rangefilter.model és birdnet.rangefilter.modelpath beállítást a konfigurációs fájlból vagy a környezetből."
+          },
+          "geomodelLoadFailed": {
+            "title": "A BirdNET Geomodel betöltése sikertelen",
+            "description": "A BirdNET Geomodel nem tölthető be, ezért ezeket a modelleket nem szűri hely szerint: {models}. Ellenőrizze az alkalmazás naplóját, majd telepítse vagy telepítse újra a BirdNET Geomodel v3.0-t az Elemzés beállítások Modellek lapjáról."
+          },
+          "reloadFailed": {
+            "title": "A tartomány szűrő újratöltése sikertelen",
+            "description": "A tartomány szűrő legutóbbi újratöltése sikertelen volt, ezért továbbra is a korábban betöltött tartomány szűrő van használatban. Ellenőrizze az alkalmazás naplóját, és az újrapróbáláshoz indítsa újra a BirdNET-Go-t."
+          },
+          "openModels": "Modellek megnyitása"
         },
         "columns": {
           "commonName": "Közhasználatú név",
@@ -5101,7 +5169,8 @@
       "noData": "Nincs elérhető adat",
       "loading": "Adatok betöltése...",
       "error": "Az adatok betöltése sikertelen",
-      "sortBy": "Rendezés: {column} szerint",
+      "sortedAscending": "Rendezve a(z) {column} szerint, növekvő sorrendben",
+      "sortedDescending": "Rendezve a(z) {column} szerint, csökkenő sorrendben",
       "rowsPerPage": "Sorok oldalanként",
       "pageInfo": "Megjelenítés: {from} - {to} / {total} eredmény"
     },
@@ -5808,6 +5877,9 @@
       },
       "birdnetv3Threshold": {
         "label": "BirdNET v3.0 megbízhatósági küszöbérték"
+      },
+      "birdnetplusThreshold": {
+        "label": "BirdNET+ V3.0 megbízhatósági küszöbérték"
       }
     },
     "rangeFilter": {
@@ -5898,7 +5970,6 @@
         "filterPlaceholder": "Régiók szűrése",
         "filterAria": "Régióra szabott buildek szűrése",
         "filterNoMatch": "Egyetlen régió sem felel meg ennek: \"{query}\"",
-        "latency": "~{ms} ms",
         "precisionInfo": "A pontosságról és a változatokról",
         "precisionHelp": "A pontosság (FP32, FP16, INT8) a méret és a sebesség javára csökkenti a pontosságot: az FP32 a legpontosabb, az INT8 a legkisebb és leggyorsabb. Az Ajánlott a hardveréhez legjobban illő verzió; az Alapértelmezett a modell szabvány build-je."
       },
@@ -5999,6 +6070,10 @@
         "cardNotice": "Kísérleti a BirdNET-Góban. A modell publikált, de a teljesítménye a BirdNET-Góban még nem bizonyított, ezért az eredmények kevésbé megbízhatóak lehetnek.",
         "dialogNotice": "Olyan modellt telepít, amely a BirdNET-Góban kísérleti. A teljesítménye még nem bizonyított, ezért ellenőrizze az észleléseit, mielőtt támaszkodna rá."
       },
+      "superseded": {
+        "cardNotice": "Leváltotta a(z) {name}. Használja helyette az újabb modellt.",
+        "dialogNotice": "Ezt a modellt leváltotta a(z) {name}. Fontolja meg a(z) {name} telepítését helyette."
+      },
       "entryIncompatible": "Ez a modell nem érhető el ezen a rendszeren.",
       "regionGlobal": "Globális",
       "hardwareLabel": "Hardver",
@@ -6046,6 +6121,10 @@
     "birdnetv3": {
       "title": "BirdNET v3.0 észlelés",
       "description": "Állítson be egy dedikált megbízhatósági küszöbértéket a BirdNET v3.0 észlelésekhez, a fő BirdNET küszöbértékétől függetlenül."
+    },
+    "birdnetplus": {
+      "title": "BirdNET+ V3.0 észlelés",
+      "description": "Állítson be egy dedikált megbízhatósági küszöbértéket a BirdNET+ V3.0 észlelésekhez, a fő BirdNET küszöbértékétől függetlenül."
     }
   },
   "restart": {
@@ -6061,7 +6140,6 @@
     "restartFailed": "Az újraindítás kezdeményezése sikertelen",
     "reasons": {
       "webserver": "Webszerver / hálózati beállítások",
-      "oauth": "Hitelesítésszolgáltató beállításai",
       "database": "Adatbázis beállítások",
       "logging": "Naplózási beállítások",
       "tlsCertificate": "TLS tanúsítvány"

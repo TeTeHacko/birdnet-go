@@ -17,6 +17,7 @@ import {
   TOAST_TYPE_CLASSES,
 } from '../lib/desktop/components/ui/NotificationToast.styles';
 import { indexHtmlScriptBlock } from './index-html';
+import { stripComments } from './source-comments';
 import { confidenceColorClasses } from '../lib/desktop/features/dashboard/utils/confidenceColors';
 import {
   PLACE_DISCLOSURE_CLASS,
@@ -549,17 +550,88 @@ describe('Status text rules', () => {
     }
 
     // The tint under the alert and the badge stays the fill token, at the share the contrast
-    // tests below assume.
-    for (const selector of tintedSelectors) {
-      it(`${selector} keeps its 15% ${fill} tint`, () => {
-        const bodies = ruleBodies(css, selector);
-        expect(bodies.length).toBeGreaterThan(0);
-        for (const body of bodies) {
-          expect(body).toContain(`color-mix(in srgb, var(${fill}) 15%, transparent)`);
-        }
-      });
-    }
+    // tests below assume. The badge names the fill once in --status-fill and draws the tint from it.
+    it(`.alert-${status} keeps its 15% ${fill} tint`, () => {
+      const bodies = ruleBodies(css, `.alert-${status}`);
+      expect(bodies.length).toBeGreaterThan(0);
+      for (const body of bodies) {
+        expect(body).toContain(`color-mix(in srgb, var(${fill}) 15%, transparent)`);
+      }
+    });
+
+    it(`.badge-status-${status} names ${fill} once as --status-fill and tints from it at 15%`, () => {
+      const bodies = ruleBodies(css, `.badge-status-${status}`);
+      expect(bodies.length).toBeGreaterThan(0);
+      for (const body of bodies) {
+        expect(body).toContain(`--status-fill: var(${fill});`);
+        expect(body).toContain('color-mix(in srgb, var(--status-fill) 15%, transparent)');
+      }
+    });
   }
+
+  describe('StatusPill', () => {
+    const pillSource = stripComments(
+      readFileSync(
+        join(
+          dirname(fileURLToPath(import.meta.url)),
+          '..',
+          'lib',
+          'desktop',
+          'components',
+          'ui',
+          'StatusPill.svelte'
+        ),
+        'utf8'
+      )
+    );
+
+    /** Percentage of every `<prefix>-[color:color-mix(in_srgb,<fill>_N%,transparent)]` utility. */
+    const mixShares = (prefix: string, fill: string): number[] =>
+      [
+        ...pillSource.matchAll(
+          // eslint-disable-next-line security/detect-non-literal-regexp -- prefix and fill are fixed literals from the callers below
+          new RegExp(
+            `'${prefix}-\\[color:color-mix\\(in_srgb,${fill}_(\\d+)%,transparent\\)\\]`,
+            'g'
+          )
+        ),
+      ].map(match => Number(match[1]));
+
+    it('holds no per-status colour token, only --status-fill', () => {
+      expect(pillSource).not.toMatch(/--(?:color|text)-(?:success|warning|error|info)\b/);
+    });
+
+    it('keeps the status border share and solid dot, both drawn from --status-fill', () => {
+      expect(mixShares('border', 'var\\(--status-fill\\)')).toEqual([30]);
+      expect(pillSource).toContain("'bg-[color:var(--status-fill)]'");
+    });
+
+    it('keeps the neutral recipe at 8% tint, 70% text, 15% border and 40% dot', () => {
+      const base = 'var\\(--color-base-content\\)';
+      expect(mixShares('bg', base)).toEqual([8, 40]);
+      expect(mixShares('text', base)).toEqual([70]);
+      expect(mixShares('border', base)).toEqual([15]);
+    });
+
+    for (const [name, block] of [
+      ['light', blockBody(css, '@theme')],
+      ['dark', blockBody(css, "[data-theme='dark']")],
+    ] as const) {
+      for (const surface of ['--color-base-100', '--color-base-200', '--color-base-300']) {
+        it(`neutral pill text passes AA on its tint over ${surface} in the ${name} theme`, () => {
+          const base = 'var\\(--color-base-content\\)';
+          const content = readVar(block, '--color-base-content');
+          const tint = applyOpacity(
+            content,
+            readVar(block, surface),
+            mixShares('bg', base)[0] / 100
+          );
+          const text = applyOpacity(content, tint, mixShares('text', base)[0] / 100);
+          expect(getContrastRatio(text, tint)).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
+        });
+      }
+    }
+  });
 
   const desktopDir = join(stylesDir, '..', 'lib', 'desktop');
   // Component styles with error text. `fills` names the selectors whose border or tint keeps the
@@ -1154,7 +1226,19 @@ describe('Primary and accent content in every color scheme', () => {
     }
   });
 
-  describe('Accessibility: sidebar active item text', () => {
+  describe('Accessibility: inset focus ring', () => {
+    it('inset focus ring is drawn inside the element', () => {
+      const bodies = ruleBodies(tailwindCss, '.focus-ring-inset:focus-visible');
+      expect(bodies.length, '.focus-ring-inset:focus-visible rule found').toBeGreaterThan(0);
+      const body = bodies.join('\n');
+      const width = /outline:\s*(\d+)px solid/.exec(body)?.[1];
+      expect(width, 'outline width').toBeDefined();
+      expect(body).toContain(`outline-offset: -${width}px`);
+      expect(body).toMatch(/box-shadow:\s*inset /);
+    });
+  });
+
+  describe('Accessibility: primary text token', () => {
     const SURFACES = ['--color-base-100', '--color-base-200', '--color-base-300'];
     const ACTIVE_RULES = ['.menu-item-active', '.menu-subitem-active'];
     const TEXT_TOKEN = '--text-primary';
@@ -1178,6 +1262,10 @@ describe('Primary and accent content in every color scheme', () => {
     }
 
     const TINT = tintFraction(ACTIVE_RULES[0]);
+
+    it('.text-primary colours its text with --text-primary', () => {
+      expect(colorValues(activeBodies('.text-primary'))).toEqual(['var(--text-primary)']);
+    });
 
     const surfacesOf = (theme: Theme) => SURFACES.map(name => colorOf(SURFACE_SCHEME, theme, name));
 
@@ -1293,7 +1381,9 @@ describe('Primary and accent content in every color scheme', () => {
     function quotedAround(text: string, index: number): string {
       const start = Math.max(...QUOTES.map(quote => text.lastIndexOf(quote, index)));
       const ends = QUOTES.map(quote => text.indexOf(quote, index)).filter(end => end >= 0);
-      return text.slice(start + 1, Math.min(...ends));
+      // Without a closing quote the class list runs to the end of the text
+      const end = ends.length > 0 ? Math.min(...ends) : text.length;
+      return text.slice(start + 1, end);
     }
 
     it('primary buttons hover with the hover token, not a translucent fill', () => {
@@ -1349,15 +1439,145 @@ describe('Primary and accent content in every color scheme', () => {
       expect(offenders).toEqual([]);
     });
 
-    it('scheme picker swatches match each scheme light primary', () => {
+    // A ring or border faded to a percentage of a theme colour can fall below 3:1 against the
+    // page. Inputs may add a faint glow when the field also gets a full-strength focus border;
+    // everything else uses .focus-ring. A utility may open a class value, so a quote also bounds
+    // it, and variants may stack before the focus one (dark:focus:, group-focus:, focus-within:).
+    const FOCUS_VARIANT = String.raw`(?:[\w-]+:)*(?:group-|peer-)?(?:focus|focus-visible|focus-within):`;
+    // eslint-disable-next-line security/detect-non-literal-regexp -- built from the fixed variant pattern above
+    const FADED_FOCUS_INDICATOR = new RegExp(
+      String.raw`(?:^|[\s"'\x60])((${FOCUS_VARIANT})(?:ring|ring-\d+|outline|border)-\[var\(--[\w-]+\)\]\/\d+)`,
+      'g'
+    );
+    // eslint-disable-next-line security/detect-non-literal-regexp -- built from the fixed variant pattern above
+    const FULL_STRENGTH_FOCUS_BORDER = new RegExp(
+      String.raw`(?:^|[\s"'\x60])(${FOCUS_VARIANT})border-\[var\(--[\w-]+\)\](?![/\w])`,
+      'g'
+    );
+
+    /** Shipped component markup and style modules; test fixtures and specs are not part of the app. */
+    function isFocusScanned(file: string): boolean {
+      const isScannable = file.endsWith('.svelte') || file.endsWith('.ts');
+      const isFixture = /\.(?:test|spec)\.(?:svelte|ts)$/.test(file);
+      return isScannable && !isFixture;
+    }
+
+    /** Component markup, the style modules that hold class strings, and the app shell. */
+    const focusScanSources = [
+      ...sources.filter(({ file }) => isFocusScanned(file)),
+      // .svelte files are already in sources; add the .ts style modules
+      ...readdirSync(libDir, { recursive: true, encoding: 'utf8' })
+        .filter(file => file.endsWith('.ts') && isFocusScanned(file))
+        // eslint-disable-next-line security/detect-non-literal-fs-filename -- paths come from listing the lib directory
+        .map(file => ({ file, text: readFileSync(join(libDir, file), 'utf8') })),
+      { file: 'App.svelte', text: readFileSync(join(srcDir, 'App.svelte'), 'utf8') },
+    ];
+
+    /** The faded focus indicators in a source text that no full-strength focus border accompanies. */
+    function fadedFocusIndicators(text: string): string[] {
+      return [...text.matchAll(FADED_FOCUS_INDICATOR)]
+        .filter(match => {
+          const isFadedBorder = /(?:^|:)border-/.test(match[1]);
+          const classes = quotedAround(text, match.index + match[0].length - 1);
+          // The border must sit under the same focus variant as the ring it excuses
+          const hasSameVariantBorder = [...classes.matchAll(FULL_STRENGTH_FOCUS_BORDER)].some(
+            border => border[1] === match[2]
+          );
+          return isFadedBorder || !hasSameVariantBorder;
+        })
+        .map(match => match[1]);
+    }
+
+    it('no focus ring, outline or border is drawn at reduced opacity of a theme color unless a full-strength focus border accompanies it', () => {
+      const offenders = focusScanSources.flatMap(({ file, text }) =>
+        fadedFocusIndicators(text).map(indicator => `${file}: ${indicator}`)
+      );
+      expect(offenders).toEqual([]);
+    });
+
+    it('the faded focus scan excuses a ring only for a border under the same focus variant', () => {
+      const ring = 'focus:ring-[var(--color-primary)]/20';
+      const darkBorder = 'dark:focus:border-[var(--color-primary)]';
+      // The light theme ring has no border beside it
+      expect(fadedFocusIndicators(`class="${ring} ${darkBorder}"`)).toEqual([ring]);
+      expect(fadedFocusIndicators(`class="${ring} focus:border-[var(--color-primary)]"`)).toEqual(
+        []
+      );
+      const darkRing = 'dark:focus:ring-[var(--color-primary)]/20';
+      expect(fadedFocusIndicators(`class="${darkRing} ${darkBorder}"`)).toEqual([]);
+      expect(
+        fadedFocusIndicators(`class="${darkRing} focus:border-[var(--color-primary)]"`)
+      ).toEqual([darkRing]);
+    });
+
+    it('the faded focus scan skips test fixtures and specs', () => {
+      expect(isFocusScanned('desktop/components/ui/Modal.toggle.test.svelte')).toBe(false);
+      expect(isFocusScanned('desktop/components/ui/Modal.test.ts')).toBe(false);
+      expect(isFocusScanned('tests/e2e/color-scheme.spec.ts')).toBe(false);
+      expect(isFocusScanned('desktop/components/forms/PlaceSearch.styles.ts')).toBe(true);
+      expect(isFocusScanned('desktop/components/ui/Modal.svelte')).toBe(true);
+    });
+
+    it('the faded focus scan reads a class list that has no closing quote to its end', () => {
+      // The full-strength border after the ring is still part of the same list
+      expect(
+        fadedFocusIndicators(
+          'focus:ring-[var(--color-primary)]/20 focus:border-[var(--color-primary)]'
+        )
+      ).toEqual([]);
+    });
+
+    it('the alert rule editor draws no faded focus glow, with or without a focus border', () => {
+      const editor = sources.find(({ file }) => file.endsWith('AlertRuleEditor.svelte'));
+      expect(editor, 'AlertRuleEditor.svelte is among the sources').toBeDefined();
+      const faded = [...(editor?.text ?? '').matchAll(FADED_FOCUS_INDICATOR)].map(m => m[1]);
+      expect(faded).toEqual([]);
+    });
+
+    it('the faded focus scan sees an indicator that opens or follows a class value and honours a focus border', () => {
+      const faded = 'focus:ring-[var(--color-primary)]/20';
+      expect(fadedFocusIndicators(`<input class="${faded} px-2" />`)).toEqual([faded]);
+      expect(fadedFocusIndicators(`<input class="px-2 ${faded}" />`)).toEqual([faded]);
+      expect(
+        fadedFocusIndicators(`<input class="focus:border-[var(--color-primary)] ${faded}" />`)
+      ).toEqual([]);
+    });
+
+    it('the faded focus scan reads a match at the start of the text whole and sees stacked focus variants', () => {
+      expect(fadedFocusIndicators('focus:ring-[var(--color-primary)]/20')).toEqual([
+        'focus:ring-[var(--color-primary)]/20',
+      ]);
+      for (const variant of [
+        'dark:focus:',
+        'group-focus:',
+        'focus-within:',
+        'hover:focus-visible:',
+      ]) {
+        const faded = `${variant}ring-[var(--color-primary)]/30`;
+        expect(fadedFocusIndicators(`class="px-2 ${faded}"`)).toEqual([faded]);
+      }
+      // A faded border is never excused by another border
+      const border = 'focus:border-[var(--color-primary)]/50';
+      expect(fadedFocusIndicators(`class="focus:border-[var(--color-primary)] ${border}"`)).toEqual(
+        [border]
+      );
+    });
+
+    it('scheme picker swatches match each scheme primary in the light and dark themes', () => {
       const picker = sources.find(({ file }) => file.endsWith('ColorSchemePicker.svelte'));
       expect(picker, 'ColorSchemePicker.svelte is among the sources').toBeDefined();
       for (const scheme of FIXED_SCHEMES) {
         // eslint-disable-next-line security/detect-non-literal-regexp -- scheme is one of the fixed scheme ids above
-        const swatch = new RegExp(`id: '${scheme}',[^}]*color: '(#[0-9a-fA-F]{6})'`).exec(
-          picker?.text ?? ''
-        )?.[1];
-        expect(swatch, `${scheme} swatch`).toBe(colorOf(scheme, 'light', '--color-primary'));
+        const option = new RegExp(
+          `id: '${scheme}',[^}]*color: '(#[0-9a-fA-F]{6})',[^}]*darkColor: '(#[0-9a-fA-F]{6})'`
+        ).exec(picker?.text ?? '');
+        expect(option, `${scheme} swatch fields`).not.toBeNull();
+        expect(option?.[1], `${scheme} light swatch`).toBe(
+          colorOf(scheme, 'light', '--color-primary')
+        );
+        expect(option?.[2], `${scheme} dark swatch`).toBe(
+          colorOf(scheme, 'dark', '--color-primary')
+        );
       }
     });
   });
@@ -1441,5 +1661,181 @@ describe('Custom scheme hover and pressed fills', () => {
     expect(style.getPropertyValue('--custom-primary-shade')).toBe('white');
     expect(style.getPropertyValue('--custom-accent-content')).toBe('#ffffff');
     expect(style.getPropertyValue('--custom-accent-shade')).toBe('black');
+  });
+});
+
+describe('Text dimmed through its colour', () => {
+  const srcDir = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const css = stripComments(readFileSync(join(srcDir, 'styles', 'tailwind.css'), 'utf8'));
+  const toolbar = stripComments(
+    readFileSync(join(srcDir, 'lib/desktop/components/media/AudioToolbar.svelte'), 'utf8')
+  );
+  const lightBlock = blockBody(css, '@theme');
+  const darkBlock = blockBody(css, "[data-theme='dark']");
+
+  /** Percentage NN of `color-mix(in srgb, var(--color-base-content) NN%, transparent)`. */
+  function baseContentShare(value: string): number {
+    const match = /^color-mix\(in srgb, var\(--color-base-content\) (\d+)%, transparent\)$/.exec(
+      value
+    );
+    expect(match, `"${value}" is a base-content share`).not.toBeNull();
+    return Number(match?.[1]) / 100;
+  }
+
+  function tokenIn(theme: 'light' | 'dark', name: string): string {
+    return (theme === 'dark' ? findVar(darkBlock, name) : null) ?? readVar(lightBlock, name);
+  }
+
+  /** Contrast of base-content at `share` over the surface `token` in both themes. */
+  function expectShareReadable(share: number, token: string) {
+    for (const theme of ['light', 'dark'] as const) {
+      const surface = tokenIn(theme, token);
+      const text = applyOpacity(tokenIn(theme, '--color-base-content'), surface, share);
+      expect(
+        getContrastRatio(text, surface),
+        `${theme} ${token} at ${share * 100}%`
+      ).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
+    }
+  }
+
+  it('.tab dims its label by colour, with no element opacity, on every base surface', () => {
+    const bodies = ruleBodies(css, '.tab');
+    for (const body of bodies) {
+      expect(body).not.toMatch(/(?:^|[\s;{])opacity:/);
+    }
+    const colors = colorValues(bodies);
+    expect(colors).toHaveLength(1);
+    const share = baseContentShare(colors[0]);
+    for (const token of ['--color-base-100', '--color-base-200', '--color-base-300']) {
+      expectShareReadable(share, token);
+    }
+  });
+
+  it('.time-range.dimmed dims the placeholder by colour on the toolbar surface', () => {
+    const bodies = ruleBodies(toolbar, '.time-range.dimmed');
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).not.toMatch(/opacity:/);
+    expectShareReadable(baseContentShare(colorValues(bodies)[0]), '--color-base-200');
+    expect(ruleBodies(toolbar, '.audio-toolbar')[0]).toContain('background: var(--color-base-200)');
+  });
+
+  it('the tab rules set their forced-colours indicators inside a forced-colors query', () => {
+    const forced = (declarations: string) =>
+      // eslint-disable-next-line security/detect-non-literal-regexp -- declarations are literals written in this test
+      new RegExp(`@media \\(forced-colors: active\\) \\{\\s*${declarations}\\s*$`);
+    expect(ruleBodies(css, '.tab')[0]).toMatch(forced('border-bottom-color: Canvas;'));
+    expect(ruleBodies(css, '.tab-active')[0]).toMatch(forced('border-bottom-color: CanvasText;'));
+    expect(ruleBodies(css, '.tab:focus-visible')[0]).toMatch(forced('outline-color: CanvasText;'));
+    expect(ruleBodies(css, '.tabs-boxed .tab-active')[0]).toMatch(
+      forced('forced-color-adjust: none;\\s*background-color: Highlight;\\s*color: HighlightText;')
+    );
+  });
+});
+
+describe('Detection card media surface', () => {
+  const srcDir = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const read = (path: string) => readFileSync(join(srcDir, path), 'utf8');
+  const css = read('styles/tailwind.css');
+  const rootBlock = blockBody(css, ":root,\n[data-theme='light']");
+  const darkBlock = blockBody(css, "[data-theme='dark']");
+  const schemesCss = read('styles/schemes.css');
+  const cardFiles = [
+    'lib/desktop/features/dashboard/components/DetectionCard.svelte',
+    'lib/desktop/features/detections/components/DetectionCardMobile.svelte',
+  ];
+  const infoBar = stripComments(
+    read('lib/desktop/features/dashboard/components/SpeciesInfoBar.svelte')
+  );
+  const TOKENS = ['--media-surface-from', '--media-surface-to'];
+
+  /** Alpha of the `rgb(255 255 255 / A)` colour that rule `selector` sets as `property`. */
+  function whiteAlpha(source: string, selector: string, property = 'color'): number {
+    const body = ruleBodies(source, selector)[0];
+    // eslint-disable-next-line security/detect-non-literal-regexp -- property is one of two fixed names used by the callers
+    const match = new RegExp(`(?:^|[\\s;{])${property}:\\s*rgb\\(255 255 255 / ([\\d.]+)\\)`).exec(
+      body
+    );
+    expect(match, `${selector} sets ${property} to white with an alpha`).not.toBeNull();
+    return Number(match?.[1]);
+  }
+
+  it('is a hex pair in the root block only, so no theme or scheme turns it light', () => {
+    for (const token of TOKENS) {
+      readVar(rootBlock, token);
+      expect(darkBlock).not.toContain(token);
+      expect(schemesCss).not.toContain(token);
+    }
+  });
+
+  it('is drawn from the two tokens by both card variants, with no dark-theme override', () => {
+    for (const file of cardFiles) {
+      const source = stripComments(read(file));
+      // The grouped rule covers the container, the loading overlay and the error overlay
+      expect(source, `${file}`).toMatch(
+        /\.spectrogram-container,\s*\.spectrogram-loading,\s*\.spectrogram-error\s*\{[^}]*var\(--media-surface-from\)[^}]*var\(--media-surface-to\)/
+      );
+      expect(source, `${file}`).not.toContain("[data-theme='dark']");
+      expect(source, `${file}`).not.toMatch(/text-\[var\(--color-base-content\)\]/);
+    }
+  });
+
+  it('keeps the status badges of the species bar at 4.5:1 on both stops in both themes', () => {
+    for (const [selector, token] of [
+      ['.unlikely-badge', '--color-warning'],
+      ['.false-positive-badge', '--color-error'],
+    ]) {
+      // eslint-disable-next-line security/detect-non-literal-regexp -- token is one of two fixed names above
+      const fill = new RegExp(
+        `background-color:\\s*color-mix\\(in srgb, var\\(${token}\\) (\\d+)%, transparent\\)`
+      );
+      const share = fill.exec(ruleBodies(infoBar, selector)[0]);
+      expect(share, `${selector} fills with a share of ${token}`).not.toBeNull();
+      expect(ruleBodies(infoBar, selector)[0]).toContain(`color: var(${token}-content)`);
+      for (const theme of ['light', 'dark'] as const) {
+        const tokenIn = (name: string) =>
+          (theme === 'dark' ? findVar(darkBlock, name) : null) ??
+          readVar(blockBody(css, '@theme'), name);
+        for (const stop of TOKENS.map(name => readVar(rootBlock, name))) {
+          const backdrop = applyOpacity(tokenIn(token), stop, Number(share?.[1]) / 100);
+          expect(
+            getContrastRatio(tokenIn(`${token}-content`), backdrop),
+            `${selector} in the ${theme} theme on ${stop}`
+          ).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
+        }
+      }
+    }
+  });
+
+  it('keeps every overlay text at 4.5:1 on both stops', () => {
+    const statusAlphas = cardFiles.map((file): [string, number] => [
+      file,
+      whiteAlpha(stripComments(read(file)), '.spectrogram-placeholder'),
+    ]);
+    const badgeText = whiteAlpha(infoBar, '.unverified-badge');
+    const badgeFill = whiteAlpha(infoBar, '.unverified-badge', 'background-color');
+    for (const stop of TOKENS.map(token => readVar(rootBlock, token))) {
+      const texts = {
+        name: '#ffffff',
+        subLabel: applyOpacity('#ffffff', stop, whiteAlpha(infoBar, '.scientific-name')),
+        relativeTime: applyOpacity('#ffffff', stop, whiteAlpha(infoBar, '.relative-time')),
+      };
+      for (const [what, text] of Object.entries(texts)) {
+        expect(getContrastRatio(text, stop), `${what} on ${stop}`).toBeGreaterThanOrEqual(
+          WCAG_AA_NORMAL
+        );
+      }
+      // Unverified badge: translucent white text on its own translucent white fill over the stop
+      const badgeBackdrop = applyOpacity('#ffffff', stop, badgeFill);
+      expect(
+        getContrastRatio(applyOpacity('#ffffff', badgeBackdrop, badgeText), badgeBackdrop),
+        `unverified badge on ${stop}`
+      ).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
+      for (const [file, alpha] of statusAlphas) {
+        expect(
+          getContrastRatio(applyOpacity('#ffffff', stop, alpha), stop),
+          `${file} status text on ${stop}`
+        ).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
+      }
+    }
   });
 });

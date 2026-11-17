@@ -2,10 +2,13 @@
 // package (internal/classifier/model_catalog_regional_gen.go). It reads the
 // vendored acoustic-models manifests (gen/manifests/*.models.json), the embedded
 // region tables (region/data/*.regions.json), and a labels-checksum sidecar
-// (gen/manifests/labels-checksums.json), then emits one Go file with two
-// functions, birdnetV30RegionalVariants and perchV2RegionalVariants, each
-// returning the region-sliced CatalogVariant literals for its family
-// (expectedRegions slugs, variantsPerRegion precision builds each).
+// (gen/manifests/labels-checksums.json), then emits one Go file with one
+// function per family (birdnetV30RegionalVariants, perchV2RegionalVariants and
+// birdnetPlusV30RegionalVariants), each returning the region-sliced
+// CatalogVariant literals for its family (expectedRegions slugs, the family's
+// variantsPerRegion precision builds each; a build the manifest supersedes
+// stays in the list as a Legacy variant, so an existing install is still
+// recognised, and sorts after its region's live builds).
 //
 // The generator takes the per-region labels checksums from the sidecar rather
 // than from the manifests (older manifests hashed only the .onnx model files).
@@ -21,7 +24,7 @@
 //
 // Determinism matters: the output is committed and guarded by a CI drift gate,
 // so the generator must produce byte-identical output for a given input. Entries
-// are sorted by (region slug, variant token), backend map keys are emitted
+// are sorted by (region slug, live before superseded, variant token), backend map keys are emitted
 // sorted, the field order is fixed, and the whole file is run through
 // go/format.Source before writing.
 //
@@ -72,6 +75,7 @@ var families = []family{
 		labelsLocalName: func(slug string) string {
 			return fmt.Sprintf("birdnet_v3.0_%s_labels.txt", slug)
 		},
+		variantsPerRegion: 2,
 	},
 	{
 		key:          "perch-v2",
@@ -89,6 +93,23 @@ var families = []family{
 		labelsLocalName: func(slug string) string {
 			return fmt.Sprintf("perch_v2_%s_labels.txt", slug)
 		},
+		variantsPerRegion: 2,
+	},
+	{
+		key:          "birdnet-plus-v3.0",
+		funcName:     "birdnetPlusV30RegionalVariants",
+		repo:         "tphakala/BirdNET-Plus-V3.0",
+		manifestFile: "gen/manifests/BirdNET-Plus-V3.0.models.json",
+		regionsFile:  "region/data/BirdNET-Plus-V3.0.regions.json",
+		// birdnet_plus_v3.0_<slug>_<token>.onnx for the model, one
+		// birdnet_plus_v3.0_<slug>_labels.txt per region. Only fp32 ships.
+		modelLocalName: func(slug, token string) string {
+			return fmt.Sprintf("birdnet_plus_v3.0_%s_%s.onnx", slug, token)
+		},
+		labelsLocalName: func(slug string) string {
+			return fmt.Sprintf("birdnet_plus_v3.0_%s_labels.txt", slug)
+		},
+		variantsPerRegion: 1,
 	},
 }
 
@@ -115,9 +136,36 @@ type family struct {
 	// (Perch v2 softmax). A family with per-class sigmoid scores (BirdNET v3.0)
 	// must not carry the field.
 	requireScoreCalibration bool
-	modelLocalName          func(slug, token string) string
-	labelsLocalName         func(slug string) string
+	// variantsPerRegion is the number of precision builds the family ships for
+	// each region (2 for fp32 plus fp16, 1 for fp32 only).
+	variantsPerRegion int
+	modelLocalName    func(slug, token string) string
+	labelsLocalName   func(slug string) string
 }
+
+// checkRegionCounts fails unless perRegion names exactly expectedRegions
+// regions and each one ships exactly the family's variantsPerRegion builds, so
+// a dropped, duplicated or extra tile cannot pass unnoticed, even when the
+// total still matches. A withdrawn (superseded) build still counts as shipped,
+// but every region must keep at least one build a new install can use.
+func (f *family) checkRegionCounts(perRegion map[string]regionTally) error {
+	if len(perRegion) != expectedRegions {
+		return fmt.Errorf("regional entries cover %d distinct regions, want %d (a region is missing or duplicated)", len(perRegion), expectedRegions)
+	}
+	for region, n := range perRegion {
+		if n.total != f.variantsPerRegion {
+			return fmt.Errorf("region %s has %d variants, want %d", region, n.total, f.variantsPerRegion)
+		}
+		if n.live == 0 {
+			return fmt.Errorf("region %s has no variant a new install can use (every build is superseded)", region)
+		}
+	}
+	return nil
+}
+
+// regionTally counts a region's manifest entries and how many of them are not
+// superseded.
+type regionTally struct{ total, live int }
 
 // manifest and its nested types mirror only the acoustic-models schema-2 fields
 // this generator consumes. Unknown fields are ignored.
@@ -199,9 +247,7 @@ const (
 	// or removal must be acknowledged here at generate time, together with the
 	// golden tier snapshot in the region package. Do not derive it from the
 	// region table, which would make the count check vacuous.
-	expectedRegions   = 43
-	variantsPerRegion = 2 // each region ships two precision variants
-	regionalPerFam    = expectedRegions * variantsPerRegion
+	expectedRegions = 43
 )
 
 func main() {
@@ -227,15 +273,15 @@ func run() error {
 
 	var buf bytes.Buffer
 	buf.WriteString(fileHeader)
-	for _, fam := range families {
+	total := 0
+	for i := range families {
+		fam := &families[i]
 		variants, genErr := fam.build(labels)
 		if genErr != nil {
 			return fmt.Errorf("family %s: %w", fam.key, genErr)
 		}
-		if len(variants) != regionalPerFam {
-			return fmt.Errorf("family %s: got %d regional variants, want %d", fam.key, len(variants), regionalPerFam)
-		}
-		fmt.Fprintf(&buf, "\n// %s returns the %d region-sliced variants of the %s model,\n", fam.funcName, regionalPerFam, fam.key)
+		total += len(variants)
+		fmt.Fprintf(&buf, "\n// %s returns the %d region-sliced variants of the %s model,\n", fam.funcName, len(variants), fam.key)
 		fmt.Fprintf(&buf, "// generated from %s.\n", path.Base(fam.manifestFile))
 		fmt.Fprintf(&buf, "func %s() []CatalogVariant {\n\treturn []CatalogVariant{\n", fam.funcName)
 		for _, v := range variants {
@@ -251,12 +297,13 @@ func run() error {
 	if err := os.WriteFile(outputFile, formatted, 0o644); err != nil { //nolint:gosec // generated, non-secret source file
 		return fmt.Errorf("write %s: %w", outputFile, err)
 	}
-	fmt.Printf("wrote %s (%d variants across %d families)\n", outputFile, len(families)*regionalPerFam, len(families))
+	fmt.Printf("wrote %s (%d variants across %d families)\n", outputFile, total, len(families))
 	return nil
 }
 
 // build parses the family's manifest and region table and returns the rendered
-// Go source for each regional variant, sorted deterministically. It hard-fails on
+// Go source for each regional variant, sorted by region, then live builds before
+// superseded ones, and resolves each superseded_by path to a variant id. It hard-fails on
 // any data gap so a malformed manifest can never silently emit a broken catalog.
 func (f *family) build(labels map[string]labelChecksum) ([]string, error) {
 	m, err := loadManifest(f.manifestFile)
@@ -268,7 +315,7 @@ func (f *family) build(labels map[string]labelChecksum) ([]string, error) {
 		return nil, err
 	}
 
-	regional := make([]manifestModel, 0, regionalPerFam)
+	regional := make([]manifestModel, 0, expectedRegions*f.variantsPerRegion)
 	for i := range m.Models {
 		if m.Models[i].Region != "" {
 			regional = append(regional, m.Models[i])
@@ -277,21 +324,39 @@ func (f *family) build(labels map[string]labelChecksum) ([]string, error) {
 	if len(table.Regions) != expectedRegions {
 		return nil, fmt.Errorf("region table has %d slugs, want %d", len(table.Regions), expectedRegions)
 	}
-	distinctRegions := make(map[string]bool, expectedRegions)
+	perRegion := make(map[string]regionTally, expectedRegions)
 	for i := range regional {
-		distinctRegions[regional[i].Region] = true
+		n := perRegion[regional[i].Region]
+		n.total++
+		if regional[i].SupersededBy == nil {
+			n.live++
+		}
+		perRegion[regional[i].Region] = n
 	}
-	if len(distinctRegions) != expectedRegions {
-		return nil, fmt.Errorf("regional entries cover %d distinct regions, want %d (a region is missing or duplicated)", len(distinctRegions), expectedRegions)
+	if err := f.checkRegionCounts(perRegion); err != nil {
+		return nil, err
 	}
 
-	// Deterministic order: region slug, then variant token.
+	// Deterministic order: region slug, then live before superseded, then variant
+	// token. The two first-match walks over a catalog entry's variants when no
+	// model path is configured (the installed-model scan and the gallery path
+	// resolution) must find a live build before a withdrawn one when both files
+	// are on disk.
 	sort.Slice(regional, func(i, j int) bool {
 		if regional[i].Region != regional[j].Region {
 			return regional[i].Region < regional[j].Region
 		}
+		if li, lj := regional[i].SupersededBy == nil, regional[j].SupersededBy == nil; li != lj {
+			return li
+		}
 		return regional[i].Variant < regional[j].Variant
 	})
+
+	// Index after the sort: the pointers must address the final slice positions.
+	byPath := make(map[string]*manifestModel, len(regional))
+	for i := range regional {
+		byPath[regional[i].Path] = &regional[i]
+	}
 
 	seenID := make(map[string]bool, len(regional))
 	seenLocalName := make(map[string]bool, len(regional))
@@ -301,6 +366,11 @@ func (f *family) build(labels map[string]labelChecksum) ([]string, error) {
 		v, buildErr := f.variant(e, table, labels)
 		if buildErr != nil {
 			return nil, buildErr
+		}
+		if e.SupersededBy != nil {
+			if v.supersededBy, buildErr = supersededVariantID(e, byPath); buildErr != nil {
+				return nil, buildErr
+			}
 		}
 		if seenID[v.id] {
 			return nil, fmt.Errorf("duplicate variant id %q", v.id)
@@ -418,11 +488,6 @@ func (f *family) variant(e *manifestModel, table *regionTable, labels map[string
 	}
 	sort.Slice(backends, func(i, j int) bool { return backends[i].token < backends[j].token })
 
-	superseded := ""
-	if e.SupersededBy != nil {
-		superseded = *e.SupersededBy
-	}
-
 	return genVariant{
 		id:           e.Variant + "@" + e.Region,
 		region:       e.Region,
@@ -433,13 +498,13 @@ func (f *family) variant(e *manifestModel, table *regionTable, labels map[string
 		excludes:     excludes,
 		backends:     backends,
 		benchmarks:   e.Benchmarks,
-		// Legacy is derived from supersededBy only. The manifest's own `legacy`
+		// Legacy is derived from superseded_by only; build fills supersededBy with
+		// the resolved variant id. The manifest's own `legacy`
 		// bool means "published before the current naming scheme" (frozen
 		// filename), NOT "superseded"; CatalogVariant.Legacy means the recommender
 		// hides and penalizes the variant, so passing the manifest flag through
 		// would wrongly bury every regional tile.
-		legacy:         superseded != "",
-		supersededBy:   superseded,
+		legacy:         e.SupersededBy != nil,
 		modelRemote:    e.Path,
 		modelLocalName: f.modelLocalName(e.Region, e.Variant),
 		modelSHA256:    e.SHA256,
@@ -451,6 +516,27 @@ func (f *family) variant(e *manifestModel, table *regionTable, labels map[string
 		restLogit:      restLogit,
 		hasCalibration: hasCalibration,
 	}, nil
+}
+
+// supersededVariantID turns the entry's superseded_by manifest path into the id
+// of the variant that replaces it ("<variant>@<region>"), or "" when the entry
+// is not superseded. The target must be a regional entry of the same family and
+// region that is not itself superseded, so the pointer never dangles, crosses
+// regions or chains.
+func supersededVariantID(e *manifestModel, byPath map[string]*manifestModel) (string, error) {
+	if e.SupersededBy == nil {
+		return "", nil
+	}
+	target, ok := byPath[*e.SupersededBy]
+	switch {
+	case !ok:
+		return "", fmt.Errorf("variant %s@%s: superseded_by %q is not an entry of this family", e.Variant, e.Region, *e.SupersededBy)
+	case target.Region != e.Region:
+		return "", fmt.Errorf("variant %s@%s: superseded_by %q is in a different region (%s)", e.Variant, e.Region, *e.SupersededBy, target.Region)
+	case target.SupersededBy != nil:
+		return "", fmt.Errorf("variant %s@%s: superseded_by %q is itself superseded", e.Variant, e.Region, *e.SupersededBy)
+	}
+	return target.Variant + "@" + target.Region, nil
 }
 
 // scoreCalibration validates the entry's score_calibration block against the

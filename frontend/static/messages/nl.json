@@ -219,7 +219,8 @@
     "dashboard": "Overzicht",
     "liveAudio": "Live audio",
     "settingsMenu": "Instellingenmenu",
-    "theme": "Thema",
+    "switchToDarkTheme": "Overschakelen naar donker thema",
+    "switchToLightTheme": "Overschakelen naar licht thema",
     "github": "GitHub",
     "detections": "Herkend",
     "search": "Zoeken",
@@ -419,7 +420,7 @@
         "recalculatingThresholds": "Dynamische drempels worden herberekend voor nieuwe basiswaarde",
         "reconfiguringDynamicThresholds": "Dynamische drempels worden opnieuw geconfigureerd...",
         "webserverRestartRequired": "Webserverinstellingen gewijzigd. Herstart vereist.",
-        "oauthRestartRequired": "Authenticatieproviderinstellingen gewijzigd. Herstart vereist.",
+        "reconfiguringOauthProviders": "Authenticatieproviders worden bijgewerkt...",
         "databaseRestartRequired": "Database-instellingen gewijzigd. Herstart vereist.",
         "loggingRestartRequired": "Logboek-instellingen gewijzigd. Herstart vereist.",
         "reconfiguringSoundLevel": "Geluidsniveaubewaking wordt bijgewerkt...",
@@ -495,6 +496,10 @@
       "modelOptimize": {
         "title": "{count, plural, one {# model heeft een betere versie voor dit systeem} other {# modellen hebben betere versies voor dit systeem}}",
         "message": "Er is een versie beschikbaar die beter past bij de hardware of locatie van dit systeem, voor: {models}. Open Instellingen > Analyse > Modellen en kies Optimaliseren om over te schakelen."
+      },
+      "modelSuperseded": {
+        "title": "{count, plural, one {Een geïnstalleerd model heeft een nieuwere uitgave} other {# geïnstalleerde modellen hebben nieuwere uitgaven}}",
+        "message": "Een geïnstalleerd model is een voorvertoningsversie en de definitieve uitgave is nu beschikbaar: {models}. Open Instellingen > Analyse > Modellen, installeer de definitieve uitgave en verwijder de voorvertoning."
       },
       "alert": {
         "firedTitle": "{rule_name}",
@@ -2497,6 +2502,15 @@
       "validationBlocked": "Sommige velden vragen aandacht voordat u kunt opslaan.",
       "noChangesToSave": "Geen wijzigingen om op te slaan."
     },
+    "autoSave": {
+      "saved": "Opgeslagen",
+      "failed": "Niet opgeslagen. De vorige waarde is hersteld.",
+      "changedElsewhere": "Deze instelling is elders gewijzigd. De huidige waarde wordt getoond; maak je wijziging opnieuw.",
+      "tabNote": "Wijzigingen op dit tabblad worden opgeslagen terwijl je ze maakt.",
+      "failuresSummary": "{count, plural, one {# wijziging is niet opgeslagen} other {# wijzigingen zijn niet opgeslagen}}",
+      "dismiss": "Sluiten",
+      "otherTabsUnsaved": "Andere tabbladen hebben niet-opgeslagen wijzigingen. Open er een om ze op te slaan of te herstellen:"
+    },
     "errors": {
       "loadFailed": "Instellingen konden niet worden geladen",
       "saveFailed": "Instellingen konden niet worden opgeslagen",
@@ -3717,7 +3731,7 @@
         "sampleRateExclusive": "Samplerates boven 48 kHz gebruiken exclusieve apparaattoegang op Linux, waardoor andere applicaties de geluidskaart niet kunnen delen",
         "modelLabel": "Detectiemodellen",
         "modelHelp": "Selecteer AI-modellen voor deze audiobron",
-        "deleteConfirm": "Deze geluidskaartbron verwijderen?",
+        "deleteConfirm": "De geluidskaartbron \"{name}\" verwijderen?",
         "emptyState": {
           "title": "Geen Geluidskaartbronnen Geconfigureerd",
           "description": "Voeg een geluidskaartbron toe om te beginnen met het opnemen van audio voor vogeldetectie.",
@@ -3744,11 +3758,17 @@
           "minSampleRate": "Vereist minimaal {rate}kHz samplefrequentie",
           "recommendedSampleRate": "{rate}kHz aanbevolen voor beste resultaten",
           "atLeastOneModel": "Minimaal één model moet geselecteerd zijn"
-        }
+        },
+        "captureTitle": "Opname",
+        "levelTitle": "Ingangsniveau",
+        "captureApplyHint": "De opname wordt herstart wanneer u toepast.",
+        "applyCapture": "Toepassen en opname herstarten",
+        "applying": "Bezig met toepassen...",
+        "adding": "Bezig met toevoegen...",
+        "captureApplyFailed": "De opname is niet gewijzigd. Pas opnieuw toe of annuleer."
       },
       "audioCapture": {
         "title": "Audio Opname",
-        "description": "Stel audio opname bron in, geluidskaart of RTSP stream",
         "soundCardSource": "Geluidskaart Bron",
         "audioSourceLabel": "Audio Bron (vereist applicatie herstart om effect te hebben)",
         "audioSourceHelp": "Selecteer het audio invoer apparaat voor vogelgeluid detectie. Wijzigingen vereisen applicatie herstart om effect te hebben.",
@@ -3782,11 +3802,11 @@
         "fixedHint": "Opname wordt dagelijks gepauzeerd tussen start- en eindtijden. Nachtelijke vensters (bijv. 22:00 tot 06:00) worden ondersteund.",
         "solarHint": "Tijden worden berekend op basis van zonsopgang/-ondergang op uw geconfigureerde locatie. Gebruik negatieve offsets voor vóór het evenement, positieve voor erna.",
         "badge": "Stil",
-        "enabledBadge": "Stille uren ingeschakeld voor deze stream"
+        "enabledBadge": "Stille uren ingeschakeld voor deze stream",
+        "enableLabel": "Opname pauzeren tijdens stille uren"
       },
       "rtspStreams": {
         "title": "Audio Stream Configuratie",
-        "description": "Configureer netwerk audio streams voor audio opname op afstand. Ondersteunt RTSP, HTTP, HLS, RTMP en UDP protocollen.",
         "noStreamsConfigured": "Geen streams geconfigureerd"
       },
       "streams": {
@@ -3815,7 +3835,7 @@
         "refresh": "Vernieuwen",
         "addStream": "Stream toevoegen",
         "testRequired": "Voer een succesvolle streamtest uit voordat u opslaat",
-        "deleteConfirm": "Deze stream verwijderen?",
+        "deleteConfirm": "De stream \"{name}\" verwijderen?",
         "restartCount": "{count} keer herstart",
         "healthLoadError": "Laden van streamstatus mislukt",
         "status": {
@@ -3839,6 +3859,7 @@
         "errors": {
           "nameRequired": "Streamnaam is verplicht",
           "duplicateName": "Er bestaat al een stream met deze naam",
+          "nameTooLong": "De naam van de stream is te lang (maximaal {max} bytes)",
           "urlRequired": "Stream-URL is verplicht",
           "invalidUrl": "Ongeldig stream-URL-formaat",
           "duplicate": "Deze stream-URL bestaat al"
@@ -3855,12 +3876,12 @@
           "eventAt": "Gebeurtenis om {time}"
         },
         "diagnostics": {
-          "toggleDiagnostics": "Diagnose tonen/verbergen",
           "processState": "Processtatus",
           "lastData": "Laatste data",
           "restartCount": "Herstarts",
           "connection": "Verbinding",
-          "stateErrorHistory": "Status- en foutgeschiedenis"
+          "stateErrorHistory": "Status- en foutgeschiedenis",
+          "title": "Diagnostiek"
         },
         "connectionStatus": {
           "stable": "Stabiel",
@@ -3907,8 +3928,19 @@
         },
         "stereoWarning": {
           "message": "Stereostream gedetecteerd. Het downmixen van meerdere kanalen kan de detectienauwkeurigheid verminderen door faseverschillen tussen kanalen. Selecteer een specifiek kanaal (links/rechts) of gebruik de kanaaldetector voor de beste resultaten.",
-          "short": "Stereo downmix actief. Detectienauwkeurigheid kan verminderd zijn. Bewerk om een specifiek kanaal te selecteren.",
-          "tooltip": "Stereo downmix actief. Detectienauwkeurigheid kan verminderd zijn. Bewerk om een specifiek kanaal te selecteren."
+          "short": "Stereo downmix actief. Detectienauwkeurigheid kan verminderd zijn. Selecteer een specifiek kanaal onder Verbinding."
+        },
+        "autoSaveHelp": "Wijzigingen worden direct opgeslagen. Wijzigingen van de verbinding verbinden de stream opnieuw en wachten daarom tot u op Toepassen klikt.",
+        "connectionTitle": "Verbinding",
+        "connectionApplyHint": "De stream wordt opnieuw verbonden wanneer u toepast.",
+        "connectionApplyFailed": "De verbinding is niet gewijzigd. Pas opnieuw toe of annuleer.",
+        "applyConnection": "Toepassen en opnieuw verbinden",
+        "testBeforeApply": "Test de nieuwe URL voordat u deze toepast.",
+        "statsLine": "Totaal: {total} · Snelheid: {rate} · Laatst: {last}",
+        "ago": {
+          "seconds": "{count} s geleden",
+          "minutes": "{count} min geleden",
+          "hours": "{count} u geleden"
         }
       },
       "audioFilters": {
@@ -4127,9 +4159,25 @@
         "noneAvailable": "Er zijn geen detectiemodellen ingeschakeld op deze server.",
         "loadFailedWarning": "Een detectiemodel kon niet worden geladen, dus deze bron wordt pas geanalyseerd als het is hersteld.",
         "loadFailedLink": "Bekijk de status van AI-modellen",
+        "state": {
+          "pending": "Laden",
+          "failed": "Laden mislukt",
+          "missing": "Niet geïnstalleerd"
+        },
+        "notLoadedHelp": "Dit model is niet geladen en kan daarom niet worden geselecteerd.",
         "defaultBadge": "{models} (standaard)",
         "defaultPendingBadge": "Standaardmodellen",
-        "noneBadge": "Geen model geladen"
+        "noneBadge": "Geen model geladen",
+        "missingHelp": "Dit model is niet meer geïnstalleerd. Deze bron negeert het.",
+        "removeMissing": "Verwijderen",
+        "removeMissingAria": "{model} verwijderen uit {source}",
+        "lastSelectedHelp": "Er blijft minstens één classificatiemodel geselecteerd.",
+        "followsDefaults": "Deze bron volgt de standaardmodellen.",
+        "listFailed": "De modellijst kon niet worden geladen.",
+        "warningBadge": "Classificatiemodellen controleren"
+      },
+      "sources": {
+        "autoSaveHelp": "Wijzigingen worden direct opgeslagen. Wijzigingen van apparaat en samplefrequentie herstarten de opname en wachten daarom tot u op Toepassen klikt."
       }
     },
     "security": {
@@ -4200,7 +4248,7 @@
         "clientSecretLabel": "Clientgeheim",
         "clientSecretHelpText": "Het OAuth 2.0 Client Secret van de ontwikkelaarsconsole van uw provider",
         "userIdLabel": "Toegestane gebruikers",
-        "userIdHelpText": "Door komma's gescheiden e-mails of gebruikers-ID's die mogen inloggen met deze provider. Als dit leeg is, kan niemand inloggen.",
+        "userIdHelpText": "Door komma's gescheiden e-mails of gebruikers-ID's die mogen inloggen met deze provider. Een gebruikers-ID wordt aanbevolen, omdat een e-mailadres kan veranderen. Als dit leeg is, kan niemand inloggen.",
         "allowedUsersEmptyWarning": "Deze provider heeft geen toegestane gebruikers, dus elke inlogpoging wordt geweigerd. Voeg ten minste één e-mail of gebruikers-ID toe om toegang te verlenen.",
         "allowedUsersMissingBadge": "Geen toegestane gebruikers ingesteld - inloggen mislukt",
         "google": {
@@ -4269,13 +4317,16 @@
           "clientSecretHelpText": "Het clientgeheim van je OIDC-identiteitsprovider",
           "userIdLabel": "Toegestane gebruiker (e-mail of sub claim)",
           "issuerUrlLabel": "Uitgever-URL",
-          "issuerUrlHelpText": "De uitgever-URL van je OpenID Connect-identiteitsprovider (bijv. https://auth.example.com)",
+          "issuerUrlHelpText": "Basis-URL van je OpenID Connect-provider. BirdNET-Go voegt /.well-known/openid-configuration zelf toe, dus laat dat deel weg. Voorbeelden: https://auth.example.com/application/o/birdnet-go/ (Authentik), https://auth.example.com/realms/myrealm (Keycloak).",
           "issuerUrlPlaceholder": "https://auth.example.com",
           "issuerUrlRequired": "Uitgever-URL is vereist voor OIDC-providers",
           "issuerUrlInvalid": "Uitgever-URL moet een geldige HTTP- of HTTPS-URL zijn",
           "scopesLabel": "Scopes",
           "scopesHelpText": "Kommagescheiden lijst van OIDC-scopes (standaard: openid, profile, email)",
-          "scopesPlaceholder": "openid, profile, email"
+          "scopesPlaceholder": "openid, profile, email",
+          "postLogoutRedirectLabel": "Terugkeren naar BirdNET-Go na afmelden bij de identiteitsprovider",
+          "postLogoutRedirectHelpText": "Na het afmelden wordt de browser teruggestuurd naar {url}. Registreer deze URL eerst als post-logout redirect-URI bij uw identiteitsprovider, anders kan de provider een foutmelding tonen.",
+          "postLogoutRedirectNoBaseUrl": "Stel eerst de basis-URL of de host in. De terugkeer-URL wordt daaruit opgebouwd."
         }
       },
       "bypassAuthentication": {
@@ -4498,7 +4549,24 @@
           "mappedZero": {
             "title": "Bereikfilter kwam met geen enkele soort overeen",
             "description": "Het geomodel-bereikfilter kwam met geen enkele soort van het actieve model overeen, dus elke detectie zou worden weggefilterd. Controleer of het labelbestand van het bereikfilter overeenkomt met het actieve model."
-          }
+          },
+          "geomodelNotInstalled": {
+            "title": "BirdNET Geomodel is niet geïnstalleerd",
+            "description": "Deze modellen hebben het BirdNET Geomodel nodig om detecties op locatie te filteren: {models}. Installeer BirdNET Geomodel v3.0 via het tabblad Modellen in de Analyse-instellingen."
+          },
+          "geomodelNotSelected": {
+            "title": "BirdNET Geomodel wordt niet gebruikt",
+            "description": "Het BirdNET Geomodel is geïnstalleerd, maar het bereikfilter is ingesteld op een ander model, dus deze modellen worden niet op locatie gefilterd: {models}. Verwijder birdnet.rangefilter.model en birdnet.rangefilter.modelpath uit het configuratiebestand of de omgeving om het te gebruiken."
+          },
+          "geomodelLoadFailed": {
+            "title": "BirdNET Geomodel kon niet worden geladen",
+            "description": "Het BirdNET Geomodel kon niet worden geladen, dus deze modellen worden niet op locatie gefilterd: {models}. Controleer het applicatielogboek en installeer of herinstalleer BirdNET Geomodel v3.0 via het tabblad Modellen in de Analyse-instellingen."
+          },
+          "reloadFailed": {
+            "title": "Opnieuw laden van het bereikfilter mislukt",
+            "description": "Het laatste herladen van het bereikfilter is mislukt, dus het eerder geladen bereikfilter blijft in gebruik. Controleer het applicatielogboek en herstart BirdNET-Go om het opnieuw te proberen."
+          },
+          "openModels": "Modellen openen"
         },
         "columns": {
           "commonName": "Naam",
@@ -5101,7 +5169,8 @@
       "noData": "Geen gegevens beschikbaar",
       "loading": "Gegevens inlezen ...",
       "error": "Gegevens inlezen is mislukt",
-      "sortBy": "Sorteer op {column}",
+      "sortedAscending": "Gesorteerd op {column}, oplopend",
+      "sortedDescending": "Gesorteerd op {column}, aflopend",
       "rowsPerPage": "Rijen per pagina",
       "pageInfo": "Toont van {from} tot en met {to} van {total} resultaten"
     },
@@ -5808,6 +5877,9 @@
       },
       "birdnetv3Threshold": {
         "label": "BirdNET v3.0 Confidence Threshold"
+      },
+      "birdnetplusThreshold": {
+        "label": "Betrouwbaarheidsdrempel BirdNET+ V3.0"
       }
     },
     "rangeFilter": {
@@ -5898,7 +5970,6 @@
         "filterPlaceholder": "Regio's filteren",
         "filterAria": "Filter op regio afgestemde versies",
         "filterNoMatch": "Geen regio's komen overeen met \"{query}\"",
-        "latency": "~{ms} ms",
         "precisionInfo": "About precision and variants",
         "precisionHelp": "Precision (FP32, FP16, INT8) trades accuracy for size and speed: FP32 is most accurate, INT8 is smallest and fastest. Recommended is the best match for your detected hardware; Default is the model's standard build."
       },
@@ -5999,6 +6070,10 @@
         "cardNotice": "Experimenteel in BirdNET-Go. Het model is gepubliceerd, maar de prestaties ervan in BirdNET-Go zijn nog niet bewezen, dus de resultaten kunnen minder betrouwbaar zijn.",
         "dialogNotice": "Je installeert een model dat in BirdNET-Go experimenteel is. De prestaties zijn nog niet bewezen, dus controleer de detecties voordat je erop vertrouwt."
       },
+      "superseded": {
+        "cardNotice": "Vervangen door {name}. Gebruik in plaats daarvan het nieuwere model.",
+        "dialogNotice": "Dit model is vervangen door {name}. Overweeg in plaats daarvan {name} te installeren."
+      },
       "entryIncompatible": "Dit model is niet beschikbaar op dit systeem.",
       "regionGlobal": "Globaal",
       "hardwareLabel": "Hardware",
@@ -6046,6 +6121,10 @@
     "birdnetv3": {
       "title": "BirdNET v3.0 Detection",
       "description": "Set a dedicated confidence threshold for BirdNET v3.0 detections, independent of the main BirdNET threshold."
+    },
+    "birdnetplus": {
+      "title": "BirdNET+ V3.0-detectie",
+      "description": "Stel een eigen betrouwbaarheidsdrempel in voor BirdNET+ V3.0-detecties, onafhankelijk van de hoofddrempel van BirdNET."
     }
   },
   "restart": {
@@ -6061,7 +6140,6 @@
     "restartFailed": "Kan herstart niet starten",
     "reasons": {
       "webserver": "Webserver / netwerkinstellingen",
-      "oauth": "Instellingen authenticatieprovider",
       "database": "Database-instellingen",
       "logging": "Logboek-instellingen",
       "tlsCertificate": "TLS-certificaat"

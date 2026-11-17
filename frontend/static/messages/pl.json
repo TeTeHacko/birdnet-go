@@ -219,7 +219,8 @@
     "dashboard": "Panel",
     "liveAudio": "Dźwięk na żywo",
     "settingsMenu": "Menu ustawień",
-    "theme": "Motyw",
+    "switchToDarkTheme": "Przełącz na ciemny motyw",
+    "switchToLightTheme": "Przełącz na jasny motyw",
     "github": "GitHub",
     "detections": "Detekcje",
     "search": "Szukaj",
@@ -419,7 +420,7 @@
         "recalculatingThresholds": "Przeliczanie progów dynamicznych dla nowej wartości bazowej",
         "reconfiguringDynamicThresholds": "Ponowna konfiguracja progów dynamicznych...",
         "webserverRestartRequired": "Ustawienia serwera WWW zmienione. Wymagany restart.",
-        "oauthRestartRequired": "Ustawienia dostawcy uwierzytelniania zmienione. Wymagany restart.",
+        "reconfiguringOauthProviders": "Aktualizowanie dostawców uwierzytelniania...",
         "databaseRestartRequired": "Ustawienia bazy danych zostały zmienione. Wymagany restart.",
         "loggingRestartRequired": "Ustawienia logowania zostały zmienione. Wymagany restart.",
         "reconfiguringSoundLevel": "Aktualizacja monitorowania poziomu dźwięku...",
@@ -495,6 +496,10 @@
       "modelOptimize": {
         "title": "{count, plural, one {# model ma lepszą wersję dla tego systemu} few {# modele mają lepsze wersje dla tego systemu} many {# modeli ma lepsze wersje dla tego systemu} other {# modeli ma lepsze wersje dla tego systemu}}",
         "message": "Wersja lepiej dopasowana do sprzętu lub lokalizacji tego systemu jest dostępna dla: {models}. Otwórz Ustawienia > Analiza > Modele i wybierz Optymalizuj, aby przełączyć."
+      },
+      "modelSuperseded": {
+        "title": "{count, plural, one {Zainstalowany model ma nowsze wydanie} few {# zainstalowane modele mają nowsze wydania} many {# zainstalowanych modeli ma nowsze wydania} other {# zainstalowanych modeli ma nowsze wydania}}",
+        "message": "Zainstalowany model jest wersją zapoznawczą, a jego ostateczne wydanie jest już dostępne: {models}. Otwórz Ustawienia > Analiza > Modele, zainstaluj ostateczne wydanie i usuń wersję zapoznawczą."
       },
       "alert": {
         "firedTitle": "{rule_name}",
@@ -2497,6 +2502,15 @@
       "validationBlocked": "Niektóre pola wymagają uwagi, zanim będzie można zapisać.",
       "noChangesToSave": "Brak zmian do zapisania."
     },
+    "autoSave": {
+      "saved": "Zapisano",
+      "failed": "Nie zapisano. Przywrócono poprzednią wartość.",
+      "changedElsewhere": "To ustawienie zostało zmienione gdzie indziej. Widoczna jest bieżąca wartość; wprowadź zmianę ponownie.",
+      "tabNote": "Zmiany na tej karcie są zapisywane na bieżąco.",
+      "failuresSummary": "{count, plural, one {# zmiana nie została zapisana} few {# zmiany nie zostały zapisane} many {# zmian nie zostało zapisanych} other {# zmiany nie zostały zapisane}}",
+      "dismiss": "Zamknij",
+      "otherTabsUnsaved": "Inne karty mają niezapisane zmiany. Otwórz jedną, aby je zapisać lub zresetować:"
+    },
     "errors": {
       "loadFailed": "Nie udało się załadować ustawień",
       "saveFailed": "Nie udało się zapisać ustawień",
@@ -3717,7 +3731,7 @@
         "sampleRateExclusive": "Częstotliwości powyżej 48 kHz używają wyłącznego dostępu do urządzenia w systemie Linux, uniemożliwiając innym aplikacjom współdzielenie karty dźwiękowej",
         "modelLabel": "Modele detekcji",
         "modelHelp": "Wybierz modele AI dla tego źródła audio",
-        "deleteConfirm": "Usunąć to źródło karty dźwiękowej?",
+        "deleteConfirm": "Usunąć źródło karty dźwiękowej \"{name}\"?",
         "emptyState": {
           "title": "Brak Skonfigurowanych Źródeł Kart Dźwiękowych",
           "description": "Dodaj źródło karty dźwiękowej, aby rozpocząć przechwytywanie audio do wykrywania ptaków.",
@@ -3744,11 +3758,17 @@
           "minSampleRate": "Wymaga co najmniej {rate}kHz częstotliwości próbkowania",
           "recommendedSampleRate": "{rate}kHz zalecane dla najlepszych wyników",
           "atLeastOneModel": "Należy wybrać co najmniej jeden model"
-        }
+        },
+        "captureTitle": "Przechwytywanie",
+        "levelTitle": "Poziom wejściowy",
+        "captureApplyHint": "Przechwytywanie uruchomi się ponownie po zastosowaniu.",
+        "applyCapture": "Zastosuj i uruchom ponownie przechwytywanie",
+        "applying": "Stosowanie...",
+        "adding": "Dodawanie...",
+        "captureApplyFailed": "Przechwytywanie nie zostało zmienione. Zastosuj ponownie lub anuluj."
       },
       "audioCapture": {
         "title": "Przechwytywanie Audio",
-        "description": "Ustaw źródło przechwytywania audio, kartę dźwiękową lub strumień RTSP",
         "soundCardSource": "Źródło Karty Dźwiękowej",
         "audioSourceLabel": "Źródło Audio (wymaga restartu aplikacji do zastosowania)",
         "audioSourceHelp": "Wybierz urządzenie wejściowe audio do detekcji dźwięków ptaków. Zmiany wymagają restartu aplikacji, aby zostały zastosowane.",
@@ -3782,11 +3802,11 @@
         "fixedHint": "Przechwytywanie jest wstrzymywane codziennie między godziną rozpoczęcia a zakończenia. Obsługiwane są okna nocne (np. 22:00 do 06:00).",
         "solarHint": "Godziny są obliczane na podstawie wschodu/zachodu słońca w skonfigurowanej lokalizacji. Użyj ujemnych przesunięć dla czasu przed zdarzeniem, dodatnich po nim.",
         "badge": "Cisza",
-        "enabledBadge": "Godziny ciszy włączone dla tego strumienia"
+        "enabledBadge": "Godziny ciszy włączone dla tego strumienia",
+        "enableLabel": "Wstrzymaj przechwytywanie w godzinach ciszy"
       },
       "rtspStreams": {
         "title": "Konfiguracja Strumieni Audio",
-        "description": "Konfiguruj sieciowe strumienie audio do zdalnego przechwytywania audio. Obsługuje protokoły RTSP, HTTP, HLS, RTMP i UDP.",
         "noStreamsConfigured": "Brak skonfigurowanych strumieni"
       },
       "streams": {
@@ -3815,7 +3835,7 @@
         "refresh": "Odśwież",
         "addStream": "Dodaj Strumień",
         "testRequired": "Przeprowadź udany test strumienia przed zapisaniem",
-        "deleteConfirm": "Usunąć ten strumień?",
+        "deleteConfirm": "Usunąć strumień \"{name}\"?",
         "restartCount": "Zrestartowano {count} raz(y)",
         "healthLoadError": "Nie udało się załadować statusu strumienia",
         "status": {
@@ -3839,6 +3859,7 @@
         "errors": {
           "nameRequired": "Nazwa strumienia jest wymagana",
           "duplicateName": "Strumień o tej nazwie już istnieje",
+          "nameTooLong": "Nazwa strumienia jest za długa (najwyżej {max} bajtów)",
           "urlRequired": "URL strumienia jest wymagany",
           "invalidUrl": "Nieprawidłowy format URL strumienia",
           "duplicate": "Ten URL strumienia już istnieje"
@@ -3855,12 +3876,12 @@
           "eventAt": "Zdarzenie o {time}"
         },
         "diagnostics": {
-          "toggleDiagnostics": "Przełącz diagnostykę",
           "processState": "Stan procesu",
           "lastData": "Ostatnie dane",
           "restartCount": "Restarty",
           "connection": "Połączenie",
-          "stateErrorHistory": "Historia stanów i błędów"
+          "stateErrorHistory": "Historia stanów i błędów",
+          "title": "Diagnostyka"
         },
         "connectionStatus": {
           "stable": "Stabilne",
@@ -3907,8 +3928,19 @@
         },
         "stereoWarning": {
           "message": "Wykryto strumień stereo. Miksowanie wielu kanałów może zmniejszyć dokładność detekcji z powodu różnic fazowych między kanałami. Wybierz konkretny kanał (lewy/prawy) lub użyj detektora kanałów, aby uzyskać najlepsze wyniki.",
-          "short": "Downmix stereo aktywny. Dokładność detekcji może być zmniejszona. Edytuj, aby wybrać konkretny kanał.",
-          "tooltip": "Downmix stereo aktywny. Dokładność detekcji może być zmniejszona. Edytuj, aby wybrać konkretny kanał."
+          "short": "Downmix stereo aktywny. Dokładność detekcji może być zmniejszona. Wybierz konkretny kanał w sekcji Połączenie."
+        },
+        "autoSaveHelp": "Zmiany są zapisywane od razu. Zmiany połączenia ponownie łączą strumień, więc czekają, aż klikniesz Zastosuj.",
+        "connectionTitle": "Połączenie",
+        "connectionApplyHint": "Strumień połączy się ponownie po zastosowaniu.",
+        "connectionApplyFailed": "Połączenie nie zostało zmienione. Zastosuj ponownie lub anuluj.",
+        "applyConnection": "Zastosuj i połącz ponownie",
+        "testBeforeApply": "Przetestuj nowy URL przed zastosowaniem.",
+        "statsLine": "Łącznie: {total} · Szybkość: {rate} · Ostatnio: {last}",
+        "ago": {
+          "seconds": "{count} s temu",
+          "minutes": "{count} min temu",
+          "hours": "{count} godz. temu"
         }
       },
       "audioFilters": {
@@ -4127,9 +4159,25 @@
         "noneAvailable": "Na tym serwerze nie włączono żadnych modeli detekcji.",
         "loadFailedWarning": "Nie udało się załadować modelu detekcji, więc to źródło nie będzie analizowane do czasu jego przywrócenia.",
         "loadFailedLink": "Wyświetl status modeli AI",
+        "state": {
+          "pending": "Ładowanie",
+          "failed": "Nie udało się załadować",
+          "missing": "Nie zainstalowano"
+        },
+        "notLoadedHelp": "Ten model nie jest załadowany, więc nie można go wybrać.",
         "defaultBadge": "{models} (domyślne)",
         "defaultPendingBadge": "Domyślne modele",
-        "noneBadge": "Nie załadowano modelu"
+        "noneBadge": "Nie załadowano modelu",
+        "missingHelp": "Ten model nie jest już zainstalowany. To źródło go pomija.",
+        "removeMissing": "Usuń",
+        "removeMissingAria": "Usuń {model} ze źródła {source}",
+        "lastSelectedHelp": "Co najmniej jeden klasyfikator pozostaje wybrany.",
+        "followsDefaults": "To źródło korzysta z modeli domyślnych.",
+        "listFailed": "Nie udało się wczytać listy modeli.",
+        "warningBadge": "Sprawdź klasyfikatory"
+      },
+      "sources": {
+        "autoSaveHelp": "Zmiany są zapisywane od razu. Zmiany urządzenia i częstotliwości próbkowania ponownie uruchamiają przechwytywanie, więc czekają, aż klikniesz Zastosuj."
       }
     },
     "security": {
@@ -4200,7 +4248,7 @@
         "clientSecretLabel": "Sekret klienta",
         "clientSecretHelpText": "Sekret klienta OAuth 2.0 z konsoli deweloperskiej dostawcy",
         "userIdLabel": "Dozwoleni użytkownicy",
-        "userIdHelpText": "Rozdzielone przecinkami adresy e-mail lub identyfikatory użytkowników, którzy mogą logować się za pomocą tego dostawcy. Jeśli pole jest puste, nikt nie może się zalogować.",
+        "userIdHelpText": "Rozdzielone przecinkami adresy e-mail lub identyfikatory użytkowników, którzy mogą logować się za pomocą tego dostawcy. Zalecany jest identyfikator użytkownika, ponieważ adres e-mail może się zmienić. Jeśli pole jest puste, nikt nie może się zalogować.",
         "allowedUsersEmptyWarning": "Ten dostawca nie ma dozwolonych użytkowników, więc każda próba logowania zostanie odrzucona. Dodaj co najmniej jeden adres e-mail lub identyfikator użytkownika, aby zezwolić na dostęp.",
         "allowedUsersMissingBadge": "Nie ustawiono dozwolonych użytkowników - logowanie się nie powiedzie",
         "google": {
@@ -4269,13 +4317,16 @@
           "clientSecretHelpText": "Sekret klienta od twojego dostawcy tożsamości OIDC",
           "userIdLabel": "Dozwolony użytkownik (email lub claim sub)",
           "issuerUrlLabel": "URL wystawcy",
-          "issuerUrlHelpText": "URL wystawcy twojego dostawcy tożsamości OpenID Connect (np. https://auth.example.com)",
+          "issuerUrlHelpText": "Bazowy adres URL twojego dostawcy OpenID Connect. BirdNET-Go sam dodaje /.well-known/openid-configuration, więc pomiń tę część. Przykłady: https://auth.example.com/application/o/birdnet-go/ (Authentik), https://auth.example.com/realms/myrealm (Keycloak).",
           "issuerUrlPlaceholder": "https://auth.example.com",
           "issuerUrlRequired": "URL wystawcy jest wymagany dla dostawców OIDC",
           "issuerUrlInvalid": "URL wystawcy musi być prawidłowym URL HTTP lub HTTPS",
           "scopesLabel": "Zakresy",
           "scopesHelpText": "Lista zakresów OIDC oddzielonych przecinkami (domyślnie: openid, profile, email)",
-          "scopesPlaceholder": "openid, profile, email"
+          "scopesPlaceholder": "openid, profile, email",
+          "postLogoutRedirectLabel": "Wróć do BirdNET-Go po wylogowaniu u dostawcy tożsamości",
+          "postLogoutRedirectHelpText": "Po wylogowaniu przeglądarka wróci pod adres {url}. Najpierw zarejestruj ten adres jako post-logout redirect URI u swojego dostawcy tożsamości, w przeciwnym razie dostawca może wyświetlić błąd.",
+          "postLogoutRedirectNoBaseUrl": "Najpierw ustaw bazowy adres URL lub host. Adres powrotu jest z nich tworzony."
         }
       },
       "bypassAuthentication": {
@@ -4498,7 +4549,24 @@
           "mappedZero": {
             "title": "Filtr zasięgu nie dopasował żadnego gatunku",
             "description": "Filtr zasięgu geomodelu nie dopasował żadnego z gatunków aktywnego modelu, więc każde wykrycie zostałoby odfiltrowane. Sprawdź, czy plik etykiet filtra zasięgu odpowiada aktywnemu modelowi."
-          }
+          },
+          "geomodelNotInstalled": {
+            "title": "BirdNET Geomodel nie jest zainstalowany",
+            "description": "Te modele potrzebują BirdNET Geomodel, aby filtrować wykrycia według lokalizacji: {models}. Zainstaluj BirdNET Geomodel v3.0 na karcie Modele w ustawieniach Analizy."
+          },
+          "geomodelNotSelected": {
+            "title": "BirdNET Geomodel nie jest używany",
+            "description": "BirdNET Geomodel jest zainstalowany, ale filtr zasięgu jest skonfigurowany na inny model, więc te modele nie są filtrowane według lokalizacji: {models}. Aby go użyć, usuń birdnet.rangefilter.model i birdnet.rangefilter.modelpath z pliku konfiguracji lub środowiska."
+          },
+          "geomodelLoadFailed": {
+            "title": "Nie udało się wczytać BirdNET Geomodel",
+            "description": "Nie udało się wczytać BirdNET Geomodel, więc te modele nie są filtrowane według lokalizacji: {models}. Sprawdź dziennik aplikacji oraz zainstaluj lub zainstaluj ponownie BirdNET Geomodel v3.0 na karcie Modele w ustawieniach Analizy."
+          },
+          "reloadFailed": {
+            "title": "Ponowne wczytanie filtru zasięgu nie powiodło się",
+            "description": "Ostatnie ponowne wczytanie filtru zasięgu nie powiodło się, więc nadal używany jest wcześniej wczytany filtr zasięgu. Sprawdź dziennik aplikacji i uruchom ponownie BirdNET-Go, aby spróbować jeszcze raz."
+          },
+          "openModels": "Otwórz Modele"
         },
         "columns": {
           "commonName": "Nazwa",
@@ -5101,7 +5169,8 @@
       "noData": "Brak dostępnych danych",
       "loading": "Ładowanie danych...",
       "error": "Nie udało się załadować danych",
-      "sortBy": "Sortuj według {column}",
+      "sortedAscending": "Posortowano według {column}, rosnąco",
+      "sortedDescending": "Posortowano według {column}, malejąco",
       "rowsPerPage": "Wierszy na stronę",
       "pageInfo": "Pokazywanie {from} do {to} z {total} wyników"
     },
@@ -5808,6 +5877,9 @@
       },
       "birdnetv3Threshold": {
         "label": "BirdNET v3.0 Confidence Threshold"
+      },
+      "birdnetplusThreshold": {
+        "label": "Próg ufności BirdNET+ V3.0"
       }
     },
     "rangeFilter": {
@@ -5898,7 +5970,6 @@
         "filterPlaceholder": "Filtruj regiony",
         "filterAria": "Filtruj kompilacje dopasowane do regionu",
         "filterNoMatch": "Brak regionów pasujących do \"{query}\"",
-        "latency": "~{ms} ms",
         "precisionInfo": "About precision and variants",
         "precisionHelp": "Precision (FP32, FP16, INT8) trades accuracy for size and speed: FP32 is most accurate, INT8 is smallest and fastest. Recommended is the best match for your detected hardware; Default is the model's standard build."
       },
@@ -5999,6 +6070,10 @@
         "cardNotice": "Eksperymentalny w BirdNET-Go. Model jest opublikowany, ale jego skuteczność w BirdNET-Go nie została jeszcze potwierdzona, więc wyniki mogą być mniej wiarygodne.",
         "dialogNotice": "Instalujesz model, który w BirdNET-Go jest eksperymentalny. Jego skuteczność nie została jeszcze potwierdzona, więc sprawdź jego detekcje, zanim im zaufasz."
       },
+      "superseded": {
+        "cardNotice": "Zastąpiony przez {name}. Używaj zamiast niego nowszego modelu.",
+        "dialogNotice": "Ten model został zastąpiony przez {name}. Rozważ zainstalowanie {name}."
+      },
       "entryIncompatible": "Ten model nie jest dostępny w tym systemie.",
       "regionGlobal": "Globalny",
       "hardwareLabel": "Sprzęt",
@@ -6046,6 +6121,10 @@
     "birdnetv3": {
       "title": "BirdNET v3.0 Detection",
       "description": "Set a dedicated confidence threshold for BirdNET v3.0 detections, independent of the main BirdNET threshold."
+    },
+    "birdnetplus": {
+      "title": "Wykrywanie BirdNET+ V3.0",
+      "description": "Ustaw osobny próg ufności dla wykryć BirdNET+ V3.0, niezależny od głównego progu BirdNET."
     }
   },
   "restart": {
@@ -6061,7 +6140,6 @@
     "restartFailed": "Nie udało się zainicjować ponownego uruchomienia",
     "reasons": {
       "webserver": "Serwer WWW / Sieć",
-      "oauth": "Ustawienia dostawcy uwierzytelniania",
       "database": "Ustawienia bazy danych",
       "logging": "Ustawienia logowania",
       "tlsCertificate": "Certyfikat TLS"

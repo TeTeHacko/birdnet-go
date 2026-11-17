@@ -50,6 +50,15 @@
   let activeTab = $state('appearance');
   let store = $derived($settingsStore);
 
+  /** Why the settings cannot be changed right now, or undefined while they can. */
+  let settingsBusyReason = $derived(
+    store.isLoading
+      ? t('settings.loading')
+      : store.isSaving
+        ? t('settings.actions.saving')
+        : undefined
+  );
+
   // --- Locale options (same pattern as MainSettingsPage) ---
   interface LocaleOption extends SelectOption {
     localeCode: FlagLocale;
@@ -337,7 +346,7 @@
         logoStyle: store.formData.realtime?.dashboard?.logoStyle,
       }}
     >
-      <ColorSchemePicker disabled={store.isLoading || store.isSaving} />
+      <ColorSchemePicker disabledReason={settingsBusyReason} />
     </SettingsSection>
   </div>
 {/snippet}
@@ -447,7 +456,7 @@
             id="playback-denoise-export-precedence"
             class="flex items-start gap-3 p-4 rounded-lg bg-[color-mix(in_srgb,var(--color-info)_15%,transparent)] text-[var(--color-base-content)]"
           >
-            <Info class="size-6 shrink-0 text-[var(--color-info)]" aria-hidden="true" />
+            <Info class="size-6 shrink-0 text-[var(--text-info)]" aria-hidden="true" />
             <span>{t('settings.userInterface.audioPlayback.denoiseExportPrecedence')}</span>
           </div>
         {/if}
@@ -681,7 +690,7 @@
                 {@const isSelected = currentSpectrogramStyle === style.value}
                 <button
                   type="button"
-                  class="group relative flex flex-col items-center p-2 rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]/50 {isSelected
+                  class="group relative flex flex-col items-center p-2 rounded-lg border transition-all focus-ring {isSelected
                     ? 'border-[var(--color-primary)]/60 bg-[var(--color-primary)]/10 shadow-[0_0_0_1px_rgba(37,99,235,0.3)]'
                     : 'border-[var(--border-200)] bg-[var(--color-base-100)] hover:border-[var(--color-base-content)]/30'}"
                   disabled={store.isLoading || store.isSaving}
@@ -694,7 +703,7 @@
                   />
                   <span
                     class="mt-2 text-xs leading-tight text-center {isSelected
-                      ? 'text-[var(--color-primary)] font-medium'
+                      ? 'text-[var(--text-primary)] font-medium'
                       : 'text-[var(--color-base-content)]/70'}"
                   >
                     {style.label}

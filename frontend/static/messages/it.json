@@ -219,7 +219,8 @@
     "dashboard": "Dashboard",
     "liveAudio": "Audio in diretta",
     "settingsMenu": "Menu impostazioni",
-    "theme": "Tema",
+    "switchToDarkTheme": "Passa al tema scuro",
+    "switchToLightTheme": "Passa al tema chiaro",
     "github": "GitHub",
     "detections": "Rilevamenti",
     "search": "Cerca",
@@ -419,7 +420,7 @@
         "recalculatingThresholds": "Ricalcolo delle soglie dinamiche per il nuovo valore base",
         "reconfiguringDynamicThresholds": "Riconfigurazione delle soglie dinamiche...",
         "webserverRestartRequired": "Impostazioni del server web modificate. Riavvio necessario.",
-        "oauthRestartRequired": "Impostazioni del provider di autenticazione modificate. Riavvio necessario.",
+        "reconfiguringOauthProviders": "Aggiornamento dei provider di autenticazione...",
         "databaseRestartRequired": "Impostazioni del database modificate. Riavvio richiesto.",
         "loggingRestartRequired": "Impostazioni di registrazione modificate. Riavvio richiesto.",
         "reconfiguringSoundLevel": "Aggiornamento del monitoraggio del livello sonoro...",
@@ -495,6 +496,10 @@
       "modelOptimize": {
         "title": "{count, plural, one {# modello ha una build migliore per questo sistema} other {# modelli hanno build migliori per questo sistema}}",
         "message": "È disponibile una build più adatta all'hardware o alla posizione di questo sistema per: {models}. Apri Impostazioni > Analisi > Modelli e scegli Ottimizza per passare."
+      },
+      "modelSuperseded": {
+        "title": "{count, plural, one {Un modello installato ha una versione più recente} other {# modelli installati hanno versioni più recenti}}",
+        "message": "Un modello installato è una versione di anteprima e la sua versione finale è ora disponibile: {models}. Apri Impostazioni > Analisi > Modelli, installa la versione finale e rimuovi l'anteprima."
       },
       "alert": {
         "firedTitle": "{rule_name}",
@@ -2497,6 +2502,15 @@
       "validationBlocked": "Alcuni campi richiedono attenzione prima di poter salvare.",
       "noChangesToSave": "Nessuna modifica da salvare."
     },
+    "autoSave": {
+      "saved": "Salvato",
+      "failed": "Non salvato. È stato ripristinato il valore precedente.",
+      "changedElsewhere": "Questa impostazione è stata modificata altrove. Viene mostrato il valore attuale; ripeti la modifica.",
+      "tabNote": "Le modifiche in questa scheda vengono salvate man mano che le fai.",
+      "failuresSummary": "{count, plural, one {# modifica non è stata salvata} other {# modifiche non sono state salvate}}",
+      "dismiss": "Chiudi",
+      "otherTabsUnsaved": "Altre schede hanno modifiche non salvate. Aprine una per salvarle o ripristinarle:"
+    },
     "errors": {
       "loadFailed": "Caricamento delle impostazioni non riuscito",
       "saveFailed": "Salvataggio delle impostazioni non riuscito",
@@ -3717,7 +3731,7 @@
         "sampleRateExclusive": "Le frequenze superiori a 48 kHz utilizzano l'accesso esclusivo al dispositivo su Linux, impedendo ad altre applicazioni di condividere la scheda audio",
         "modelLabel": "Modelli di rilevamento",
         "modelHelp": "Seleziona quali modelli AI eseguire su questa sorgente audio",
-        "deleteConfirm": "Rimuovere questa sorgente scheda audio?",
+        "deleteConfirm": "Rimuovere la sorgente scheda audio \"{name}\"?",
         "emptyState": {
           "title": "Nessuna sorgente scheda audio configurata",
           "description": "Aggiungi una sorgente scheda audio per iniziare a catturare l'audio per il rilevamento degli uccelli.",
@@ -3744,11 +3758,17 @@
           "minSampleRate": "Richiede almeno {rate}kHz di frequenza di campionamento",
           "recommendedSampleRate": "{rate}kHz consigliato per i migliori risultati",
           "atLeastOneModel": "È necessario selezionare almeno un modello"
-        }
+        },
+        "captureTitle": "Acquisizione",
+        "levelTitle": "Livello di ingresso",
+        "captureApplyHint": "L'acquisizione si riavvia quando applichi.",
+        "applyCapture": "Applica e riavvia l'acquisizione",
+        "applying": "Applicazione...",
+        "adding": "Aggiunta...",
+        "captureApplyFailed": "L'acquisizione non è stata modificata. Applica di nuovo o annulla."
       },
       "audioCapture": {
         "title": "Configurazione Scheda Audio",
-        "description": "Seleziona il dispositivo input audio per rilevamento suoni uccelli. Le modifiche richiedono riavvio applicazione.",
         "soundCardSource": "Sorgente Scheda Audio",
         "audioSourceLabel": "Sorgente Audio (richiede riavvio applicazione per avere effetto)",
         "audioSourceHelp": "Seleziona il dispositivo input audio per rilevamento suoni uccelli. Le modifiche richiedono riavvio applicazione per avere effetto.",
@@ -3782,11 +3802,11 @@
         "fixedHint": "La cattura viene sospesa quotidianamente tra gli orari di inizio e fine. Sono supportate le finestre notturne (ad es. 22:00 - 06:00).",
         "solarHint": "Gli orari vengono calcolati in base all'alba/tramonto nella posizione configurata. Usa offset negativi prima dell'evento, positivi dopo.",
         "badge": "Silenzio",
-        "enabledBadge": "Ore silenziose abilitate per questo flusso"
+        "enabledBadge": "Ore silenziose abilitate per questo flusso",
+        "enableLabel": "Sospendi l'acquisizione nelle ore di silenzio"
       },
       "rtspStreams": {
         "title": "Configurazione Flusso Audio",
-        "description": "Configura flussi audio di rete per cattura audio remota. Supporta protocolli RTSP, HTTP, HLS, RTMP e UDP.",
         "noStreamsConfigured": "Nessun flusso configurato"
       },
       "streams": {
@@ -3815,7 +3835,7 @@
         "refresh": "Aggiorna",
         "addStream": "Aggiungi Flusso",
         "testRequired": "Esegui un test dello stream riuscito prima di salvare",
-        "deleteConfirm": "Rimuovere questo flusso?",
+        "deleteConfirm": "Rimuovere il flusso \"{name}\"?",
         "restartCount": "Riavviato {count} volta/e",
         "healthLoadError": "Impossibile caricare stato salute flusso",
         "status": {
@@ -3839,6 +3859,7 @@
         "errors": {
           "nameRequired": "Nome flusso richiesto",
           "duplicateName": "Un flusso con questo nome esiste già",
+          "nameTooLong": "Il nome dello stream è troppo lungo (al massimo {max} byte)",
           "urlRequired": "URL flusso richiesto",
           "invalidUrl": "Formato URL flusso non valido",
           "duplicate": "Questo URL flusso esiste già"
@@ -3855,12 +3876,12 @@
           "eventAt": "Evento alle {time}"
         },
         "diagnostics": {
-          "toggleDiagnostics": "Attiva/disattiva diagnostica",
           "processState": "Stato Processo",
           "lastData": "Ultimi Dati",
           "restartCount": "Conteggio Riavvio",
           "connection": "Connessione",
-          "stateErrorHistory": "Cronologia Stato & Errori"
+          "stateErrorHistory": "Cronologia Stato & Errori",
+          "title": "Diagnostica"
         },
         "connectionStatus": {
           "stable": "Stabile",
@@ -3907,8 +3928,19 @@
         },
         "stereoWarning": {
           "message": "Stream stereo rilevato. Il downmix di più canali può ridurre la precisione del rilevamento a causa delle differenze di fase tra i canali. Seleziona un canale specifico (sinistro/destro) o usa il rilevatore di canali per i migliori risultati.",
-          "short": "Downmix stereo attivo. La precisione del rilevamento potrebbe essere ridotta. Modifica per selezionare un canale specifico.",
-          "tooltip": "Downmix stereo attivo. La precisione del rilevamento potrebbe essere ridotta. Modifica per selezionare un canale specifico."
+          "short": "Downmix stereo attivo. La precisione del rilevamento potrebbe essere ridotta. Seleziona un canale specifico in Connessione."
+        },
+        "autoSaveHelp": "Le modifiche vengono salvate subito. Le modifiche alla connessione riconnettono lo stream, quindi attendono che si faccia clic su Applica.",
+        "connectionTitle": "Connessione",
+        "connectionApplyHint": "Lo stream si riconnette quando applichi.",
+        "connectionApplyFailed": "La connessione non è stata modificata. Applica di nuovo o annulla.",
+        "applyConnection": "Applica e riconnetti",
+        "testBeforeApply": "Testa il nuovo URL prima di applicarlo.",
+        "statsLine": "Totale: {total} · Velocità: {rate} · Ultimo: {last}",
+        "ago": {
+          "seconds": "{count} s fa",
+          "minutes": "{count} min fa",
+          "hours": "{count} h fa"
         }
       },
       "audioFilters": {
@@ -4127,9 +4159,25 @@
         "noneAvailable": "Nessun modello di rilevamento è abilitato su questo server.",
         "loadFailedWarning": "Impossibile caricare un modello di rilevamento, quindi questa fonte non verrà analizzata finché il modello non sarà ripristinato.",
         "loadFailedLink": "Visualizza stato Modelli IA",
+        "state": {
+          "pending": "Caricamento",
+          "failed": "Caricamento non riuscito",
+          "missing": "Non installato"
+        },
+        "notLoadedHelp": "Questo modello non è caricato, quindi non può essere selezionato.",
         "defaultBadge": "{models} (predefinito)",
         "defaultPendingBadge": "Modelli predefiniti",
-        "noneBadge": "Nessun modello caricato"
+        "noneBadge": "Nessun modello caricato",
+        "missingHelp": "Questo modello non è più installato. Questa sorgente lo ignora.",
+        "removeMissing": "Rimuovi",
+        "removeMissingAria": "Rimuovi {model} da {source}",
+        "lastSelectedHelp": "Almeno un classificatore resta selezionato.",
+        "followsDefaults": "Questa sorgente usa i modelli predefiniti.",
+        "listFailed": "Impossibile caricare l'elenco dei modelli.",
+        "warningBadge": "Controlla i classificatori"
+      },
+      "sources": {
+        "autoSaveHelp": "Le modifiche vengono salvate subito. Le modifiche a dispositivo e frequenza di campionamento riavviano l'acquisizione, quindi attendono che si faccia clic su Applica."
       }
     },
     "security": {
@@ -4200,7 +4248,7 @@
         "clientSecretLabel": "Segreto Client",
         "clientSecretHelpText": "Il Segreto Client OAuth 2.0 dalla console sviluppatori del tuo fornitore",
         "userIdLabel": "Utenti consentiti",
-        "userIdHelpText": "Email o ID utente separati da virgole autorizzati ad accedere con questo provider. Se vuoto, nessuno può accedere.",
+        "userIdHelpText": "Email o ID utente separati da virgole autorizzati ad accedere con questo provider. Si consiglia l'ID utente, perché un indirizzo email può cambiare. Se vuoto, nessuno può accedere.",
         "allowedUsersEmptyWarning": "Questo provider non ha utenti consentiti, quindi ogni tentativo di accesso verrà rifiutato. Aggiungi almeno un'email o un ID utente per consentire l'accesso.",
         "allowedUsersMissingBadge": "Nessun utente consentito impostato - l'accesso fallirà",
         "google": {
@@ -4269,13 +4317,16 @@
           "clientSecretHelpText": "Il segreto client dal tuo provider di identità OIDC",
           "userIdLabel": "Utente autorizzato (email o claim sub)",
           "issuerUrlLabel": "URL emittente",
-          "issuerUrlHelpText": "L'URL dell'emittente del tuo provider di identità OpenID Connect (es. https://auth.example.com)",
+          "issuerUrlHelpText": "URL di base del tuo provider OpenID Connect. BirdNET-Go aggiunge da solo /.well-known/openid-configuration, quindi ometti quella parte. Esempi: https://auth.example.com/application/o/birdnet-go/ (Authentik), https://auth.example.com/realms/myrealm (Keycloak).",
           "issuerUrlPlaceholder": "https://auth.example.com",
           "issuerUrlRequired": "L'URL dell'emittente è obbligatorio per i provider OIDC",
           "issuerUrlInvalid": "L'URL dell'emittente deve essere un URL HTTP o HTTPS valido",
           "scopesLabel": "Ambiti",
           "scopesHelpText": "Elenco di scope OIDC separati da virgola (predefinito: openid, profile, email)",
-          "scopesPlaceholder": "openid, profile, email"
+          "scopesPlaceholder": "openid, profile, email",
+          "postLogoutRedirectLabel": "Torna a BirdNET-Go dopo la disconnessione dal provider di identità",
+          "postLogoutRedirectHelpText": "Dopo la disconnessione il browser viene reindirizzato a {url}. Registra prima questo URL come URI di reindirizzamento post-logout presso il tuo provider di identità, altrimenti il provider potrebbe mostrare un errore.",
+          "postLogoutRedirectNoBaseUrl": "Imposta prima l'URL di base o l'host. L'URL di ritorno viene costruito a partire da questi."
         }
       },
       "bypassAuthentication": {
@@ -4498,7 +4549,24 @@
           "mappedZero": {
             "title": "Il filtro intervallo non ha trovato corrispondenze con nessuna specie",
             "description": "Il filtro intervallo del geomodello non corrisponde a nessuna delle specie del modello attivo, quindi ogni rilevamento verrebbe filtrato. Verifica che il file delle etichette del filtro intervallo corrisponda al modello attivo."
-          }
+          },
+          "geomodelNotInstalled": {
+            "title": "BirdNET Geomodel non è installato",
+            "description": "Questi modelli hanno bisogno di BirdNET Geomodel per filtrare i rilevamenti in base alla posizione: {models}. Installa BirdNET Geomodel v3.0 dalla scheda Modelli nelle impostazioni di Analisi."
+          },
+          "geomodelNotSelected": {
+            "title": "BirdNET Geomodel non è in uso",
+            "description": "BirdNET Geomodel è installato, ma il filtro intervallo è configurato per usare un altro modello, quindi questi modelli non vengono filtrati in base alla posizione: {models}. Per usarlo, rimuovi birdnet.rangefilter.model e birdnet.rangefilter.modelpath dal file di configurazione o dall'ambiente."
+          },
+          "geomodelLoadFailed": {
+            "title": "Impossibile caricare BirdNET Geomodel",
+            "description": "Impossibile caricare BirdNET Geomodel, quindi questi modelli non vengono filtrati in base alla posizione: {models}. Controlla il log dell'applicazione e installa o reinstalla BirdNET Geomodel v3.0 dalla scheda Modelli nelle impostazioni di Analisi."
+          },
+          "reloadFailed": {
+            "title": "Ricaricamento del filtro intervallo non riuscito",
+            "description": "L'ultimo ricaricamento del filtro intervallo non è riuscito, quindi è ancora in uso il filtro intervallo caricato in precedenza. Controlla il log dell'applicazione e riavvia BirdNET-Go per riprovare."
+          },
+          "openModels": "Apri Modelli"
         },
         "columns": {
           "commonName": "Nome comune",
@@ -5101,7 +5169,8 @@
       "noData": "Nessun dato disponibile",
       "loading": "Caricamento dati...",
       "error": "Caricamento dati fallito",
-      "sortBy": "Ordina per {column}",
+      "sortedAscending": "Ordinato per {column}, crescente",
+      "sortedDescending": "Ordinato per {column}, decrescente",
       "rowsPerPage": "Righe per pagina",
       "pageInfo": "Mostrando da {from} a {to} di {total} risultati"
     },
@@ -5808,6 +5877,9 @@
       },
       "birdnetv3Threshold": {
         "label": "BirdNET v3.0 Confidence Threshold"
+      },
+      "birdnetplusThreshold": {
+        "label": "Soglia di confidenza BirdNET+ V3.0"
       }
     },
     "rangeFilter": {
@@ -5898,7 +5970,6 @@
         "filterPlaceholder": "Filtra regioni",
         "filterAria": "Filtra le versioni ottimizzate per regione",
         "filterNoMatch": "Nessuna regione corrisponde a \"{query}\"",
-        "latency": "~{ms} ms",
         "precisionInfo": "About precision and variants",
         "precisionHelp": "Precision (FP32, FP16, INT8) trades accuracy for size and speed: FP32 is most accurate, INT8 is smallest and fastest. Recommended is the best match for your detected hardware; Default is the model's standard build."
       },
@@ -5999,6 +6070,10 @@
         "cardNotice": "Sperimentale in BirdNET-Go. Il modello è pubblicato, ma le sue prestazioni in BirdNET-Go non sono ancora dimostrate, quindi i risultati possono essere meno affidabili.",
         "dialogNotice": "Stai installando un modello sperimentale in BirdNET-Go. Le sue prestazioni non sono ancora dimostrate: controlla i suoi rilevamenti prima di fidarti."
       },
+      "superseded": {
+        "cardNotice": "Sostituito da {name}. Usa invece il modello più recente.",
+        "dialogNotice": "Questo modello è stato sostituito da {name}. Valuta di installare {name} al suo posto."
+      },
       "entryIncompatible": "Questo modello non è disponibile su questo sistema.",
       "regionGlobal": "Globale",
       "hardwareLabel": "Hardware",
@@ -6046,6 +6121,10 @@
     "birdnetv3": {
       "title": "BirdNET v3.0 Detection",
       "description": "Set a dedicated confidence threshold for BirdNET v3.0 detections, independent of the main BirdNET threshold."
+    },
+    "birdnetplus": {
+      "title": "Rilevamento BirdNET+ V3.0",
+      "description": "Imposta una soglia di confidenza dedicata per i rilevamenti BirdNET+ V3.0, indipendente dalla soglia principale di BirdNET."
     }
   },
   "restart": {
@@ -6061,7 +6140,6 @@
     "restartFailed": "Impossibile avviare il riavvio",
     "reasons": {
       "webserver": "Server Web / impostazioni di rete",
-      "oauth": "Impostazioni del provider di autenticazione",
       "database": "Impostazioni del database",
       "logging": "Impostazioni di registrazione",
       "tlsCertificate": "Certificato TLS"

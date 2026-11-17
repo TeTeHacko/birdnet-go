@@ -29,6 +29,10 @@
   import NumberField from '$lib/desktop/components/forms/NumberField.svelte';
   import StreamManager from '$lib/desktop/components/forms/StreamManager.svelte';
   import SoundCardManager from '$lib/desktop/components/forms/SoundCardManager.svelte';
+  import {
+    AUDIO_SOURCES_FIELD_PREFIX,
+    STREAMS_FIELD_PREFIX,
+  } from '$lib/desktop/components/forms/sourceFields';
   import Checkbox from '$lib/desktop/components/forms/Checkbox.svelte';
   import SelectDropdown from '$lib/desktop/components/forms/SelectDropdown.svelte';
   import TextInput from '$lib/desktop/components/forms/TextInput.svelte';
@@ -46,6 +50,9 @@
     type StreamConfig,
   } from '$lib/stores/settings';
   import { hasSettingsChanged } from '$lib/utils/settingsChanges';
+  import { commitSetting, type CommitOptions } from '$lib/stores/settingsAutoSave.svelte';
+  import Skeleton from '$lib/desktop/components/ui/Skeleton.svelte';
+  import SkeletonStatus from '$lib/desktop/components/ui/SkeletonStatus.svelte';
   import {
     DEFAULT_DENOISE_PRESET,
     DENOISE_STRENGTH_OPTIONS,
@@ -236,22 +243,9 @@
     });
   }
 
-  // PERFORMANCE OPTIMIZATION: Reactive change detection per tab with $derived
-  // Sound Card tab changes
-  let soundCardTabHasChanges = $derived(
-    hasSettingsChanged(
-      store.originalData.realtime?.audio?.sources,
-      store.formData.realtime?.audio?.sources
-    )
-  );
-
-  // Streams tab changes
-  let streamsTabHasChanges = $derived(
-    hasSettingsChanged(
-      store.originalData.realtime?.rtsp?.streams,
-      store.formData.realtime?.rtsp?.streams
-    )
-  );
+  // PERFORMANCE OPTIMIZATION: Reactive change detection per tab with $derived.
+  // The sound card and streams tabs save as they change, so they have no unsaved
+  // state to track.
 
   // Audio Normalization section changes (moved here for dependency order)
   let normalizationHasChanges = $derived(
@@ -356,6 +350,8 @@
     error: null,
     data: [],
   });
+  // Set once the first device load has finished, so a refresh keeps the view it has.
+  let devicesLoadedOnce = $state(false);
 
   // PERFORMANCE OPTIMIZATION: Load audio devices with proper state management
   $effect(() => {
@@ -369,6 +365,9 @@
     try {
       const data = await api.get<AudioDevice[]>('/api/v2/system/audio/devices');
       audioDevices.data = data || [];
+      // Only a load that answered counts: after a failure, Retry shows the
+      // skeleton again instead of an empty state that is not known yet.
+      devicesLoadedOnce = true;
     } catch (error) {
       logger.error('Error fetching audio devices:', error);
       audioDevices.error = t('settings.audio.errors.devicesLoadFailed');
@@ -496,31 +495,16 @@
   });
 
   // Update handlers
-  function updateAudioSources(sources: AudioSourceConfig[]) {
-    for (const src of sources) {
-      logger.debug('updateAudioSources', {
-        component: 'AudioSettingsPage',
-        sourceName: src.name,
-        eqPresent: src.equalizer !== undefined,
-        eqEnabled: src.equalizer?.enabled,
-        eqFilterCount: src.equalizer?.filters?.length ?? 0,
-      });
-    }
-    settingsActions.updateSection('realtime', {
-      audio: { ...settings.audio, sources },
-    });
+  // The sound card tab saves each change at once: the whole sources array, under
+  // the field key of the control that made the change.
+  function updateAudioSources(sources: AudioSourceConfig[], options: CommitOptions) {
+    commitSetting('audio', { sources }, options);
   }
 
-  function updateRTSPStreams(streams: StreamConfig[]) {
-    const storeState = $settingsStore;
-    const currentRtsp = storeState.formData.realtime?.rtsp || { streams: [] };
-
-    settingsActions.updateSection('realtime', {
-      rtsp: {
-        ...currentRtsp,
-        streams,
-      },
-    });
+  // The streams tab saves each change at once: the whole streams array, under the
+  // field key of the control that made the change.
+  function updateRTSPStreams(streams: StreamConfig[], options: CommitOptions) {
+    commitSetting('rtsp', { streams }, options);
   }
 
   function updateExportEnabled(enabled: boolean) {
@@ -685,14 +669,16 @@
       id: 'soundcard',
       label: t('settings.audio.tabs.soundCard'),
       icon: Volume2,
-      hasChanges: soundCardTabHasChanges,
+      saveMode: 'immediate',
+      autoSaveScope: AUDIO_SOURCES_FIELD_PREFIX,
       content: soundCardTabContent,
     },
     {
       id: 'streams',
       label: t('settings.audio.tabs.streams'),
       icon: Radio,
-      hasChanges: streamsTabHasChanges,
+      saveMode: 'immediate',
+      autoSaveScope: STREAMS_FIELD_PREFIX,
       content: streamsTabContent,
     },
     {
@@ -734,18 +720,30 @@
           onclick: loadAudioDevices,
         }}
       />
-    {:else if audioDevices.loading && audioDevices.data.length === 0 && settings.audio.sources.length === 0}
-      <!-- Initial Loading State (only when no data yet) -->
-      <div role="status" class="flex items-center justify-center py-12">
-        <span
-          aria-hidden="true"
-          class="inline-block w-10 h-10 border-2 border-[var(--color-base-300)] border-t-[var(--color-primary)] rounded-full animate-spin"
-        ></span>
-        <span class="ml-3 text-[var(--color-base-content)] opacity-90"
-          >{t('settings.audio.loading')}</span
-        >
+    {:else if !devicesLoadedOnce && audioDevices.data.length === 0 && settings.audio.sources.length === 0}
+      <!-- First load: a skeleton of the section with its summary bar and two source cards -->
+      <div class="card bg-[var(--color-base-100)] shadow-2xs">
+        <div class="space-y-2 px-6 py-4">
+          <Skeleton className="h-6 w-56" />
+          <SkeletonStatus label={t('settings.audio.loading')} class="block text-sm" />
+        </div>
+        <div class="space-y-4 px-6 pb-7">
+          <Skeleton className="h-14 w-full rounded-lg" />
+          {#each { length: 2 } as _, row (row)}
+            <div
+              class="flex items-center gap-3 rounded-lg border border-[var(--border-200)] bg-[var(--color-base-200)] p-3"
+            >
+              <Skeleton className="size-10 rounded-lg" />
+              <div class="flex-1 space-y-2">
+                <Skeleton className="h-4 w-40" />
+                <Skeleton className="h-3 w-24" />
+              </div>
+              <Skeleton className="h-5 w-28" />
+            </div>
+          {/each}
+        </div>
       </div>
-    {:else if !audioDevices.loading && audioDevices.data.length === 0 && settings.audio.sources.length === 0}
+    {:else if devicesLoadedOnce && audioDevices.data.length === 0 && settings.audio.sources.length === 0}
       <!-- Empty State: No Sound Cards Found -->
       <EmptyState
         icon={Volume2}
@@ -767,15 +765,13 @@
       <!-- Sound Card Source Manager -->
       <SettingsSection
         title={t('settings.audio.audioCapture.title')}
-        description={t('settings.audio.audioCapture.description')}
-        originalData={store.originalData.realtime?.audio?.sources}
-        currentData={store.formData.realtime?.audio?.sources}
+        description={t('settings.audio.sources.autoSaveHelp')}
       >
         <SoundCardManager
           sources={settings.audio.sources}
           audioDevices={audioDevices.data}
           audioDevicesLoading={audioDevices.loading}
-          disabled={store.isLoading || store.isSaving}
+          disabled={store.isLoading}
           onUpdateSources={updateAudioSources}
           onRefreshDevices={loadAudioDevices}
         />
@@ -789,13 +785,11 @@
     <!-- RTSP Stream Configuration -->
     <SettingsSection
       title={t('settings.audio.rtspStreams.title')}
-      description={t('settings.audio.rtspStreams.description')}
-      originalData={store.originalData.realtime?.rtsp?.streams}
-      currentData={store.formData.realtime?.rtsp?.streams}
+      description={t('settings.audio.streams.autoSaveHelp')}
     >
       <StreamManager
         streams={settings.rtsp.streams}
-        disabled={store.isLoading || store.isSaving}
+        disabled={store.isLoading}
         onUpdateStreams={updateRTSPStreams}
       />
     </SettingsSection>
@@ -816,7 +810,7 @@
           id="denoise-requires-recording"
           class="flex items-start gap-3 p-4 rounded-lg bg-[color-mix(in_srgb,var(--color-info)_15%,transparent)] text-[var(--color-base-content)] mb-4"
         >
-          <Info class="size-6 shrink-0 text-[var(--color-info)]" aria-hidden="true" />
+          <Info class="size-6 shrink-0 text-[var(--text-info)]" aria-hidden="true" />
           <span>{t('settings.audio.exportDenoise.requiresRecording')}</span>
         </div>
       {/if}
@@ -904,7 +898,7 @@
       {#if !settings.audio.export.enabled}
         <!-- Dependency notice when recording is disabled -->
         <div
-          class="flex items-start gap-3 p-4 rounded-lg bg-[color-mix(in_srgb,var(--color-info)_15%,transparent)] text-[var(--color-info)] mb-4"
+          class="flex items-start gap-3 p-4 rounded-lg bg-[color-mix(in_srgb,var(--color-info)_15%,transparent)] text-[var(--text-info)] mb-4"
         >
           <Info class="size-6 shrink-0" />
           <span>{t('settings.audio.audioNormalization.requiresRecording')}</span>

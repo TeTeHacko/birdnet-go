@@ -219,7 +219,8 @@
     "dashboard": "Yleiskatsaus",
     "liveAudio": "Live-ääni",
     "settingsMenu": "Asetusvalikko",
-    "theme": "Teema",
+    "switchToDarkTheme": "Vaihda tummaan teemaan",
+    "switchToLightTheme": "Vaihda vaaleaan teemaan",
     "github": "GitHub",
     "detections": "Havainnot",
     "search": "Haku",
@@ -419,7 +420,7 @@
         "recalculatingThresholds": "Lasketaan dynaamisia kynnysarvoja uudelleen uudelle perusarvolle",
         "reconfiguringDynamicThresholds": "Määritetään dynaamisia kynnysarvoja uudelleen...",
         "webserverRestartRequired": "Verkkopalvelimen asetukset muuttuivat. Uudelleenkäynnistys vaaditaan.",
-        "oauthRestartRequired": "Tunnistautumispalveluntarjoajan asetukset muuttuivat. Uudelleenkäynnistys vaaditaan.",
+        "reconfiguringOauthProviders": "Päivitetään tunnistautumispalveluntarjoajia...",
         "databaseRestartRequired": "Tietokannan asetuksia muutettu. Uudelleenkäynnistys vaaditaan.",
         "loggingRestartRequired": "Lokin asetuksia muutettu. Uudelleenkäynnistys vaaditaan.",
         "reconfiguringSoundLevel": "Päivitetään äänitason seurantaa...",
@@ -495,6 +496,10 @@
       "modelOptimize": {
         "title": "{count, plural, one {# mallille on saatavilla parempi versio tälle järjestelmälle} other {# mallille on saatavilla parempia versioita tälle järjestelmälle}}",
         "message": "Tämän järjestelmän laitteistoon tai sijaintiin paremmin sopiva versio on saatavilla seuraaville malleille: {models}. Avaa Asetukset > Analyysi > Mallit ja vaihda valitsemalla Optimoi."
+      },
+      "modelSuperseded": {
+        "title": "{count, plural, one {Asennetulla mallilla on uudempi julkaisu} other {# asennetulla mallilla on uudempi julkaisu}}",
+        "message": "Asennettu malli on esiversio, ja sen lopullinen julkaisu on nyt saatavilla: {models}. Avaa Asetukset > Analyysi > Mallit, asenna lopullinen julkaisu ja poista esiversio."
       },
       "alert": {
         "firedTitle": "{rule_name}",
@@ -2497,6 +2502,15 @@
       "validationBlocked": "Joihinkin kenttiin täytyy kiinnittää huomiota ennen tallennusta.",
       "noChangesToSave": "Ei tallennettavia muutoksia."
     },
+    "autoSave": {
+      "saved": "Tallennettu",
+      "failed": "Ei tallennettu. Edellinen arvo palautettiin.",
+      "changedElsewhere": "Tätä asetusta muutettiin muualla. Nykyinen arvo näytetään; tee muutos uudelleen.",
+      "tabNote": "Tämän välilehden muutokset tallennetaan, kun teet ne.",
+      "failuresSummary": "{count, plural, one {# muutosta ei tallennettu} other {# muutosta ei tallennettu}}",
+      "dismiss": "Sulje",
+      "otherTabsUnsaved": "Muilla välilehdillä on tallentamattomia muutoksia. Avaa välilehti tallentaaksesi tai palauttaaksesi ne:"
+    },
     "errors": {
       "loadFailed": "Asetusten lataaminen epäonnistui",
       "saveFailed": "Asetusten tallentaminen epäonnistui",
@@ -3717,7 +3731,7 @@
         "sampleRateExclusive": "Yli 48 kHz näytteenottotaajuudet käyttävät yksinoikeudellista laitepääsyä Linuxissa, estäen muita sovelluksia jakamasta äänikorttia",
         "modelLabel": "Tunnistusmallit",
         "modelHelp": "Valitse tässä äänilähteessä käytettävät tekoälymallit",
-        "deleteConfirm": "Poistetaanko tämä äänikorttilähtö?",
+        "deleteConfirm": "Poistetaanko äänikorttilähtö \"{name}\"?",
         "emptyState": {
           "title": "Äänikorttilähteitä ei ole määritetty",
           "description": "Lisää äänikorttilähtö aloittaaksesi äänen tallennuksen lintujen tunnistamista varten.",
@@ -3744,11 +3758,17 @@
           "minSampleRate": "Vaatii vähintään {rate}kHz näytteenottotaajuuden",
           "recommendedSampleRate": "{rate}kHz suositellaan parhaisiin tuloksiin",
           "atLeastOneModel": "Vähintään yksi malli on valittava"
-        }
+        },
+        "captureTitle": "Tallennus",
+        "levelTitle": "Tulotaso",
+        "captureApplyHint": "Tallennus käynnistyy uudelleen, kun otat muutokset käyttöön.",
+        "applyCapture": "Ota käyttöön ja käynnistä tallennus uudelleen",
+        "applying": "Otetaan käyttöön...",
+        "adding": "Lisätään...",
+        "captureApplyFailed": "Tallennusta ei muutettu. Ota käyttöön uudelleen tai peruuta."
       },
       "audioCapture": {
         "title": "Äänen tallennus",
-        "description": "Aseta äänen tallennuslähde, äänikortti tai RTSP-striimi",
         "soundCardSource": "Äänikorttilähde",
         "audioSourceLabel": "Äänilähde (vaatii sovelluksen uudelleenkäynnistyksen)",
         "audioSourceHelp": "Valitse äänen syöttölaite lintuäänten tunnistukseen. Muutokset vaativat sovelluksen uudelleenkäynnistyksen.",
@@ -3782,11 +3802,11 @@
         "fixedHint": "Tallennus keskeytyy päivittäin alku- ja loppuaikojen välillä. Yön yli -ikkunat (esim. 22:00-06:00) ovat tuettuja.",
         "solarHint": "Ajat lasketaan auringonnousun/-laskun perusteella määritetyssä sijainnissasi. Käytä negatiivisia poikkeamia ennen tapahtumaa, positiivisia sen jälkeen.",
         "badge": "Hiljainen",
-        "enabledBadge": "Hiljaiset tunnit käytössä tälle striimille"
+        "enabledBadge": "Hiljaiset tunnit käytössä tälle striimille",
+        "enableLabel": "Keskeytä tallennus hiljaisina tunteina"
       },
       "rtspStreams": {
         "title": "Äänistriimien määritys",
-        "description": "Määritä verkkoäänistriimejä etäänen tallennukseen. Tukee RTSP-, HTTP-, HLS-, RTMP- ja UDP-protokollia.",
         "noStreamsConfigured": "Striimejä ei ole määritetty"
       },
       "streams": {
@@ -3815,7 +3835,7 @@
         "refresh": "Päivitä",
         "addStream": "Lisää striimi",
         "testRequired": "Suorita onnistunut striimitesti ennen tallentamista",
-        "deleteConfirm": "Poista tämä striimi?",
+        "deleteConfirm": "Poistetaanko striimi \"{name}\"?",
         "restartCount": "Uudelleenkäynnistetty {count} kertaa",
         "healthLoadError": "Striimin tilan lataus epäonnistui",
         "status": {
@@ -3839,6 +3859,7 @@
         "errors": {
           "nameRequired": "Striimin nimi on pakollinen",
           "duplicateName": "Tämän niminen striimi on jo olemassa",
+          "nameTooLong": "Streamin nimi on liian pitkä (enintään {max} tavua)",
           "urlRequired": "Striimin URL on pakollinen",
           "invalidUrl": "Virheellinen striimin URL-muoto",
           "duplicate": "Tämä striimin URL on jo olemassa"
@@ -3855,12 +3876,12 @@
           "eventAt": "Tapahtuma {time}"
         },
         "diagnostics": {
-          "toggleDiagnostics": "Näytä/piilota diagnostiikka",
           "processState": "Prosessin tila",
           "lastData": "Viimeisin data",
           "restartCount": "Uudelleenkäynnistykset",
           "connection": "Yhteys",
-          "stateErrorHistory": "Tila- ja virhehistoria"
+          "stateErrorHistory": "Tila- ja virhehistoria",
+          "title": "Diagnostiikka"
         },
         "connectionStatus": {
           "stable": "Vakaa",
@@ -3907,8 +3928,19 @@
         },
         "stereoWarning": {
           "message": "Stereovirta havaittu. Useiden kanavien sekoittaminen voi heikentää tunnistustarkkuutta kanavien välisten vaihe-erojen vuoksi. Valitse tietty kanava (vasen/oikea) tai käytä kanavatunnistinta parhaiden tulosten saavuttamiseksi.",
-          "short": "Stereon downmix käytössä. Tunnistustarkkuus voi olla heikentynyt. Muokkaa valitaksesi tietyn kanavan.",
-          "tooltip": "Stereon downmix käytössä. Tunnistustarkkuus voi olla heikentynyt. Muokkaa valitaksesi tietyn kanavan."
+          "short": "Stereon downmix käytössä. Tunnistustarkkuus voi olla heikentynyt. Valitse tietty kanava Yhteys-kohdasta."
+        },
+        "autoSaveHelp": "Muutokset tallennetaan heti. Yhteyden muutokset yhdistävät striimin uudelleen, joten ne odottavat, kunnes valitset Ota käyttöön.",
+        "connectionTitle": "Yhteys",
+        "connectionApplyHint": "Striimi yhdistetään uudelleen, kun otat muutokset käyttöön.",
+        "connectionApplyFailed": "Yhteyttä ei muutettu. Ota käyttöön uudelleen tai peruuta.",
+        "applyConnection": "Ota käyttöön ja yhdistä uudelleen",
+        "testBeforeApply": "Testaa uusi URL ennen kuin otat sen käyttöön.",
+        "statsLine": "Yhteensä: {total} · Nopeus: {rate} · Viimeksi: {last}",
+        "ago": {
+          "seconds": "{count} s sitten",
+          "minutes": "{count} min sitten",
+          "hours": "{count} h sitten"
         }
       },
       "audioFilters": {
@@ -4127,9 +4159,25 @@
         "noneAvailable": "Tällä palvelimella ei ole käytössä tunnistusmalleja.",
         "loadFailedWarning": "Tunnistusmallin lataus epäonnistui, joten tätä lähdettä ei analysoida ennen kuin se palautuu.",
         "loadFailedLink": "Näytä Tekoälymallit-tila",
+        "state": {
+          "pending": "Ladataan",
+          "failed": "Lataus epäonnistui",
+          "missing": "Ei asennettu"
+        },
+        "notLoadedHelp": "Tätä mallia ei ole ladattu, joten sitä ei voi valita.",
         "defaultBadge": "{models} (oletus)",
         "defaultPendingBadge": "Oletusmallit",
-        "noneBadge": "Ei ladattua mallia"
+        "noneBadge": "Ei ladattua mallia",
+        "missingHelp": "Tätä mallia ei ole enää asennettu. Tämä lähde ohittaa sen.",
+        "removeMissing": "Poista",
+        "removeMissingAria": "Poista {model} lähteestä {source}",
+        "lastSelectedHelp": "Vähintään yksi luokitin pysyy valittuna.",
+        "followsDefaults": "Tämä lähde käyttää oletusmalleja.",
+        "listFailed": "Malliluetteloa ei voitu ladata.",
+        "warningBadge": "Tarkista luokittimet"
+      },
+      "sources": {
+        "autoSaveHelp": "Muutokset tallennetaan heti. Laitteen ja näytteenottotaajuuden muutokset käynnistävät tallennuksen uudelleen, joten ne odottavat, kunnes valitset Ota käyttöön."
       }
     },
     "security": {
@@ -4200,7 +4248,7 @@
         "clientSecretLabel": "Asiakassalaisuus",
         "clientSecretHelpText": "OAuth 2.0 -asiakassalaisuus tarjoajasi kehittäjäkonsolista",
         "userIdLabel": "Sallitut käyttäjät",
-        "userIdHelpText": "Pilkuilla erotellut sähköpostit tai käyttäjätunnukset, jotka voivat kirjautua tällä palveluntarjoajalla. Jos kenttä on tyhjä, kukaan ei voi kirjautua.",
+        "userIdHelpText": "Pilkuilla erotellut sähköpostit tai käyttäjätunnukset, jotka voivat kirjautua tällä palveluntarjoajalla. Käyttäjätunnusta suositellaan, koska sähköpostiosoite voi muuttua. Jos kenttä on tyhjä, kukaan ei voi kirjautua.",
         "allowedUsersEmptyWarning": "Tällä palveluntarjoajalla ei ole sallittuja käyttäjiä, joten jokainen kirjautumisyritys hylätään. Lisää vähintään yksi sähköposti tai käyttäjätunnus salliaksesi pääsyn.",
         "allowedUsersMissingBadge": "Sallittuja käyttäjiä ei ole määritetty - kirjautuminen epäonnistuu",
         "google": {
@@ -4269,13 +4317,16 @@
           "clientSecretHelpText": "Asiakkaan salaisuus OIDC-identiteettipalveluntarjoajaltasi",
           "userIdLabel": "Sallittu käyttäjä (sähköposti tai sub-väite)",
           "issuerUrlLabel": "Myöntäjän URL",
-          "issuerUrlHelpText": "OpenID Connect -identiteettipalveluntarjoajasi myöntäjä-URL (esim. https://auth.example.com)",
+          "issuerUrlHelpText": "OpenID Connect -palveluntarjoajasi perus-URL. BirdNET-Go lisää polun /.well-known/openid-configuration itse, joten jätä se pois. Esimerkit: https://auth.example.com/application/o/birdnet-go/ (Authentik), https://auth.example.com/realms/myrealm (Keycloak).",
           "issuerUrlPlaceholder": "https://auth.example.com",
           "issuerUrlRequired": "Myöntäjän URL vaaditaan OIDC-palveluntarjoajille",
           "issuerUrlInvalid": "Myöntäjän URL:n tulee olla kelvollinen HTTP- tai HTTPS-URL",
           "scopesLabel": "Laajuudet",
           "scopesHelpText": "Pilkuilla eroteltu lista OIDC-laajuuksista (oletus: openid, profile, email)",
-          "scopesPlaceholder": "openid, profile, email"
+          "scopesPlaceholder": "openid, profile, email",
+          "postLogoutRedirectLabel": "Palaa BirdNET-Goon tunnistuspalvelun uloskirjautumisen jälkeen",
+          "postLogoutRedirectHelpText": "Uloskirjautumisen jälkeen selain ohjataan osoitteeseen {url}. Rekisteröi tämä osoite ensin tunnistuspalvelussasi uloskirjautumisen jälkeiseksi uudelleenohjaus-URI:ksi, muuten palvelu voi näyttää virheen.",
+          "postLogoutRedirectNoBaseUrl": "Aseta ensin perusosoite (Base URL) tai isäntä (Host). Paluuosoite muodostetaan niistä."
         }
       },
       "bypassAuthentication": {
@@ -4498,7 +4549,24 @@
           "mappedZero": {
             "title": "Aluesuodatin ei vastannut yhtäkään lajia",
             "description": "Geomallin aluesuodatin ei vastannut yhtäkään aktiivisen mallin lajia, joten kaikki havainnot suodatettaisiin pois. Tarkista, että aluesuodattimen nimiötiedosto vastaa aktiivista mallia."
-          }
+          },
+          "geomodelNotInstalled": {
+            "title": "BirdNET Geomodel ei ole asennettu",
+            "description": "Nämä mallit tarvitsevat BirdNET Geomodelin suodattaakseen havainnot sijainnin mukaan: {models}. Asenna BirdNET Geomodel v3.0 Analyysi-asetusten Mallit-välilehdeltä."
+          },
+          "geomodelNotSelected": {
+            "title": "BirdNET Geomodel ei ole käytössä",
+            "description": "BirdNET Geomodel on asennettu, mutta aluesuodatin on määritetty käyttämään toista mallia, joten näitä malleja ei suodateta sijainnin mukaan: {models}. Voit ottaa sen käyttöön poistamalla birdnet.rangefilter.model- ja birdnet.rangefilter.modelpath-asetukset asetustiedostosta tai ympäristöstä."
+          },
+          "geomodelLoadFailed": {
+            "title": "BirdNET Geomodelia ei voitu ladata",
+            "description": "BirdNET Geomodelia ei voitu ladata, joten näitä malleja ei suodateta sijainnin mukaan: {models}. Tarkista sovelluksen loki sekä asenna tai asenna uudelleen BirdNET Geomodel v3.0 Analyysi-asetusten Mallit-välilehdeltä."
+          },
+          "reloadFailed": {
+            "title": "Aluesuodattimen uudelleenlataus epäonnistui",
+            "description": "Aluesuodattimen viimeisin uudelleenlataus epäonnistui, joten aiemmin ladattu aluesuodatin on edelleen käytössä. Tarkista sovelluksen loki ja yritä uudelleen käynnistämällä BirdNET-Go uudelleen."
+          },
+          "openModels": "Avaa Mallit"
         },
         "columns": {
           "commonName": "Nimi",
@@ -5101,7 +5169,8 @@
       "noData": "Ei tietoja saatavilla",
       "loading": "Ladataan tietoja...",
       "error": "Tietojen lataus epäonnistui",
-      "sortBy": "Lajittele {column}",
+      "sortedAscending": "Lajiteltu sarakkeen {column} mukaan, nouseva",
+      "sortedDescending": "Lajiteltu sarakkeen {column} mukaan, laskeva",
       "rowsPerPage": "Rivejä sivulla",
       "pageInfo": "Näytetään {from}-{to} / {total} tuloksesta"
     },
@@ -5808,6 +5877,9 @@
       },
       "birdnetv3Threshold": {
         "label": "BirdNET v3.0 Confidence Threshold"
+      },
+      "birdnetplusThreshold": {
+        "label": "BirdNET+ V3.0 -luottamuskynnys"
       }
     },
     "rangeFilter": {
@@ -5898,7 +5970,6 @@
         "filterPlaceholder": "Suodata alueita",
         "filterAria": "Suodata aluekohtaisia versioita",
         "filterNoMatch": "Mikään alue ei vastaa hakua \"{query}\"",
-        "latency": "~{ms} ms",
         "precisionInfo": "About precision and variants",
         "precisionHelp": "Precision (FP32, FP16, INT8) trades accuracy for size and speed: FP32 is most accurate, INT8 is smallest and fastest. Recommended is the best match for your detected hardware; Default is the model's standard build."
       },
@@ -5999,6 +6070,10 @@
         "cardNotice": "Kokeellinen BirdNET-Gossa. Malli on julkaistu, mutta sen suorituskykyä BirdNET-Gossa ei ole vielä todistettu, joten tulokset voivat olla epäluotettavampia.",
         "dialogNotice": "Asennat mallin, joka on BirdNET-Gossa kokeellinen. Sen suorituskykyä ei ole vielä todistettu, joten tarkista sen havainnot ennen kuin luotat niihin."
       },
+      "superseded": {
+        "cardNotice": "Korvattu mallilla {name}. Käytä sen sijaan uudempaa mallia.",
+        "dialogNotice": "Tämän mallin on korvannut {name}. Harkitse mallin {name} asentamista sen sijaan."
+      },
       "entryIncompatible": "Tämä malli ei ole saatavilla tässä järjestelmässä.",
       "regionGlobal": "Globaali",
       "hardwareLabel": "Laitteisto",
@@ -6046,6 +6121,10 @@
     "birdnetv3": {
       "title": "BirdNET v3.0 Detection",
       "description": "Set a dedicated confidence threshold for BirdNET v3.0 detections, independent of the main BirdNET threshold."
+    },
+    "birdnetplus": {
+      "title": "BirdNET+ V3.0 -tunnistus",
+      "description": "Aseta BirdNET+ V3.0 -tunnistuksille oma luottamuskynnys, joka on riippumaton BirdNETin pääkynnyksestä."
     }
   },
   "restart": {
@@ -6061,7 +6140,6 @@
     "restartFailed": "Uudelleenkäynnistyksen aloittaminen epäonnistui",
     "reasons": {
       "webserver": "Verkkopalvelimen / verkon asetukset",
-      "oauth": "Tunnistautumispalveluntarjoajan asetukset",
       "database": "Tietokannan asetukset",
       "logging": "Lokin asetukset",
       "tlsCertificate": "TLS-varmenne"

@@ -219,7 +219,8 @@
     "dashboard": "Instrumentpanel",
     "liveAudio": "Direktelyd",
     "settingsMenu": "Indstillingsmenu",
-    "theme": "Tema",
+    "switchToDarkTheme": "Skift til mørkt tema",
+    "switchToLightTheme": "Skift til lyst tema",
     "github": "GitHub",
     "detections": "Detektioner",
     "search": "Søg",
@@ -419,7 +420,7 @@
         "recalculatingThresholds": "Genberegner dynamiske tærskler for ny basisværdi",
         "reconfiguringDynamicThresholds": "Genkonfigurerer dynamiske tærskler...",
         "webserverRestartRequired": "Webserverindstillinger ændret. Genstart påkrævet.",
-        "oauthRestartRequired": "Godkendelsesudbyderindstillinger ændret. Genstart påkrævet.",
+        "reconfiguringOauthProviders": "Opdaterer godkendelsesudbydere...",
         "databaseRestartRequired": "Databaseindstillinger ændret. Genstart påkrævet.",
         "loggingRestartRequired": "Logningsindstillinger ændret. Genstart påkrævet.",
         "reconfiguringSoundLevel": "Opdaterer lydniveauovervågning...",
@@ -495,6 +496,10 @@
       "modelOptimize": {
         "title": "{count, plural, one {# model har en bedre version til dette system} other {# modeller har bedre versioner til dette system}}",
         "message": "En version, der passer bedre til systemets hardware eller placering, er tilgængelig for: {models}. Åbn Indstillinger > Analyse > Modeller, og vælg Optimer for at skifte."
+      },
+      "modelSuperseded": {
+        "title": "{count, plural, one {En installeret model har en nyere udgave} other {# installerede modeller har nyere udgaver}}",
+        "message": "En installeret model er en forhåndsversion, og den endelige udgave er nu tilgængelig: {models}. Åbn Indstillinger > Analyse > Modeller, installer den endelige udgave, og fjern forhåndsversionen."
       },
       "alert": {
         "firedTitle": "{rule_name}",
@@ -2497,6 +2502,15 @@
       "validationBlocked": "Nogle felter kræver opmærksomhed, før du kan gemme.",
       "noChangesToSave": "Ingen ændringer at gemme."
     },
+    "autoSave": {
+      "saved": "Gemt",
+      "failed": "Ikke gemt. Den forrige værdi er gendannet.",
+      "changedElsewhere": "Denne indstilling er ændret et andet sted. Den aktuelle værdi vises; foretag din ændring igen.",
+      "tabNote": "Ændringer på denne fane gemmes, mens du foretager dem.",
+      "failuresSummary": "{count, plural, one {# ændring blev ikke gemt} other {# ændringer blev ikke gemt}}",
+      "dismiss": "Luk",
+      "otherTabsUnsaved": "Andre faner har ikke-gemte ændringer. Åbn en for at gemme eller nulstille dem:"
+    },
     "errors": {
       "loadFailed": "Kunne ikke indlæse indstillinger",
       "saveFailed": "Kunne ikke gemme indstillinger",
@@ -3717,7 +3731,7 @@
         "sampleRateExclusive": "Frekvenser over 48 kHz bruger eksklusiv enhedsadgang på Linux, hvilket forhindrer andre programmer i at dele lydkortet",
         "modelLabel": "Detektionsmodeller",
         "modelHelp": "Vælg hvilke AI-modeller der skal køres på denne lydkilde",
-        "deleteConfirm": "Fjern denne lydkortkilde?",
+        "deleteConfirm": "Fjern lydkortkilden \"{name}\"?",
         "emptyState": {
           "title": "Ingen lydkortkilder konfigureret",
           "description": "Tilføj en lydkortkilde for at begynde at optage lyd til fugledetektering.",
@@ -3744,11 +3758,17 @@
           "minSampleRate": "Kræver mindst {rate}kHz optagelsesfrekvens",
           "recommendedSampleRate": "{rate}kHz anbefalet for bedste resultater",
           "atLeastOneModel": "Mindst én model skal vælges"
-        }
+        },
+        "captureTitle": "Optagelse",
+        "levelTitle": "Indgangsniveau",
+        "captureApplyHint": "Optagelsen genstartes, når du anvender.",
+        "applyCapture": "Anvend og genstart optagelsen",
+        "applying": "Anvender...",
+        "adding": "Tilføjer...",
+        "captureApplyFailed": "Optagelsen blev ikke ændret. Anvend igen, eller annullér."
       },
       "audioCapture": {
         "title": "Lydkortkonfiguration",
-        "description": "Vælg lydindgangsenheden til fuglelydsregistrering. Ændringer kræver genstart af applikationen.",
         "soundCardSource": "Lydkortkilde",
         "audioSourceLabel": "Lydkilde (kræver genstart af applikationen for at træde i kraft)",
         "audioSourceHelp": "Vælg lydindgangsenheden til fuglelydsregistrering. Ændringer kræver genstart af applikationen for at træde i kraft.",
@@ -3782,11 +3802,11 @@
         "fixedHint": "Optagelse pauses mellem start- og sluttidspunkter dagligt. Perioder henover natten (f.eks. 22:00 til 06:00) understøttes.",
         "solarHint": "Tidspunkter beregnes ud fra solopgang/solnedgang ved din konfigurerede placering. Brug negative forskydninger for før begivenheden, positive for efter.",
         "badge": "Stille",
-        "enabledBadge": "Stille timer aktiveret for denne strøm"
+        "enabledBadge": "Stille timer aktiveret for denne strøm",
+        "enableLabel": "Sæt optagelsen på pause i stille timer"
       },
       "rtspStreams": {
         "title": "Konfiguration af lydstrøm",
-        "description": "Konfigurer netværkslydstrømme til fjernoptagelse af lyd. Understøtter RTSP, HTTP, HLS, RTMP og UDP-protokoller.",
         "noStreamsConfigured": "Ingen strømme konfigureret"
       },
       "streams": {
@@ -3815,7 +3835,7 @@
         "refresh": "Opdater",
         "addStream": "Tilføj strøm",
         "testRequired": "Kør en vellykket streamtest før du gemmer",
-        "deleteConfirm": "Fjern denne strøm?",
+        "deleteConfirm": "Fjern strømmen \"{name}\"?",
         "restartCount": "Genstartet {count} gang(e)",
         "healthLoadError": "Kunne ikke indlæse strømmens sundhedsstatus",
         "status": {
@@ -3839,6 +3859,7 @@
         "errors": {
           "nameRequired": "Strømnavn er påkrævet",
           "duplicateName": "En strøm med dette navn findes allerede",
+          "nameTooLong": "Streamnavnet er for langt (højst {max} bytes)",
           "urlRequired": "Strøm-URL er påkrævet",
           "invalidUrl": "Ugyldigt strøm-URL-format",
           "duplicate": "Denne strøm-URL findes allerede"
@@ -3855,12 +3876,12 @@
           "eventAt": "Hændelse kl. {time}"
         },
         "diagnostics": {
-          "toggleDiagnostics": "Skift diagnostik",
           "processState": "Procestilstand",
           "lastData": "Seneste data",
           "restartCount": "Antal genstarter",
           "connection": "Forbindelse",
-          "stateErrorHistory": "Tilstands- og fejlhistorik"
+          "stateErrorHistory": "Tilstands- og fejlhistorik",
+          "title": "Diagnostik"
         },
         "connectionStatus": {
           "stable": "Stabil",
@@ -3907,8 +3928,19 @@
         },
         "stereoWarning": {
           "message": "Stereostream detekteret. Downmixing af flere kanaler kan reducere detektionsnøjagtigheden på grund af faseforskelle mellem kanaler. Vælg en specifik kanal (venstre/højre) eller brug kanaldetektoren for bedste resultater.",
-          "short": "Stereo downmix aktiv. Detektionsnøjagtighed kan være reduceret. Rediger for at vælge en specifik kanal.",
-          "tooltip": "Stereo downmix aktiv. Detektionsnøjagtighed kan være reduceret. Rediger for at vælge en specifik kanal."
+          "short": "Stereo downmix aktiv. Detektionsnøjagtighed kan være reduceret. Vælg en specifik kanal under Forbindelse."
+        },
+        "autoSaveHelp": "Ændringer gemmes med det samme. Ændringer af forbindelsen genforbinder streamen og venter derfor, til du klikker på Anvend.",
+        "connectionTitle": "Forbindelse",
+        "connectionApplyHint": "Streamen genforbindes, når du anvender.",
+        "connectionApplyFailed": "Forbindelsen blev ikke ændret. Anvend igen, eller annullér.",
+        "applyConnection": "Anvend og genforbind",
+        "testBeforeApply": "Test den nye URL, før du anvender den.",
+        "statsLine": "I alt: {total} · Hastighed: {rate} · Seneste: {last}",
+        "ago": {
+          "seconds": "{count} s siden",
+          "minutes": "{count} min. siden",
+          "hours": "{count} t. siden"
         }
       },
       "audioFilters": {
@@ -4127,9 +4159,25 @@
         "noneAvailable": "Ingen detektionsmodeller er aktiveret på denne server.",
         "loadFailedWarning": "En detektionsmodel kunne ikke indlæses, så denne kilde analyseres ikke, før den kommer sig.",
         "loadFailedLink": "Vis status for AI-modeller",
+        "state": {
+          "pending": "Indlæser",
+          "failed": "Kunne ikke indlæses",
+          "missing": "Ikke installeret"
+        },
+        "notLoadedHelp": "Denne model er ikke indlæst og kan derfor ikke vælges.",
         "defaultBadge": "{models} (standard)",
         "defaultPendingBadge": "Standardmodeller",
-        "noneBadge": "Ingen model indlæst"
+        "noneBadge": "Ingen model indlæst",
+        "missingHelp": "Denne model er ikke længere installeret. Denne kilde ignorerer den.",
+        "removeMissing": "Fjern",
+        "removeMissingAria": "Fjern {model} fra {source}",
+        "lastSelectedHelp": "Mindst én klassifikator forbliver valgt.",
+        "followsDefaults": "Denne kilde bruger standardmodellerne.",
+        "listFailed": "Modellisten kunne ikke indlæses.",
+        "warningBadge": "Kontrollér klassifikatorer"
+      },
+      "sources": {
+        "autoSaveHelp": "Ændringer gemmes med det samme. Ændringer af enhed og samplingsfrekvens genstarter optagelsen og venter derfor, til du klikker på Anvend."
       }
     },
     "security": {
@@ -4200,7 +4248,7 @@
         "clientSecretLabel": "Klienthemmelighed",
         "clientSecretHelpText": "OAuth 2.0 klienthemmelighed fra din udbyders udviklerkonsol",
         "userIdLabel": "Tilladte brugere",
-        "userIdHelpText": "Kommaseparerede e-mails eller bruger-id'er, der må logge ind med denne udbyder. Hvis feltet er tomt, kan ingen logge ind.",
+        "userIdHelpText": "Kommaseparerede e-mails eller bruger-id'er, der må logge ind med denne udbyder. Et bruger-id anbefales, da en e-mailadresse kan ændres. Hvis feltet er tomt, kan ingen logge ind.",
         "allowedUsersEmptyWarning": "Denne udbyder har ingen tilladte brugere, så alle loginforsøg afvises. Tilføj mindst én e-mail eller et bruger-id for at give adgang.",
         "allowedUsersMissingBadge": "Ingen tilladte brugere angivet - login vil mislykkes",
         "google": {
@@ -4269,13 +4317,16 @@
           "clientSecretHelpText": "Klienthemmelighed fra din OIDC-identitetsudbyder",
           "userIdLabel": "Tilladt bruger (e-mail eller sub claim)",
           "issuerUrlLabel": "Udsteder-URL",
-          "issuerUrlHelpText": "Udsteder-URL for din OpenID Connect-identitetsudbyder (f.eks. https://auth.example.com)",
+          "issuerUrlHelpText": "Basis-URL for din OpenID Connect-udbyder. BirdNET-Go tilføjer selv /.well-known/openid-configuration, så udelad den del. Eksempler: https://auth.example.com/application/o/birdnet-go/ (Authentik), https://auth.example.com/realms/myrealm (Keycloak).",
           "issuerUrlPlaceholder": "https://auth.example.com",
           "issuerUrlRequired": "Udsteder-URL er påkrævet for OIDC-udbydere",
           "issuerUrlInvalid": "Udsteder-URL skal være en gyldig HTTP- eller HTTPS-URL",
           "scopesLabel": "Omfang",
           "scopesHelpText": "Kommasepareret liste over OIDC-omfang (standard: openid, profile, email)",
-          "scopesPlaceholder": "openid, profile, email"
+          "scopesPlaceholder": "openid, profile, email",
+          "postLogoutRedirectLabel": "Vend tilbage til BirdNET-Go efter log ud hos identitetsudbyderen",
+          "postLogoutRedirectHelpText": "Efter log ud sendes browseren tilbage til {url}. Registrer først denne URL som post-logout redirect URI hos din identitetsudbyder, ellers kan udbyderen vise en fejl.",
+          "postLogoutRedirectNoBaseUrl": "Angiv først Base URL eller Host. Returadressen opbygges ud fra dem."
         }
       },
       "bypassAuthentication": {
@@ -4498,7 +4549,24 @@
           "mappedZero": {
             "title": "Områdefilteret matchede ingen arter",
             "description": "Områdefilteret med geomodel matchede ingen af den aktive models arter, så alle detektioner ville blive filtreret fra. Kontrollér, at områdefilterets labelfil passer til den aktive model."
-          }
+          },
+          "geomodelNotInstalled": {
+            "title": "BirdNET Geomodel er ikke installeret",
+            "description": "Disse modeller har brug for BirdNET Geomodel for at filtrere registreringer efter placering: {models}. Installer BirdNET Geomodel v3.0 fra fanen Modeller i Analyse-indstillingerne."
+          },
+          "geomodelNotSelected": {
+            "title": "BirdNET Geomodel er ikke i brug",
+            "description": "BirdNET Geomodel er installeret, men områdefilteret er indstillet til at bruge en anden model, så disse modeller filtreres ikke efter placering: {models}. Fjern birdnet.rangefilter.model og birdnet.rangefilter.modelpath fra konfigurationsfilen eller miljøet for at bruge den."
+          },
+          "geomodelLoadFailed": {
+            "title": "BirdNET Geomodel kunne ikke indlæses",
+            "description": "BirdNET Geomodel kunne ikke indlæses, så disse modeller filtreres ikke efter placering: {models}. Tjek programmets log, og installer eller geninstaller BirdNET Geomodel v3.0 fra fanen Modeller i Analyse-indstillingerne."
+          },
+          "reloadFailed": {
+            "title": "Genindlæsning af områdefilteret mislykkedes",
+            "description": "Den seneste genindlæsning af områdefilteret mislykkedes, så det tidligere indlæste områdefilter bruges stadig. Tjek programmets log, og genstart BirdNET-Go for at prøve igen."
+          },
+          "openModels": "Åbn Modeller"
         },
         "columns": {
           "commonName": "Almindeligt navn",
@@ -5101,7 +5169,8 @@
       "noData": "Ingen data tilgængelig",
       "loading": "Indlæser data...",
       "error": "Kunne ikke indlæse data",
-      "sortBy": "Sortér efter {column}",
+      "sortedAscending": "Sorteret efter {column}, stigende",
+      "sortedDescending": "Sorteret efter {column}, faldende",
       "rowsPerPage": "Rækker per side",
       "pageInfo": "Viser {from} til {to} af {total} resultater"
     },
@@ -5808,6 +5877,9 @@
       },
       "birdnetv3Threshold": {
         "label": "BirdNET v3.0 Confidence Threshold"
+      },
+      "birdnetplusThreshold": {
+        "label": "Konfidenstærskel for BirdNET+ V3.0"
       }
     },
     "rangeFilter": {
@@ -5898,7 +5970,6 @@
         "filterPlaceholder": "Filtrer regioner",
         "filterAria": "Filtrer regionstilpassede versioner",
         "filterNoMatch": "Ingen regioner matcher \"{query}\"",
-        "latency": "~{ms} ms",
         "precisionInfo": "About precision and variants",
         "precisionHelp": "Precision (FP32, FP16, INT8) trades accuracy for size and speed: FP32 is most accurate, INT8 is smallest and fastest. Recommended is the best match for your detected hardware; Default is the model's standard build."
       },
@@ -5999,6 +6070,10 @@
         "cardNotice": "Eksperimentel i BirdNET-Go. Modellen er udgivet, men dens ydeevne i BirdNET-Go er endnu ikke bevist, så resultaterne kan være mindre pålidelige.",
         "dialogNotice": "Du installerer en model, der er eksperimentel i BirdNET-Go. Dens ydeevne er endnu ikke bevist, så kontrollér dens detektioner, før du stoler på den."
       },
+      "superseded": {
+        "cardNotice": "Afløst af {name}. Brug den nyere model i stedet.",
+        "dialogNotice": "Denne model er afløst af {name}. Overvej at installere {name} i stedet."
+      },
       "entryIncompatible": "Denne model er ikke tilgængelig på dette system.",
       "regionGlobal": "Global",
       "hardwareLabel": "Hardware",
@@ -6046,6 +6121,10 @@
     "birdnetv3": {
       "title": "BirdNET v3.0 Detection",
       "description": "Set a dedicated confidence threshold for BirdNET v3.0 detections, independent of the main BirdNET threshold."
+    },
+    "birdnetplus": {
+      "title": "BirdNET+ V3.0-detektion",
+      "description": "Angiv en dedikeret konfidenstærskel for BirdNET+ V3.0-detektioner, uafhængig af den primære BirdNET-tærskel."
     }
   },
   "restart": {
@@ -6061,7 +6140,6 @@
     "restartFailed": "Kunne ikke starte genstart",
     "reasons": {
       "webserver": "Webserver / netværksindstillinger",
-      "oauth": "Indstillinger for godkendelsesudbyder",
       "database": "Databaseindstillinger",
       "logging": "Logningsindstillinger",
       "tlsCertificate": "TLS certifikat"

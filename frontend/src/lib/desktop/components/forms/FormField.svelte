@@ -1,11 +1,9 @@
 <script lang="ts">
   import { cn } from '$lib/utils/cn';
+  import { generateId } from '$lib/utils/uuid';
   import type { Validator, ValidationResult } from '$lib/utils/validators';
   import type { Snippet } from 'svelte';
   import { t } from '$lib/i18n';
-
-  // Module-level counter for consistent SSR-safe IDs
-  let fieldCounter = 0;
 
   type FieldType =
     | 'text'
@@ -112,8 +110,8 @@
   let touched = $state(false);
   let error = $state<string | { key: string; params?: Record<string, unknown> } | null>(null);
 
-  // Generate counter suffix once on component creation (not reactive)
-  const fieldIdSuffix = ++fieldCounter;
+  // Unique per instance, so fields whose names are equal still get distinct ids.
+  const fieldIdSuffix = generateId();
 
   // Derived IDs - react to prop changes while maintaining stable suffix
   const fieldId = $derived(id || `field-${name || 'field'}-${fieldIdSuffix}`);
@@ -268,7 +266,7 @@
       <span class="label-text">
         {label}
         {#if required}
-          <span class="text-[var(--color-error)]">*</span>
+          <span class="text-[var(--text-error)]">*</span>
         {/if}
       </span>
     </label>
@@ -366,7 +364,7 @@
     {:else if type === 'radio'}
       <!-- Radio buttons would typically be used in a group, so this is a single radio option -->
       {#if !radioValue}
-        <div class="text-[var(--color-error)] text-sm">{t('forms.errors.radioValueRequired')}</div>
+        <div class="text-[var(--text-error)] text-sm">{t('forms.errors.radioValueRequired')}</div>
       {:else}
         <label class="label cursor-pointer justify-start gap-2">
           <input
@@ -445,7 +443,7 @@
 
   {#if error && (touched || externalError)}
     <div class="label">
-      <span id={errorId} class={cn('text-xs text-[var(--color-error)]', errorClassName)}
+      <span id={errorId} class={cn('text-xs text-[var(--text-error)]', errorClassName)}
         >{displayError}</span
       >
     </div>

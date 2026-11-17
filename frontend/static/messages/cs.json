@@ -219,7 +219,8 @@
     "dashboard": "Nástěnka",
     "liveAudio": "Živý zvuk",
     "settingsMenu": "Nabídka nastavení",
-    "theme": "Motiv",
+    "switchToDarkTheme": "Přepnout na tmavý motiv",
+    "switchToLightTheme": "Přepnout na světlý motiv",
     "github": "GitHub",
     "detections": "Detekce",
     "search": "Hledat",
@@ -419,7 +420,7 @@
         "recalculatingThresholds": "Přepočítávám dynamické prahy pro novou základní hodnotu",
         "reconfiguringDynamicThresholds": "Překonfiguruji dynamické prahy…",
         "webserverRestartRequired": "Nastavení webového serveru byla změněna. Je vyžadován restart.",
-        "oauthRestartRequired": "Nastavení poskytovatele ověřování byla změněna. Je vyžadován restart.",
+        "reconfiguringOauthProviders": "Aktualizace poskytovatelů ověřování...",
         "databaseRestartRequired": "Nastavení databáze se změnilo. Je vyžadován restart.",
         "loggingRestartRequired": "Nastavení protokolování se změnilo. Je vyžadován restart.",
         "reconfiguringSoundLevel": "Aktualizuji monitorování hladiny zvuku…",
@@ -495,6 +496,10 @@
       "modelOptimize": {
         "title": "{count, plural, one {# model má lepší sestavení pro tento systém} few {# modely mají lepší sestavení pro tento systém} many {# modelů má lepší sestavení pro tento systém} other {# modelů má lepší sestavení pro tento systém}}",
         "message": "Sestavení lépe odpovídající hardwaru nebo poloze tohoto systému je k dispozici pro: {models}. Otevřete Nastavení > Analýza > Modely a zvolte Optimalizovat."
+      },
+      "modelSuperseded": {
+        "title": "{count, plural, one {Nainstalovaný model má novější verzi} few {# nainstalované modely mají novější verze} many {# nainstalovaného modelu má novější verze} other {# nainstalovaných modelů má novější verze}}",
+        "message": "Nainstalovaný model je náhledová verze a jeho finální vydání je nyní k dispozici: {models}. Otevřete Nastavení > Analýza > Modely, nainstalujte finální vydání a odeberte náhledovou verzi."
       },
       "alert": {
         "firedTitle": "{rule_name}",
@@ -2516,6 +2521,15 @@
       "validationBlocked": "Některá pole vyžadují pozornost, než budete moci uložit.",
       "noChangesToSave": "Žádné změny k uložení."
     },
+    "autoSave": {
+      "saved": "Uloženo",
+      "failed": "Neuloženo. Byla obnovena předchozí hodnota.",
+      "changedElsewhere": "Toto nastavení bylo změněno jinde. Zobrazena je aktuální hodnota; proveďte změnu znovu.",
+      "tabNote": "Změny na této kartě se ukládají průběžně.",
+      "failuresSummary": "{count, plural, one {# změna nebyla uložena} few {# změny nebyly uloženy} many {# změny nebyly uloženy} other {# změn nebylo uloženo}}",
+      "dismiss": "Zavřít",
+      "otherTabsUnsaved": "Jiné karty mají neuložené změny. Otevřete jednu a uložte je nebo obnovte:"
+    },
     "errors": {
       "loadFailed": "Nepodařilo se načíst nastavení",
       "saveFailed": "Nepodařilo se uložit nastavení",
@@ -3736,7 +3750,7 @@
         "sampleRateExclusive": "Frekvence nad 48 kHz používají v Linuxu výhradní přístup k zařízení, což brání ostatním aplikacím ve sdílení zvukové karty",
         "modelLabel": "Detekční modely",
         "modelHelp": "Vyberte, které AI modely se mají spustit na tomto zdroji zvuku",
-        "deleteConfirm": "Odstranit tento zdroj zvukové karty?",
+        "deleteConfirm": "Odstranit zdroj zvukové karty \"{name}\"?",
         "emptyState": {
           "title": "Nejsou nakonfigurovány žádné zdroje zvukové karty",
           "description": "Přidejte zdroj zvukové karty a začněte zachytávat zvuk pro detekci ptáků.",
@@ -3763,11 +3777,17 @@
           "minSampleRate": "Vyžaduje minimálně {rate}kHz vzorkovací frekvenci",
           "recommendedSampleRate": "{rate}kHz doporučeno pro nejlepší výsledky",
           "atLeastOneModel": "Musí být vybrán alespoň jeden model"
-        }
+        },
+        "captureTitle": "Záznam",
+        "levelTitle": "Vstupní úroveň",
+        "captureApplyHint": "Záznam se po použití restartuje.",
+        "applyCapture": "Použít a restartovat záznam",
+        "applying": "Používání...",
+        "adding": "Přidávání...",
+        "captureApplyFailed": "Záznam nebyl změněn. Použijte znovu nebo zrušte."
       },
       "audioCapture": {
         "title": "Konfigurace zvukové karty",
-        "description": "Vyberte zvukové vstupní zařízení pro detekci ptačího zpěvu. Změny vyžadují restart aplikace.",
         "soundCardSource": "Zdroj zvukové karty",
         "audioSourceLabel": "Zdroj zvuku (vyžaduje restart aplikace)",
         "audioSourceHelp": "Vyberte zvukové vstupní zařízení pro detekci ptačího zpěvu. Změny vyžadují restart aplikace.",
@@ -3801,11 +3821,11 @@
         "fixedHint": "Záznam se denně pozastavuje mezi časy začátku a konce. Noční okna (např. 22:00 až 06:00) jsou podporována.",
         "solarHint": "Časy se počítají na základě východu/západu slunce ve vaší nakonfigurované poloze. Použijte záporné posuny před událostí, kladné po ní.",
         "badge": "Ticho",
-        "enabledBadge": "Tiché hodiny povoleny pro tento stream"
+        "enabledBadge": "Tiché hodiny povoleny pro tento stream",
+        "enableLabel": "Pozastavit záznam během tichých hodin"
       },
       "rtspStreams": {
         "title": "Konfigurace zvukových streamů",
-        "description": "Nakonfigurujte síťové zvukové streamy pro vzdálený záznam zvuku. Podporuje protokoly RTSP, HTTP, HLS, RTMP a UDP.",
         "noStreamsConfigured": "Žádné nakonfigurované streamy"
       },
       "streams": {
@@ -3834,7 +3854,7 @@
         "refresh": "Obnovit",
         "addStream": "Přidat stream",
         "testRequired": "Před uložením proveďte úspěšný test streamu",
-        "deleteConfirm": "Odstranit tento stream?",
+        "deleteConfirm": "Odstranit stream \"{name}\"?",
         "restartCount": "Restartováno {count}krát",
         "healthLoadError": "Nepodařilo se načíst stav streamu",
         "status": {
@@ -3858,6 +3878,7 @@
         "errors": {
           "nameRequired": "Název streamu je povinný",
           "duplicateName": "Stream s tímto názvem již existuje",
+          "nameTooLong": "Název streamu je příliš dlouhý (nejvýše {max} bajtů)",
           "urlRequired": "URL streamu je povinná",
           "invalidUrl": "Neplatný formát URL streamu",
           "duplicate": "Tato URL streamu již existuje"
@@ -3874,12 +3895,12 @@
           "eventAt": "Událost v {time}"
         },
         "diagnostics": {
-          "toggleDiagnostics": "Přepnout diagnostiku",
           "processState": "Stav procesu",
           "lastData": "Poslední data",
           "restartCount": "Počet restartů",
           "connection": "Připojení",
-          "stateErrorHistory": "Historie stavů a chyb"
+          "stateErrorHistory": "Historie stavů a chyb",
+          "title": "Diagnostika"
         },
         "connectionStatus": {
           "stable": "Stabilní",
@@ -3926,8 +3947,19 @@
         },
         "stereoWarning": {
           "message": "Detekován stereo stream. Smíchání více kanálů může snížit přesnost detekce kvůli fázovým rozdílům mezi kanály. Pro nejlepší výsledky vyberte konkrétní kanál (levý/pravý) nebo použijte detektor kanálů.",
-          "short": "Aktivní stereo downmix. Přesnost detekce může být snížena. Upravte pro výběr konkrétního kanálu.",
-          "tooltip": "Aktivní stereo downmix. Přesnost detekce může být snížena. Upravte pro výběr konkrétního kanálu."
+          "short": "Aktivní stereo downmix. Přesnost detekce může být snížena. Vyberte konkrétní kanál v části Připojení."
+        },
+        "autoSaveHelp": "Změny se ukládají okamžitě. Změny připojení znovu připojí stream, proto čekají, dokud nekliknete na Použít.",
+        "connectionTitle": "Připojení",
+        "connectionApplyHint": "Stream se po použití znovu připojí.",
+        "connectionApplyFailed": "Připojení nebylo změněno. Použijte znovu nebo zrušte.",
+        "applyConnection": "Použít a znovu připojit",
+        "testBeforeApply": "Před použitím novou URL otestujte.",
+        "statsLine": "Celkem: {total} · Rychlost: {rate} · Naposledy: {last}",
+        "ago": {
+          "seconds": "před {count} s",
+          "minutes": "před {count} min",
+          "hours": "před {count} h"
         }
       },
       "audioFilters": {
@@ -4146,9 +4178,25 @@
         "noneAvailable": "Na tomto serveru nejsou povoleny žádné detekční modely.",
         "loadFailedWarning": "Detekční model se nepodařilo načíst, takže se tento zdroj nebude analyzovat, dokud se neobnoví.",
         "loadFailedLink": "Zobrazit stav Modely AI",
+        "state": {
+          "pending": "Načítá se",
+          "failed": "Načtení selhalo",
+          "missing": "Není nainstalováno"
+        },
+        "notLoadedHelp": "Tento model není načten, a proto jej nelze vybrat.",
         "defaultBadge": "{models} (výchozí)",
         "defaultPendingBadge": "Výchozí modely",
-        "noneBadge": "Není načten žádný model"
+        "noneBadge": "Není načten žádný model",
+        "missingHelp": "Tento model již není nainstalován. Tento zdroj jej ignoruje.",
+        "removeMissing": "Odebrat",
+        "removeMissingAria": "Odebrat {model} ze zdroje {source}",
+        "lastSelectedHelp": "Alespoň jeden klasifikátor zůstane vybraný.",
+        "followsDefaults": "Tento zdroj používá výchozí modely.",
+        "listFailed": "Seznam modelů se nepodařilo načíst.",
+        "warningBadge": "Zkontrolujte klasifikátory"
+      },
+      "sources": {
+        "autoSaveHelp": "Změny se ukládají okamžitě. Změny zařízení a vzorkovací frekvence restartují záznam, proto čekají, dokud nekliknete na Použít."
       }
     },
     "security": {
@@ -4219,7 +4267,7 @@
         "clientSecretLabel": "Tajný klíč klienta",
         "clientSecretHelpText": "OAuth 2.0 Client Secret z vývojářské konzole vašeho poskytovatele",
         "userIdLabel": "Povolení uživatelé",
-        "userIdHelpText": "E-maily nebo ID uživatelů oddělené čárkami, kteří se mohou přihlásit přes tohoto poskytovatele. Pokud zůstane prázdné, nikdo se nepřihlásí.",
+        "userIdHelpText": "E-maily nebo ID uživatelů oddělené čárkami, kteří se mohou přihlásit přes tohoto poskytovatele. Doporučujeme ID uživatele, protože e-mailová adresa se může změnit. Pokud zůstane prázdné, nikdo se nepřihlásí.",
         "allowedUsersEmptyWarning": "Tento poskytovatel nemá žádné povolené uživatele, takže každý pokus o přihlášení bude odmítnut. Přidejte alespoň jeden e-mail nebo ID uživatele pro povolení přístupu.",
         "allowedUsersMissingBadge": "Nejsou nastaveni žádní povolení uživatelé - přihlášení selže",
         "google": {
@@ -4288,13 +4336,16 @@
           "clientSecretHelpText": "Client Secret z vašeho poskytovatele identity OIDC",
           "userIdLabel": "Povolený uživatel (e-mail nebo sub claim)",
           "issuerUrlLabel": "URL vydavatele",
-          "issuerUrlHelpText": "URL vydavatele vašeho poskytovatele identity OpenID Connect (např. https://auth.example.com)",
+          "issuerUrlHelpText": "Základní URL vašeho poskytovatele OpenID Connect. BirdNET-Go přidá /.well-known/openid-configuration samo, takže tuto část vynechte. Příklady: https://auth.example.com/application/o/birdnet-go/ (Authentik), https://auth.example.com/realms/myrealm (Keycloak).",
           "issuerUrlPlaceholder": "https://auth.example.com",
           "issuerUrlRequired": "URL vydavatele je u poskytovatelů OIDC povinná",
           "issuerUrlInvalid": "URL vydavatele musí být platná HTTP nebo HTTPS URL",
           "scopesLabel": "Rozsahy (scopes)",
           "scopesHelpText": "Seznam OIDC rozsahů oddělených čárkou (výchozí: openid, profile, email)",
-          "scopesPlaceholder": "openid, profile, email"
+          "scopesPlaceholder": "openid, profile, email",
+          "postLogoutRedirectLabel": "Po odhlášení u poskytovatele identity se vrátit do BirdNET-Go",
+          "postLogoutRedirectHelpText": "Po odhlášení bude prohlížeč přesměrován na {url}. Nejprve tuto adresu zaregistrujte u svého poskytovatele identity jako post-logout redirect URI, jinak může poskytovatel zobrazit chybu.",
+          "postLogoutRedirectNoBaseUrl": "Nejprve nastavte Base URL nebo Host. Návratová adresa se z nich sestavuje."
         }
       },
       "bypassAuthentication": {
@@ -4517,7 +4568,24 @@
           "mappedZero": {
             "title": "Filtr rozsahu neodpovídá žádnému druhu",
             "description": "Filtr rozsahu geomodelu neodpovídá žádnému z druhů aktivního modelu, takže by byla odfiltrována každá detekce. Zkontrolujte, zda soubor štítků filtru rozsahu odpovídá aktivnímu modelu."
-          }
+          },
+          "geomodelNotInstalled": {
+            "title": "BirdNET Geomodel není nainstalován",
+            "description": "Tyto modely potřebují BirdNET Geomodel k filtrování detekcí podle polohy: {models}. Nainstalujte BirdNET Geomodel v3.0 na kartě Modely v nastavení Analýzy."
+          },
+          "geomodelNotSelected": {
+            "title": "BirdNET Geomodel se nepoužívá",
+            "description": "BirdNET Geomodel je nainstalován, ale filtr rozsahu je nastaven na jiný model, proto tyto modely nejsou filtrovány podle polohy: {models}. Chcete-li jej použít, odeberte birdnet.rangefilter.model a birdnet.rangefilter.modelpath z konfiguračního souboru nebo z prostředí."
+          },
+          "geomodelLoadFailed": {
+            "title": "BirdNET Geomodel se nepodařilo načíst",
+            "description": "BirdNET Geomodel se nepodařilo načíst, proto tyto modely nejsou filtrovány podle polohy: {models}. Zkontrolujte log aplikace a nainstalujte nebo přeinstalujte BirdNET Geomodel v3.0 na kartě Modely v nastavení Analýzy."
+          },
+          "reloadFailed": {
+            "title": "Opětovné načtení filtru rozsahu selhalo",
+            "description": "Poslední opětovné načtení filtru rozsahu selhalo, proto se nadále používá dříve načtený filtr rozsahu. Zkontrolujte log aplikace a restartujte BirdNET-Go, aby se akce zopakovala."
+          },
+          "openModels": "Otevřít Modely"
         },
         "columns": {
           "commonName": "Název",
@@ -5120,7 +5188,8 @@
       "noData": "Žádná data nejsou k dispozici",
       "loading": "Načítání dat…",
       "error": "Data se nepodařilo načíst",
-      "sortBy": "Seřadit podle {column}",
+      "sortedAscending": "Seřazeno podle {column}, vzestupně",
+      "sortedDescending": "Seřazeno podle {column}, sestupně",
       "rowsPerPage": "Řádků na stránku",
       "pageInfo": "Zobrazuje se {from} až {to} z {total} výsledků"
     },
@@ -5827,6 +5896,9 @@
       },
       "birdnetv3Threshold": {
         "label": "BirdNET v3.0 Confidence Threshold"
+      },
+      "birdnetplusThreshold": {
+        "label": "Práh spolehlivosti BirdNET+ V3.0"
       }
     },
     "rangeFilter": {
@@ -5917,7 +5989,6 @@
         "filterPlaceholder": "Filtrovat oblasti",
         "filterAria": "Filtrovat verze přizpůsobené oblastem",
         "filterNoMatch": "Žádné oblasti neodpovídají \"{query}\"",
-        "latency": "~{ms} ms",
         "precisionInfo": "About precision and variants",
         "precisionHelp": "Precision (FP32, FP16, INT8) trades accuracy for size and speed: FP32 is most accurate, INT8 is smallest and fastest. Recommended is the best match for your detected hardware; Default is the model's standard build."
       },
@@ -6018,6 +6089,10 @@
         "cardNotice": "V BirdNET-Go experimentální. Model je zveřejněn, ale jeho výkon v BirdNET-Go zatím není ověřen, takže výsledky mohou být méně spolehlivé.",
         "dialogNotice": "Instalujete model, který je v BirdNET-Go experimentální. Jeho výkon zatím není ověřen, proto jeho detekce zkontrolujte, než se na něj spolehnete."
       },
+      "superseded": {
+        "cardNotice": "Nahrazeno modelem {name}. Používejte místo něj novější model.",
+        "dialogNotice": "Tento model byl nahrazen modelem {name}. Zvažte instalaci modelu {name}."
+      },
       "entryIncompatible": "Tento model není v tomto systému k dispozici.",
       "regionGlobal": "Globální",
       "hardwareLabel": "Hardware",
@@ -6065,6 +6140,10 @@
     "birdnetv3": {
       "title": "BirdNET v3.0 Detection",
       "description": "Set a dedicated confidence threshold for BirdNET v3.0 detections, independent of the main BirdNET threshold."
+    },
+    "birdnetplus": {
+      "title": "Detekce BirdNET+ V3.0",
+      "description": "Nastavte vyhrazený práh spolehlivosti pro detekce BirdNET+ V3.0, nezávislý na hlavním prahu BirdNET."
     }
   },
   "restart": {
@@ -6080,7 +6159,6 @@
     "restartFailed": "Restart se nepodařilo spustit",
     "reasons": {
       "webserver": "Webový server / sítě",
-      "oauth": "Nastavení poskytovatele ověřování",
       "database": "Nastavení databáze",
       "logging": "Nastavení protokolování",
       "tlsCertificate": "Certifikát TLS"
