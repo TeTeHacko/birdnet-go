@@ -3778,11 +3778,8 @@
         },
         "captureTitle": "Záznam",
         "levelTitle": "Vstupní úroveň",
-        "captureApplyHint": "Záznam se po použití restartuje.",
-        "applyCapture": "Použít a restartovat záznam",
         "applying": "Používání...",
-        "adding": "Přidávání...",
-        "captureApplyFailed": "Záznam nebyl změněn. Použijte znovu nebo zrušte."
+        "adding": "Přidávání..."
       },
       "audioCapture": {
         "title": "Konfigurace zvukové karty",
@@ -3800,7 +3797,8 @@
         "deviceSelected": "Zvuková karta vybrána a připravena k záznamu",
         "availableDevices": "Dostupná zvuková zařízení",
         "active": "Aktivní",
-        "streamsConfigured": "Nakonfigurováno {count} streamů"
+        "streamsConfigured": "Nakonfigurováno {count} streamů",
+        "description": "Zvukové karty, které BirdNET-Go poslouchá. Změna zařízení nebo vzorkovací frekvence restartuje záznam na tomto zdroji při uložení."
       },
       "quietHours": {
         "title": "Tiché hodiny",
@@ -4193,8 +4191,10 @@
         "listFailed": "Seznam modelů se nepodařilo načíst.",
         "warningBadge": "Zkontrolujte klasifikátory"
       },
-      "sources": {
-        "autoSaveHelp": "Změny se ukládají okamžitě. Změny zařízení a vzorkovací frekvence restartují záznam, proto čekají, dokud nekliknete na Použít."
+      "validation": {
+        "soundCards": "Před uložením opravte zvukové karty na kartě {tab}: {names}",
+        "unnamedSource": "zdroj {position} (bez názvu)",
+        "needsAttention": "Vyžaduje pozornost"
       }
     },
     "security": {

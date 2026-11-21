@@ -3759,11 +3759,8 @@
         },
         "captureTitle": "Acquisizione",
         "levelTitle": "Livello di ingresso",
-        "captureApplyHint": "L'acquisizione si riavvia quando applichi.",
-        "applyCapture": "Applica e riavvia l'acquisizione",
         "applying": "Applicazione...",
-        "adding": "Aggiunta...",
-        "captureApplyFailed": "L'acquisizione non è stata modificata. Applica di nuovo o annulla."
+        "adding": "Aggiunta..."
       },
       "audioCapture": {
         "title": "Configurazione Scheda Audio",
@@ -3781,7 +3778,8 @@
         "deviceSelected": "Scheda audio selezionata e pronta per cattura",
         "availableDevices": "Dispositivi Audio Disponibili",
         "active": "Attivo",
-        "streamsConfigured": "{count} flusso/i configurato/i"
+        "streamsConfigured": "{count} flusso/i configurato/i",
+        "description": "Schede audio che BirdNET-Go ascolta. Una modifica del dispositivo o della frequenza di campionamento riavvia l'acquisizione su quella sorgente quando salvi."
       },
       "quietHours": {
         "title": "Ore silenziose",
@@ -4174,8 +4172,10 @@
         "listFailed": "Impossibile caricare l'elenco dei modelli.",
         "warningBadge": "Controlla i classificatori"
       },
-      "sources": {
-        "autoSaveHelp": "Le modifiche vengono salvate subito. Le modifiche a dispositivo e frequenza di campionamento riavviano l'acquisizione, quindi attendono che si faccia clic su Applica."
+      "validation": {
+        "soundCards": "Correggi le schede audio nella scheda {tab} prima di salvare: {names}",
+        "unnamedSource": "sorgente {position} (senza nome)",
+        "needsAttention": "Richiede attenzione"
       }
     },
     "security": {
