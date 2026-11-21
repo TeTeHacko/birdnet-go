@@ -3795,6 +3795,8 @@ export type TranslationKey =
   | 'auth.passwordPlaceholder'
   | 'auth.enterPassword'
   | 'auth.continue'
+  | 'auth.rememberBrowser'
+  | 'auth.rememberBrowserHelp'
   | 'auth.or'
   | 'auth.loginWithGoogle'
   | 'auth.loginWithGithub'
